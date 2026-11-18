@@ -45,4 +45,10 @@ def test_unreadable_total_is_not_complete():
     """Codex P1 on #839: a positive ran with a missing or bad `of` passed as complete."""
     for bad_of in ({"ran": 1}, {"ran": 1, "of": "1"}, {"ran": 1, "of": None}, {"ran": 2, "of": 1.0}):
         r = part_runs.assess({"authorship": bad_of})
-        assert not r.complete and r.zero, bad_of
+        assert not r.complete and r.unreadable and not r.zero, bad_of
+
+
+def test_unreadable_total_reason_keeps_the_reported_count():
+    """Round-3 review of #839: 'ran 0 of ?' claimed a count the engine never reported."""
+    r = part_runs.assess({"critic": {"ran": 8, "of": "15"}})
+    assert r.reasons() == ["part critic reported ran 8 of an unreadable total"]

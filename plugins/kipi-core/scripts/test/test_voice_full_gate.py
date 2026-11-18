@@ -292,3 +292,23 @@ def test_timeout_kills_the_whole_engine_tree(tmp_path):
         time.sleep(0.1)
     os.kill(pid, 9)
     pytest.fail("engine grandchild %d outlived the timeout" % pid)
+
+
+def test_timeout_is_bounded_when_a_descendant_escapes_the_session(tmp_path):
+    """Round-3 review of #839: a grandchild that left the session kept the pipes open, and
+    the drain after killpg blocked forever. The timeout must still bound check()."""
+    import time
+    pidfile = tmp_path / "escaped.pid"
+    body = ("import subprocess; p = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(40)'], start_new_session=True); "
+            "open(%r, 'w').write(str(p.pid)); time.sleep(60)" % str(pidfile))
+    start = time.monotonic()
+    v = _gate().check("a post", "linkedin", engine_root=_stub_engine(tmp_path, body=body),
+                      timeout=2)
+    took = time.monotonic() - start
+    try:
+        os.kill(int(pidfile.read_text()), 9)
+    except (OSError, ValueError):
+        pass
+    assert v.verdict == "OUTAGE"
+    assert took < 15, "check() took %.1fs with timeout=2" % took

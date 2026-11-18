@@ -5,9 +5,11 @@ This module says what those counts mean, so no caller re-derives it:
 
   - ZERO: ran 0, including ran 0 of 0. The part examined nothing.
   - PARTIAL: 0 < ran < of. Some units ran, some did not.
+  - UNREADABLE: ran > 0 but the total is missing or not an int. Under engine skew the
+    count cannot be trusted, so this is not complete either.
   - EMPTY: no parts at all. Nothing was checked.
 
-`complete` is true only with none of the three. A partial run never yields complete.
+`complete` is true only with none of the four. A partial run never yields complete.
 
 why one module: the 2026-11-06 RCA (x drafts shown after a partial voice check) counted 33
 drafts shown as checked when a part had run 0, and the rule was being written per caller.
@@ -25,16 +27,18 @@ from dataclasses import dataclass, field
 class PartRuns:
     zero: list = field(default_factory=list)      # [(name, of)]
     partial: list = field(default_factory=list)   # [(name, ran, of)]
+    unreadable: list = field(default_factory=list)  # [(name, ran)]
     empty: bool = False
 
     @property
     def complete(self) -> bool:
-        return not (self.empty or self.zero or self.partial)
+        return not (self.empty or self.zero or self.partial or self.unreadable)
 
     def reasons(self) -> list:
         out = ["no part ran: nothing was checked"] if self.empty else []
         out += ["part %s ran 0 of %s" % (n, of) for n, of in self.zero]
         out += ["part %s ran %s of %s" % (n, r, of) for n, r, of in self.partial]
+        out += ["part %s reported ran %s of an unreadable total" % u for u in self.unreadable]
         return out
 
 
@@ -50,7 +54,7 @@ def assess(parts) -> PartRuns:
     pass as a part that ran."""
     if not parts:
         return PartRuns(empty=True)
-    zero, partial = [], []
+    zero, partial, unreadable = [], [], []
     for name, counts in parts.items():
         if isinstance(counts, dict):
             ran, of = counts.get("ran"), counts.get("of")
@@ -59,10 +63,12 @@ def assess(parts) -> PartRuns:
         else:
             ran, of = None, None
         ran, of = _count(ran), _count(of)
-        # why `of is None` is zero too (Codex P1, #839): {"ran": 1} with no total passed as
-        # complete. Under engine version skew a missing total means the count is unreadable.
-        if ran is None or ran <= 0 or of is None:
+        if ran is None or ran <= 0:
             zero.append((name, "?" if of is None else of))
+        elif of is None:
+            # why (Codex P1 and round-3 review, #839): {"ran": 1} with no total passed as
+            # complete, and the first fix filed it as "ran 0", a count the engine never sent.
+            unreadable.append((name, ran))
         elif ran < of:
             partial.append((name, ran, of))
-    return PartRuns(zero=zero, partial=partial)
+    return PartRuns(zero=zero, partial=partial, unreadable=unreadable)

@@ -122,6 +122,7 @@ def judge(result: dict, surface: str) -> Verdict:
     if runs.empty:
         reasons.append("no required part ran for surface %r: nothing was checked" % surface)
     reasons += ["part %s ran 0 of %s" % (n, of) for n, of in runs.zero]
+    reasons += ["part %s reported ran %s of an unreadable total" % u for u in runs.unreadable]
     # PARTIAL is reported, not refused, here. why: a part's own owner decides whether its
     # partial run is an outage, and reports it as ran 0 or an outage row when it is (the
     # critic's quality wave does that under ASK-5411). Measured 2026-11-18: one live run had
@@ -169,7 +170,12 @@ def check(text: str, surface: str, *, source_text: str | None = None,
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        proc.communicate()
+        # A BOUNDED drain. why (round-3 review of #839): a descendant that left the
+        # session keeps the pipes open, and an unbounded communicate() blocked forever.
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         return _outage(surface, "timed out after %ss" % (timeout or DEFAULT_TIMEOUT_S))
     tail = (stderr or "").strip().splitlines()[-3:]
     if proc.returncode != 0:
