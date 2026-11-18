@@ -214,6 +214,19 @@ RULES = [
          note="python tempfile.mkdtemp leak; 2026-09-10 burst: 8,776 dirs, 16.7 GB"),
     Rule("tmp-pymp", ["{TMP}/T"], match=r"^pymp-", min_age_days=1,
          note="multiprocessing temp dirs left by killed workers"),
+    # ORDER MATTERS (codex review, PR 841): this must run before tmp-mktemp-shell. That rule
+    # matches the same dirs at 7 days and rmtrees them without pruning the repo
+    # registration behind wt/, which leaves a stale .git/worktrees entry.
+    # ASK-4234. 1 h, 30 min under the floor: a commit's snapshot is touched for
+    # as long as it runs, and the live census covers a quiet one.
+    Rule("tmp-verify-staged", ["{TMP}/T"], match=r"^tmp\.[A-Za-z0-9]{6,}$", min_age_days=1.0 / 24,
+         floor_min_age_days=0.5 / 24, gate=staged_snapshot_gate, wt_child="wt",
+         note="ASK-4234: verify.sh staged snapshot leaked by a killed commit; 466 MB each"),
+    # pr-review-agent.sh removes its own run./ctx. dir in an EXIT trap; what is
+    # left is from a killed run. Nothing reads these after the run (read the
+    # script's review_scratch_cleanup). Hand-made dirs (sana*, pr334*) do not match.
+    Rule("review-scratch-runs", ["{HOME}/.config/kipi/review-scratch"], match=r"^(run|ctx)\.[A-Za-z0-9]+$",
+         min_age_days=1, note="ASK-4234: orphaned review run and PR-context dirs"),
     Rule("tmp-mktemp-shell", ["{TMP}/T"], match=r"^tmp\.[A-Za-z0-9]{6,}$", min_age_days=7,
          note="shell mktemp -d dirs; 7 days because agent jobs park worktrees here"),
     Rule("chrome-code-sign-clone", ["{TMP}/X"], match=r"^com\.google\.Chrome\.code_sign_clone$",
@@ -250,16 +263,6 @@ RULES = [
     Rule("claude-session-scratch", ["{CLAUDETMP}/*/*"], match=r"^scratchpad$", min_age_days=0.25,
          parent_match=UUID_RE, gate=session_ended_gate, apply_switch="session_scratch_apply",
          note="ASK-4228: scratch of ended Claude sessions; 7.8 GB on 2026-11-09"),
-    # ASK-4234. 1 h, 30 min under the floor: a commit's snapshot is touched for
-    # as long as it runs, and the live census covers a quiet one.
-    Rule("tmp-verify-staged", ["{TMP}/T"], match=r"^tmp\.[A-Za-z0-9]{6,}$", min_age_days=1.0 / 24,
-         floor_min_age_days=0.5 / 24, gate=staged_snapshot_gate, wt_child="wt",
-         note="ASK-4234: verify.sh staged snapshot leaked by a killed commit; 466 MB each"),
-    # pr-review-agent.sh removes its own run./ctx. dir in an EXIT trap; what is
-    # left is from a killed run. Nothing reads these after the run (read the
-    # script's review_scratch_cleanup). Hand-made dirs (sana*, pr334*) do not match.
-    Rule("review-scratch-runs", ["{HOME}/.config/kipi/review-scratch"], match=r"^(run|ctx)\.[A-Za-z0-9]+$",
-         min_age_days=1, note="ASK-4234: orphaned review run and PR-context dirs"),
     Rule("docker-install-leftover", ["{HOME}/Library/Application Support/com.docker.install"],
          match=r"^in_progress$", min_age_days=1),
     Rule("npx-cache", ["{HOME}/.npm/_npx"], min_age_days=30),

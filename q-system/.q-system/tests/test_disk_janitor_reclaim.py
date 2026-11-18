@@ -87,6 +87,16 @@ class StagedSnapshots(unittest.TestCase):
         self.assertFalse(os.path.exists(d), "old snapshot must go")
         self.assertNotIn("tmp.AbCdEf1234", self.e.worktrees(), "registration must be pruned")
 
+    def test_week_old_snapshot_is_pruned_not_orphaned(self):
+        # codex PR 841 P2: tmp-mktemp-shell (7 d) used to win and leave .git/worktrees behind.
+        d = self.e.snapshot("tmp.WeekOld1234", hours=24 * 10)
+        r = self.e.run("tmp-mktemp-shell,tmp-verify-staged")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(d))
+        self.assertNotIn("tmp.WeekOld1234", self.e.worktrees())
+        self.assertFalse(os.path.exists(os.path.join(self.e.repo, ".git", "worktrees", "wt")),
+                         "registration must be pruned")
+
     def test_young_snapshot_is_kept(self):
         d = self.e.snapshot("tmp.YoungYoung1", hours=0.1)
         self.e.run("tmp-verify-staged")
