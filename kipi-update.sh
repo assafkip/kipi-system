@@ -515,6 +515,14 @@ plugin_copy_rsync_flags() {
 INSTANCE_AHEAD_REPORT=""
 INSTANCE_AHEAD_TOTAL=0
 INSTANCE_AHEAD_HITS=0
+# ASK-2901 (engine parity). The subset of INSTANCE_AHEAD_HITS that sits under
+# plugins/kipi-core/voiceloop/. Unlike every other ahead file this one REFUSES
+# with no flag: the fleet jobs run without --refuse-instance-ahead, so a report
+# alone let the sync overwrite an engine edit made in consulting (the exporter
+# reads consulting's copy; the skeleton is the writer, consulting only carries).
+# Instance content there that the skeleton never shipped is lost work, never a
+# local tuning, so the refusal needs no opt-in.
+VOICELOOP_AHEAD_HITS=0
 
 # $1 skeleton source dir for one scope, $2 the instance dir it lands in,
 # $3 the scope's skeleton-relative prefix (for fleet_authored_blob),
@@ -547,6 +555,9 @@ instance_ahead_scan() {
     echo "  instance ahead: $shown ($detail)"
     INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
     INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
+    case "$shown" in
+      plugins/kipi-core/voiceloop/*) VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1)) ;;
+    esac
     INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
     - $name: $shown ($detail)"
   done < <(rsync -ain "$src/" "$dest/" "$@" 2>/dev/null || true)
@@ -559,6 +570,7 @@ instance_ahead_scan() {
 instance_ahead_preflight() {
   local path="$1" prefix="$2" name="$3" src_tmp dest kind
   INSTANCE_AHEAD_HITS=0
+  VOICELOOP_AHEAD_HITS=0
   src_tmp="$(mktemp -d)"
   if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null \
       | tar -x -C "$src_tmp" 2>/dev/null; then
@@ -2923,6 +2935,10 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
     instance_ahead_preflight "$path" "$prefix" "$name"
     if [ "$REFUSE_INSTANCE_AHEAD" = "1" ] && [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
       abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
+    fi
+
+    if [ "$VOICELOOP_AHEAD_HITS" -gt 0 ]; then
+      abandon_instance "  ERROR: the voiceloop engine in this instance is ahead of the skeleton on $VOICELOOP_AHEAD_HITS file(s); refusing with no flag (ASK-2901), nothing staged, nothing written. Land the change in the skeleton first, then sync" && continue
     fi
 
     # Same point, same reason: before anything is committed or written, in every
