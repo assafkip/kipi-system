@@ -163,26 +163,172 @@ class ReviewScratch(unittest.TestCase):
         self.assertFalse(os.path.exists(d))
         self.assertEqual(json.loads(r.stdout).get("errors"), 0)
 
-    def test_git_gated_mode_000_checkout_is_not_unlocked_into_deletion(self):
-        # review round 3: a mode-000 worktree with work must stay an error, never a delete.
+    def wip(self):
         base = os.path.join(self.e.home, ".config", "kipi", "worktrees")
         os.makedirs(base)
         d = os.path.join(base, "wip")
         git("worktree", "add", "-q", "--detach", d, "HEAD", cwd=self.e.repo)
+        return d
+
+    def test_git_gated_mode_000_checkout_is_skipped_not_errored(self):
+        # PR 841 round 4, finding 2: a mode-000 git-gated target errored and paged on
+        # every run forever. The gate cannot read it, so it is a skip, and quiet.
+        d = self.wip()
         with open(os.path.join(d, "unsaved.txt"), "w") as fh:
             fh.write("work")
         age(d, 24 * 40)
         os.chmod(d, 0)
         self.addCleanup(os.chmod, d, 0o700)
         r = self.e.run("kipi-worktrees")
-        self.assertEqual(json.loads(r.stdout).get("errors"), 1, "kept and loud, not deleted quietly")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        summary = json.loads(r.stdout)
+        self.assertEqual(summary.get("errors"), 0, "unreadable is a keep, not a page")
+        self.assertEqual(summary["rules"]["kipi-worktrees"].get("skip-unreadable"), 1)
         os.chmod(d, 0o700)
         self.assertTrue(os.path.exists(os.path.join(d, "unsaved.txt")))
+
+    def test_unreadable_subdir_is_not_read_as_clean(self):
+        # PR 841 round 4, finding 1: git status exits 0 with empty stdout and puts
+        # "Permission denied" on stderr when a subdir is mode 000, so git_state said
+        # clean and rmtree destroyed every readable file of a worktree with work in it.
+        d = self.wip()
+        os.makedirs(os.path.join(d, "sub"))
+        with open(os.path.join(d, "sub", "unsaved.txt"), "w") as fh:
+            fh.write("UNSAVED WORK")
+        age(d, 24 * 40)
+        os.chmod(os.path.join(d, "sub"), 0)
+        self.addCleanup(os.chmod, os.path.join(d, "sub"), 0o700)
+        r = self.e.run("kipi-worktrees")
+        summary = json.loads(r.stdout)
+        self.assertEqual(summary.get("errors"), 0, r.stdout)
+        self.assertEqual(summary["rules"]["kipi-worktrees"].get("skip-git-error"), 1, r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(d, "a.txt")), "nothing readable was removed either")
+        os.chmod(os.path.join(d, "sub"), 0o700)
+        self.assertTrue(os.path.exists(os.path.join(d, "sub", "unsaved.txt")))
 
     def test_run_dir_held_by_a_live_process_is_kept(self):
         d = self.mk("run.Live1234", 30)
         self.e.run("review-scratch-runs", live=[os.path.join(d, "sub")])
         self.assertTrue(os.path.exists(d))
+
+
+class ChromeCodeSignClones(unittest.TestCase):
+    """ASK-3976. Chrome makes X/<bundle-id>.code_sign_clone/code_sign_clone.<rand>
+    at every launch and leaks it when the launch is killed. The old rule targeted
+    the parent folder, which always holds the live clone, so it never fired
+    (skip open files every day since 2026-09-29). Each clone's main binary is a
+    hardlink of the app's, so lsof +D shows an open file in every clone; liveness
+    is read from birth time instead: a clone born within seconds of a running main
+    process's start is that process's clone."""
+
+    def setUp(self):
+        self.e = Env()
+        self.addCleanup(self.e.td.cleanup)
+        self.parent = os.path.join(self.e.tmpbase, "X", "com.google.Chrome.code_sign_clone")
+        os.makedirs(self.parent)
+        app = os.path.join(self.e.td.name, "Apps", "Google Chrome.app", "Contents")
+        os.makedirs(os.path.join(app, "MacOS"))
+        with open(os.path.join(app, "Info.plist"), "wb") as fh:
+            import plistlib
+            plistlib.dump({"CFBundleIdentifier": "com.google.Chrome"}, fh)
+        self.exe = os.path.join(app, "MacOS", "Google Chrome")
+
+    def clone(self, name, hours_ago=0.0):
+        d = os.path.join(self.parent, name)
+        os.makedirs(os.path.join(d, "Google Chrome.app.bundle", "Contents", "MacOS"))
+        with open(os.path.join(d, "Google Chrome.app.bundle", "Contents", "MacOS", "Google Chrome"), "w") as fh:
+            fh.write("bin")
+        if hours_ago:
+            # APFS moves the birth time back when mtime is set before it.
+            age(d, hours_ago)
+        born = os.stat(d).st_birthtime
+        if hours_ago:
+            self.assertLess(born, time.time() - hours_ago * 3600 + 60, "fixture could not age the birth time")
+        return d, born
+
+    def run_clones(self, procs):
+        env = dict(os.environ, JANITOR_HOME=self.e.home, JANITOR_TMPBASE=self.e.tmpbase,
+                   JANITOR_CLAUDETMP=self.e.claude, JANITOR_LIVE="[]", JANITOR_NO_NOTIFY="1",
+                   JANITOR_FREE_GB="100", JANITOR_NO_UV="1", JANITOR_NOW=str(time.time() + 2 * 3600),
+                   JANITOR_PROCS=json.dumps(procs), JANITOR_APPS=os.path.join(self.e.td.name, "Apps"))
+        r = subprocess.run([sys.executable, SCRIPT, "--apply", "--rules", "chrome-code-sign-clone", "--json"],
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        return json.loads(r.stdout)
+
+    def test_orphan_goes_and_the_live_clone_stays(self):
+        live, born = self.clone("code_sign_clone.LowSzi")
+        orphan, _ = self.clone("code_sign_clone.jx3zJL", hours_ago=12)
+        # Measured: LowSzi born 11:10:54, its Chrome (pid 43484) started 11:10:53.
+        s = self.run_clones([{"start": born - 1, "exe": self.exe}])
+        self.assertTrue(os.path.exists(live), "the running Chrome's clone must stay")
+        self.assertFalse(os.path.exists(orphan), "a clone no running Chrome owns is an orphan")
+        self.assertEqual(s["rules"]["chrome-code-sign-clone"].get("skip-live-clone"), 1, s)
+
+    def test_parent_folder_is_never_the_target(self):
+        self.clone("code_sign_clone.AAAAAA")
+        self.run_clones([])
+        self.assertTrue(os.path.isdir(self.parent), "only the code_sign_clone.* children are targets")
+
+    def test_live_main_with_no_clone_born_at_its_start_keeps_every_clone(self):
+        # Negative control: a running Chrome whose clone cannot be told apart.
+        a, born = self.clone("code_sign_clone.AAAAAA")
+        b, _ = self.clone("code_sign_clone.BBBBBB", hours_ago=12)
+        s = self.run_clones([{"start": born - 3600, "exe": self.exe}])
+        self.assertTrue(os.path.exists(a) and os.path.exists(b), s)
+
+    def test_unreadable_process_table_keeps_every_clone(self):
+        a, _ = self.clone("code_sign_clone.AAAAAA")
+        s = self.run_clones(None)
+        self.assertTrue(os.path.exists(a), s)
+
+    def framework(self, clone_dir, how):
+        """A 2 MB framework in the installed app, put into the clone by APFS
+        clonefile (cp -c, what Chrome does) or by a real copy (what an app update
+        leaves an orphan holding)."""
+        rel = os.path.join("Contents", "Frameworks", "F.framework", "F")
+        src = os.path.join(self.e.td.name, "Apps", "Google Chrome.app", rel)
+        if not os.path.exists(src):
+            os.makedirs(os.path.dirname(src))
+            with open(src, "wb") as fh:
+                fh.write(os.urandom(2 << 20))
+        dst = os.path.join(clone_dir, "Google Chrome.app.bundle", rel)
+        os.makedirs(os.path.dirname(dst))
+        subprocess.run(["cp", "-c" if how == "clone" else "-X", src, dst], check=True)
+
+    def test_clone_sharing_the_apps_blocks_counts_zero_freed(self):
+        shared, _ = self.clone("code_sign_clone.Shared", hours_ago=12)
+        self.framework(shared, "clone")
+        s = self.run_clones([])
+        self.assertFalse(os.path.exists(shared))
+        self.assertEqual(s["bytes"], 0, "a clone of the app frees about nothing")
+        self.assertGreater(s["shared_bytes_not_freed"]["chrome-code-sign-clone"], 2 << 20 - 1)
+
+    def test_clone_that_owns_its_blocks_counts_as_freed(self):
+        # Negative control for the probe: after an update the orphan's blocks are its own.
+        owned, _ = self.clone("code_sign_clone.Owned1", hours_ago=12)
+        self.framework(owned, "copy")
+        s = self.run_clones([])
+        self.assertFalse(os.path.exists(owned))
+        self.assertGreaterEqual(s["bytes"], 2 << 20)
+        self.assertEqual(s["shared_bytes_not_freed"], {})
+
+    def test_helper_processes_are_not_main_processes(self):
+        # A helper started at an orphan's birth must not make it look live, and a
+        # helper with no clone must not freeze the rule.
+        a, born = self.clone("code_sign_clone.AAAAAA")
+        helper = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(self.exe))), "Contents",
+                              "Frameworks", "X.framework", "Helpers", "Google Chrome Helper.app",
+                              "Contents", "MacOS", "Google Chrome Helper")
+        # Real helpers carry com.google.Chrome.helper; give this one the main id so
+        # the test pins the structural exclusion, not the id difference.
+        hplist = os.path.join(os.path.dirname(os.path.dirname(helper)), "Info.plist")
+        os.makedirs(os.path.dirname(helper))
+        with open(hplist, "wb") as fh:
+            import plistlib
+            plistlib.dump({"CFBundleIdentifier": "com.google.Chrome"}, fh)
+        self.run_clones([{"start": born - 1, "exe": helper}])
+        self.assertFalse(os.path.exists(a))
 
 
 if __name__ == "__main__":

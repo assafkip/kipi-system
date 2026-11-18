@@ -25,7 +25,8 @@ that incident:
   AGE GATE    per rule, measured on the NEWEST mtime inside the tree, so a tree
               still being written to is young even if its top dir is old.
   GIT GATE    a checkout with a dirty `git status` is skipped; a checkout whose
-              git call errors is skipped (a transient lock must not read as clean).
+              git call errors, or writes to stderr (a subdir it could not read), is
+              skipped; so is a target it cannot read at all. Unknown is never clean.
   LIVE GATE   a target that holds the cwd OR any open file of a live process is
               skipped (one system-wide lsof census per run); rules can also
               require a zero-open-files check of their own.
@@ -70,7 +71,8 @@ Test env overrides (all optional): JANITOR_HOME, JANITOR_TMPBASE, JANITOR_NOW
 lsof census), JANITOR_NO_OPENFILES=1 (skip the per-rule lsof +D check),
 JANITOR_NO_NOTIFY=1, JANITOR_REPO (where slack-notify.sh lives),
 JANITOR_CLAUDETMP (the Claude temp root), JANITOR_GH (the gh binary),
-JANITOR_FREE_GB (the free-space reading). Tests: test_disk_janitor_reclaim.py. JANITOR_NO_UV=1 skips `uv cache prune` (tests set it).
+JANITOR_FREE_GB (the free-space reading), JANITOR_PROCS (JSON list of {start, exe},
+or null for an unreadable process table), JANITOR_APPS (where installed apps live). Tests: test_disk_janitor_reclaim.py. JANITOR_NO_UV=1 skips `uv cache prune` (tests set it).
 """
 import argparse
 import fcntl
@@ -106,7 +108,8 @@ class Rule(object):
 
     def __init__(self, name, parents, kind="dir", match=r".*", min_age_days=7,
                  git_gate=False, open_files_gate=False, recursive=False, note="",
-                 parent_match=None, gate=None, apply_switch=None, floor_min_age_days=None, wt_child=None, unlock=False):
+                 parent_match=None, gate=None, apply_switch=None, floor_min_age_days=None, wt_child=None, unlock=False,
+                 shared_probe=None):
         self.name = name
         self.parents = parents
         self.kind = kind                    # "dir" or "file"
@@ -131,6 +134,9 @@ class Rule(object):
         # gate: rounds 3 and 4 of PR 841 both showed that unlocking a git-gated tree lets a
         # gate that could not read it say clean. Same class twice, so the feature is scoped out.
         self.unlock = unlock
+        # ASK-3976: shared_probe(ctx, path) True means the target's blocks are shared
+        # with another file (an APFS clone), so its du bytes are not what a delete frees.
+        self.shared_probe = shared_probe
 
 
 def finished_pr_gate(ctx, path):
@@ -217,6 +223,117 @@ def session_ended_gate(ctx, path):
     return None
 
 
+CLONE_WINDOW_S = 10.0
+
+
+def _app_bundle_id(app, cache):
+    """CFBundleIdentifier of an .app, or None. Cached per run."""
+    if app not in cache:
+        import plistlib
+        try:
+            with open(os.path.join(app, "Contents", "Info.plist"), "rb") as fh:
+                cache[app] = plistlib.load(fh).get("CFBundleIdentifier")
+        except Exception:
+            cache[app] = None
+    return cache[app]
+
+
+MAIN_EXE_RE = re.compile(r"^(/.+?\.app)/Contents/MacOS/[^/]+$")
+
+
+def clone_live_gate(ctx, path):
+    """chrome-code-sign-clone (ASK-3976). Pass only an orphan clone. Keep when:
+    the process table cannot be read; this clone was born within CLONE_WINDOW_S
+    of a running main process of its bundle (measured: clone LowSzi born
+    11:10:54, its Chrome started 11:10:53); or some running main process of the
+    bundle has no clone born near its start, because then which clone it uses
+    cannot be told and every one is kept."""
+    procs = ctx.processes()
+    if procs is None:
+        return ("skip-procs-unknown", "process table could not be read")
+    parent = os.path.dirname(path)
+    bundle = os.path.basename(parent)[:-len(".code_sign_clone")]
+    starts = []
+    for start, exe in procs:
+        m = MAIN_EXE_RE.match(exe)
+        # Helpers live under Contents/Frameworks/.../Helpers/X.app; only the
+        # outermost .app is a main process.
+        if not m or "/Contents/" in m.group(1):
+            continue
+        if _app_bundle_id(m.group(1), ctx.bundle_cache) == bundle:
+            starts.append(start)
+    if not starts:
+        return None
+    births = []
+    for name in os.listdir(parent):
+        try:
+            births.append(os.stat(os.path.join(parent, name)).st_birthtime)
+        except (OSError, AttributeError):
+            return ("skip-procs-unknown", "cannot read a sibling clone's birth time")
+    try:
+        mine = os.stat(path).st_birthtime
+    except (OSError, AttributeError):
+        return ("skip-procs-unknown", "cannot read this clone's birth time")
+    for st in starts:
+        if abs(mine - st) <= CLONE_WINDOW_S:
+            return ("skip-live-clone", "born %.0fs from a running %s start" % (mine - st, bundle))
+    for st in starts:
+        if not any(abs(b - st) <= CLONE_WINDOW_S for b in births):
+            return ("skip-live-unmatched", "a running %s has no clone born at its start" % bundle)
+    return None
+
+
+F_LOG2PHYS_EXT = 65     # <sys/fcntl.h>; struct log2phys is #pragma pack(4): uint32, off_t, off_t
+
+
+def _phys_offset(path):
+    import fcntl as _f
+    import struct
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        out = _f.fcntl(fd, F_LOG2PHYS_EXT, struct.pack("=Iqq", 0, 1 << 20, 0))
+        return struct.unpack("=Iqq", out)[2]
+    finally:
+        os.close(fd)
+
+
+def clone_shares_app_blocks(ctx, path):
+    """True when the clone's biggest file sits on the same physical blocks as the
+    installed app's copy, so deleting the clone frees about nothing. Measured
+    2026-11-18: the 531 MB framework had one physical address in all 5 clones and
+    in /Applications. An orphan owns its blocks only after an app update; then
+    the paths or the extents differ and this returns False. Any doubt is False,
+    which reports du bytes as before."""
+    try:
+        bundles = [n for n in os.listdir(path) if n.endswith(".app.bundle")]
+    except OSError:
+        return False
+    if len(bundles) != 1:
+        return False
+    clone_app = os.path.join(path, bundles[0])
+    src_app = os.path.join(ctx.apps_dir, bundles[0][:-len(".bundle")])
+    best, best_size = None, 0
+    for root, _dirs, files in os.walk(clone_app, followlinks=False):
+        for n in files:
+            full = os.path.join(root, n)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            # nlink > 1 is the hardlinked main binary: same inode, proves nothing.
+            if st.st_nlink == 1 and st.st_size > best_size and not os.path.islink(full):
+                best, best_size = full, st.st_size
+    if best is None:
+        return False
+    src = os.path.join(src_app, os.path.relpath(best, clone_app))
+    try:
+        if os.path.getsize(src) != best_size:
+            return False
+        return _phys_offset(best) == _phys_offset(src)
+    except (OSError, IOError):
+        return False
+
+
 RULES = [
     # 1 day, not 2: the 2026-09-10 burst was still "young" at the first live dry
     # run and the disk had 6 GB left. A mkdtemp dir a process still uses shows
@@ -242,9 +359,14 @@ RULES = [
          min_age_days=1, unlock=True, note="ASK-4234: orphaned review run and PR-context dirs"),
     Rule("tmp-mktemp-shell", ["{TMP}/T"], match=r"^tmp\.[A-Za-z0-9]{6,}$", min_age_days=7,
          note="shell mktemp -d dirs; 7 days because agent jobs park worktrees here"),
-    Rule("chrome-code-sign-clone", ["{TMP}/X"], match=r"^com\.google\.Chrome\.code_sign_clone$",
-         min_age_days=3, open_files_gate=True,
-         note="Chrome clones its bundle on update; a running Chrome still maps it, hence the open-files gate"),
+    # ASK-3976. The old rule targeted the PARENT folder with an open-files gate. The
+    # parent always holds the live clone, so it skipped every day from 2026-09-29.
+    # Each clone is a child now, and lsof cannot gate it: every clone's main binary
+    # is a hardlink of the app's, so every clone shows one open file. Birth time
+    # against running main processes is the liveness signal (clone_live_gate).
+    Rule("chrome-code-sign-clone", ["{TMP}/X/*.code_sign_clone"], match=r"^code_sign_clone\.[A-Za-z0-9]+$",
+         min_age_days=1.0 / 24, gate=clone_live_gate, shared_probe=clone_shares_app_blocks,
+         note="ASK-3976: bundle clones leaked by killed browser launches; ~0 bytes until an app update"),
     Rule("review-trees", ["{HOME}/.config/kipi/review-trees"], min_age_days=14, git_gate=True,
          note="detached-HEAD checkouts made by the PR review agent"),
     Rule("review-trees-finished", ["{HOME}/.config/kipi/review-trees"],
@@ -328,6 +450,10 @@ class Ctx(object):
         self._sessions = False  # not computed yet; None = unknown
         self.session_err = ""
         self.pr_cache = {}
+        self._procs = False     # not read yet; None = unknown
+        self.bundle_cache = {}
+        self.apps_dir = os.environ.get("JANITOR_APPS") or "/Applications"
+        self.shared_bytes = {}  # rule -> du bytes of targets whose blocks a clone source still holds
         self.counts = {}        # rule -> {action -> n}
         self.bytes = {}         # rule -> bytes that were / would be deleted
         self.report_bytes = {}  # rule -> bytes a report-only rule would free
@@ -397,6 +523,38 @@ class Ctx(object):
             self.session_err = "ps failed (exit %d)" % r.returncode
             return None
         return ids, r.stdout + "\n" + "\n".join(self.live)
+
+    def processes(self):
+        """[(start epoch, executable path)] for every process, or None if ps
+        cannot be read. JANITOR_PROCS (JSON list of {start, exe}, or null) is the
+        test seam."""
+        if self._procs is False:
+            self._procs = self._read_procs()
+        return self._procs
+
+    def _read_procs(self):
+        raw = os.environ.get("JANITOR_PROCS")
+        if raw is not None:
+            data = json.loads(raw)
+            return None if data is None else [(float(p["start"]), p["exe"]) for p in data]
+        try:
+            r = subprocess.run(["ps", "-axww", "-o", "lstart=,comm="], capture_output=True,
+                               text=True, timeout=60, env=dict(os.environ, LC_ALL="C", LANG="C"))
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        out = []
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 5)
+            if len(parts) < 6:
+                continue
+            try:
+                start = time.mktime(time.strptime(" ".join(parts[:5]), "%a %b %d %H:%M:%S %Y"))
+            except ValueError:
+                return None
+            out.append((start, parts[5]))
+        return out
 
     def pr_state(self, slug, n):
         """MERGED / CLOSED / OPEN from gh, or "" for any failure. One call per PR."""
@@ -538,7 +696,11 @@ def tree_bytes(path):
 
 
 def git_state(path):
-    """'clean' | 'dirty' | 'error' | 'not-a-repo'."""
+    """'clean' | 'dirty' | 'error' | 'not-a-repo' | 'unreadable'."""
+    # PR 841 round 4: a mode-000 target hid its .git, read as not-a-repo, passed the
+    # gate and then failed rmtree on every run, paging each time.
+    if not os.access(path, os.R_OK | os.X_OK):
+        return "unreadable"
     if not os.path.exists(os.path.join(path, ".git")):
         return "not-a-repo"
     try:
@@ -546,7 +708,11 @@ def git_state(path):
                            capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         return "error"
-    if r.returncode != 0:
+    # PR 841 round 4, major: with a mode-000 subdir git exits 0, prints nothing on
+    # stdout and says "Permission denied" on stderr. Reading that as clean let
+    # rmtree destroy every readable file of a worktree holding unsaved work. Any
+    # stderr means git did not see the whole tree, so it is not "clean".
+    if r.returncode != 0 or r.stderr.strip():
         return "error"
     return "dirty" if r.stdout.strip() else "clean"
 
@@ -638,7 +804,13 @@ def consider(ctx, rule, parent, path):
             return "skip"
         if state == "error":
             ctx.bump(rule.name, "skip-git-error")
-            ctx.log(rule.name, path, "skip", reason="git status failed")
+            ctx.log(rule.name, path, "skip", reason="git status failed or could not read the whole tree")
+            return "skip"
+        if state == "unreadable":
+            # A skip, not a delete error: an error re-pages every run and the
+            # janitor can never fix it (round 4, finding 2).
+            ctx.bump(rule.name, "skip-unreadable")
+            ctx.log(rule.name, path, "skip", reason="target is not readable; the git gate cannot see inside")
             return "skip"
     if rule.open_files_gate and has_open_files(path):
         ctx.bump(rule.name, "skip-open-files")
@@ -651,6 +823,13 @@ def consider(ctx, rule, parent, path):
             ctx.log(rule.name, path, "skip", reason=verdict[1])
             return "skip"
     nbytes = tree_bytes(path)
+    # The founder asked for a tracker of what can be cleaned (2026-11-18). A clone
+    # that shares the app's blocks would show 1.5 GB each that no delete frees, so
+    # its du bytes go to a separate "shared" bucket and count 0 toward freed.
+    shared = bool(rule.shared_probe and is_dir and rule.shared_probe(ctx, path))
+    if shared:
+        ctx.shared_bytes[rule.name] = ctx.shared_bytes.get(rule.name, 0) + nbytes
+        nbytes_du, nbytes = nbytes, 0
     repo = parent_repo_of_worktree(path) if is_dir else None
     if is_dir and rule.wt_child:
         repo = parent_repo_of_worktree(os.path.join(path, rule.wt_child))
@@ -666,7 +845,8 @@ def consider(ctx, rule, parent, path):
     if ctx.mode != "apply":
         ctx.bump(rule.name, "delete", nbytes)
         ctx.targets.append((rule.name, path, nbytes))
-        ctx.log(rule.name, path, "would-delete", nbytes, reason="%.1fd old" % age_days)
+        ctx.log(rule.name, path, "would-delete", nbytes, reason="%.1fd old%s" % (
+            age_days, "; shares the app's blocks, %.2f GB du, ~0 freed" % (nbytes_du / 1e9) if shared else ""))
         return "would-delete"
     errors = []
 
@@ -689,7 +869,8 @@ def consider(ctx, rule, parent, path):
         return "error"
     ctx.bump(rule.name, "delete", nbytes)
     ctx.targets.append((rule.name, path, nbytes))
-    ctx.log(rule.name, path, "delete", nbytes, reason="%.1fd old" % age_days)
+    ctx.log(rule.name, path, "delete", nbytes, reason="%.1fd old%s" % (
+        age_days, "; shares the app's blocks, %.2f GB du, ~0 freed" % (nbytes_du / 1e9) if shared else ""))
     if repo:
         ctx.prune_repos.add(repo)
     return "delete"
@@ -939,7 +1120,8 @@ def run_janitor(mode, rules, args, trigger="run"):
                "free_gb_before": round(before, 2),
                "free_gb_after": round(after, 2), "targets": n_delete,
                "bytes": total_bytes, "errors": ctx.errors, "rules": ctx.counts,
-               "report_only_targets": n_report, "report_only_bytes": ctx.report_bytes}
+               "report_only_targets": n_report, "report_only_bytes": ctx.report_bytes,
+               "shared_bytes_not_freed": ctx.shared_bytes}
     _append_json(ctx.log_path, {"ts": _iso(time.time()), "summary": summary})
 
     if args.json:
@@ -955,6 +1137,9 @@ def run_janitor(mode, rules, args, trigger="run"):
                 extra = "  (report-only: would free %.2f GB)" % (ctx.report_bytes[name] / 1e9)
             print("  %-26s %s  %.2f GB%s" % (name, " ".join("%s=%d" % kv for kv in sorted(c.items())),
                                             ctx.bytes.get(name, 0) / 1e9, extra))
+        if ctx.shared_bytes:
+            print("  shared with an app (APFS clone, not counted as freed): %.2f GB du" % (
+                sum(ctx.shared_bytes.values()) / 1e9))
         if n_report:
             print("  report-only: %d targets, %.2f GB not deleted; switch is off in %s" % (
                 n_report, sum(ctx.report_bytes.values()) / 1e9, ctx.config_path))
