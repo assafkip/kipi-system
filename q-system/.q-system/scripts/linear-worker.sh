@@ -701,8 +701,26 @@ export DEFAULT_BRANCH
 # ledger, so the dedup could not collapse them and the operator got N tickets to
 # close by hand. Exactly one worker has to own it, and the registry already
 # DECLARES which one: `skeleton.linear_project`, returned as skeleton_project.
+# THE PRIVATE OVERLAY IS DEFAULTED HERE, AS IT IS IN kipi-dispatch.sh (ASK-5408).
+# Only the dispatcher exported KIPI_DISPATCH_TARGETS, so a hand-run worker (and
+# `kipi work --dry`) saw no pinned remote for any client repo and printed "290
+# issues REFUSED (remote,credentials,branch-protection)" for repos the dispatcher
+# enters. That false alarm happened twice (ASK-3636 was canceled as operator
+# error on 2026-11-01), which makes the instrument the defect. Same default path
+# and explicit-value-wins rule as the dispatcher, plus ONE extra clause: this
+# script's own fixture seam is KIPI_SKEL, which the dispatcher never uses. A test
+# that sets KIPI_SKEL or KIPI_DISPATCH_REGISTRY must never read the live overlay.
+dispatch_targets_default() {
+  if [ -n "${KIPI_DISPATCH_TARGETS+x}" ]; then
+    printf '%s' "$KIPI_DISPATCH_TARGETS"
+  elif [ -z "${KIPI_DISPATCH_REGISTRY:-}" ] && [ -z "${KIPI_SKEL:-}" ]; then
+    printf '%s' "$HOME/.config/kipi/dispatch-targets.json"
+  fi
+}
+KIPI_DISPATCH_TARGETS="$(dispatch_targets_default)"
+export KIPI_DISPATCH_TARGETS
 REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" \
-  OVERLAY="${KIPI_DISPATCH_TARGETS:-}" MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
+  OVERLAY="$KIPI_DISPATCH_TARGETS" MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
 import json, os, sys
 sys.path.insert(0, os.environ["MOD_DIR"])
 import linear_registry
