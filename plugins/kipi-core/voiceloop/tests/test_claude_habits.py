@@ -67,11 +67,12 @@ def test_each_habit_is_refused(rule, draft):
     assert rule in _rules(draft), f"{rule} did not fire on {draft!r}"
 
 
-@pytest.mark.parametrize("rule,draft", sorted(HABITS.items()))
-def test_each_refusal_carries_an_instead_line(rule, draft):
-    rows = [v for v in slop_shapes.check(draft) if v["rule"] == rule]
-    assert rows and "Write " in rows[0]["detail"], (
-        "the reviser acts on the instead text; a refusal without it is a wall")
+@pytest.mark.parametrize("rule", sorted(HABITS))
+def test_each_rule_has_a_real_instead_line(rule):
+    """Read the SHAPES tuple, not the detail string: check() always prefixes 'Write ',
+    so asserting on the detail passes for an empty instead (review round 1, PR 842)."""
+    instead = next(i for n, _p, i in slop_shapes.SHAPES if n == rule)
+    assert len(instead.split()) >= 5, f"{rule} instead text is too thin to act on"
 
 
 @pytest.mark.parametrize("text", LITERAL_SENSES)
@@ -91,6 +92,10 @@ def test_his_own_words_stay_unblocked(text):
 ])
 def test_totalizer_variants(variant):
     assert "slop-totalizer-crown" in _rules(variant)
+
+
+def test_single_superlative_covers_largest():
+    assert "slop-single-superlative" in _rules("It is the single largest cost.")
 
 
 def test_the_new_rules_are_all_registered():

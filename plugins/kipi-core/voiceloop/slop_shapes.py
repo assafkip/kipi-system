@@ -107,8 +107,14 @@ SHAPES = (
     # and writing examples. Deliberately NOT here: actually (28 hits in his corpus),
     # rather than (30), the real, genuinely, bottom line, not just. Blocking those
     # would block him, which is the standing scar of list gates. `worth it`, `worth
-    # keeping` and a plain `drives the car` stay legal: every pattern below needs the
-    # habit's own second word.
+    # keeping` and a plain `drives the car` stay legal because those patterns need the
+    # habit's own second word. The bare-word rules (load-bearing, cleanly,
+    # fundamentally) have no literal carve-out: the ticket chose to block the word,
+    # since he writes none of them (0 of 201 rows). Review round 1 (PR 842) measured
+    # the cost: 'applied cleanly' and a literal load-bearing wall are blocked too, and
+    # the cold-outreach template's 'worth flagging' line trips the preamble rule.
+    # slop-worth-preamble also overlaps voice-lint BANNED_PHRASES on 'it is worth
+    # noting'; the engine copy stays because only this path carries an instead line.
     (
         "slop-load-bearing",
         re.compile(r"(?i)\bload[- ]bearing\b"),
@@ -136,7 +142,7 @@ SHAPES = (
     ),
     (
         "slop-single-superlative",
-        re.compile(r"(?i)\bthe\s+single\s+(?:most|biggest|highest)\b"),
+        re.compile(r"(?i)\bthe\s+single\s+(?:most|biggest|highest|largest|greatest)\b"),
         "the thing without crowning it first. State the number or the cause and "
         "let the reader rank it.",
     ),
