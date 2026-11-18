@@ -443,20 +443,21 @@ def review(text, channel, runner=None, path=None, order=None, workers=None,
         with _futures.ThreadPoolExecutor(max_workers=limit) as pool:
             return list(pool.map(_one, batch))
 
-    # QUALITY FIRST, THEN STYLE ONLY IF QUALITY HELD (2026-08-13). A candidate that fails
-    # a quality row is dead: the loop will revise or discard it, and the style verdicts
-    # are spend on a body nobody will read.
+    # QUALITY FIRST, THEN STYLE. A FAIL NO LONGER SKIPS THE STYLE WAVE (ASK-5411).
+    # The 2026-08-13 cut skipped style after a quality FAIL to save spend on a "dead"
+    # candidate. Measured 2026-11-18 it was not dead: a deployment that demotes FAIL on
+    # an uncalibrated lane shipped it, and its critic part read 8 of 15 rows while the
+    # receipt said complete. A partial critique is never a verdict, and the reviser
+    # needs the style failures too or the next pass fixes one rule and breaks another.
     #
-    # The cut is between WAVES, never inside one. Every quality row still runs, so the
-    # founder's review keeps the full quality trail and the reviser gets every failure at
-    # once instead of one per attempt. Short-circuiting inside the quality wave would
-    # report one failure and hide four, which is the thing the trail exists to prevent.
+    # Every row in a wave runs, so the trail reports every failure at once.
     quality = [r for r in rows if (r.get("tier") or STYLE) == QUALITY]
     style = [r for r in rows if (r.get("tier") or STYLE) != QUALITY]
     results = _wave(quality)
-    # A refused row means the gate is shut for this job today: the style wave would be
-    # refused too, so asking is only more ledger lines.
-    if any(verdict in (FAIL, NOT_JUDGED) for _row, verdict, _detail, _fmt in results):
+    # A REFUSED row still skips style: the gate is shut for this job today, the style
+    # wave would be refused too, and `run` already leaves the candidate as GATED, never
+    # accepted. A caller reading the parts sees ran < of and `part_runs.assess` (ASK-4969) refuses it.
+    if any(verdict == NOT_JUDGED for _row, verdict, _detail, _fmt in results):
         return results
     return results + _wave(style)
 
@@ -581,6 +582,31 @@ def violations_for(failures):
 def run(text, channel, at=None, runner=None, reviser=None, regate=None,
         path=None, log_path=None, attempts=CRITIC_MAX_ATTEMPTS, notify=None,
         capture=None, **kwargs):
+    """`_run`, plus: every refused draft reaches the notify sink, once (ASK-5411).
+
+    Founder, 2026-11-18: "when the post fails, it lets me know and tries again, not
+    fails open." The retry is `_run`'s revision loop, bounded by `attempts`. Before
+    this, a draft discarded at the cap left only log rows, and the deployment's
+    channel never heard. One wrapper, not a notify at each of the seven return sites,
+    so a new refusal branch cannot forget to tell. The sink is the caller's: the
+    engine names no alert path of its own.
+    """
+    outcome = _run(text, channel, at=at, runner=runner, reviser=reviser, regate=regate,
+                   path=path, log_path=log_path, attempts=attempts, notify=notify,
+                   capture=capture, **kwargs)
+    if notify and outcome.status != ACCEPTED:
+        try:
+            notify("%s: critic refused the draft (%s) after %d attempt(s): %s" % (
+                channel, outcome.status, outcome.attempts,
+                "; ".join(outcome.reasons) or "no reason recorded"))
+        except Exception:                         # noqa: BLE001 - a sink is not a slot
+            pass
+    return outcome
+
+
+def _run(text, channel, at=None, runner=None, reviser=None, regate=None,
+         path=None, log_path=None, attempts=CRITIC_MAX_ATTEMPTS, notify=None,
+         capture=None, **kwargs):
     """Critique, revise, re-gate, re-critique. Returns an `Outcome`, never a hold.
 
     `regate(text) -> (repaired_text, blocking_violations)` is supplied by the caller and
