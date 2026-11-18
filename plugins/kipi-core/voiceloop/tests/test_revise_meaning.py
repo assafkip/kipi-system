@@ -106,7 +106,7 @@ def test_a_figure_rule_may_change_numbers_but_not_the_modals():
         _revise("It may drop 42 rows.", "It must drop 40 rows.", figure)
 
 
-def test_a_cut_may_remove_but_never_add_or_flip():
+def test_a_cut_may_remove_but_never_add_a_token():
     cut = [{"rule": "x-too-long", "detail": "too long"}]
     long = "The cache may expire. It retries only if the queue is empty."
     assert _revise(long, "The cache may expire.", cut) == "The cache may expire."
@@ -130,3 +130,74 @@ def test_a_bare_only_is_not_a_condition_and_contractions_are_modal_plus_negation
     found = meaning_check.changes("It won't run.", "It will run.")
     assert found == {"negations": ["-not"]}
     assert meaning_check.changes("It can't run.", "It cannot run.") == {}
+
+
+# ---- round 2 (PR #843 review): span-rewrite rules, magnitudes, modals, guards ----------
+
+SPAN_CASES = {
+    "marketer-ending": ("It can fail on a cold start. Can your team afford that?",
+                        "It can fail on a cold start. Nobody ships that and never checks."),
+    "voice-opener-echo": ("If the queue is empty it will retry. The job ends.",
+                          "The queue empties, then it retries. The job ends."),
+    "voicefp-sentence_mean": ("It will retry, and if it fails it will not stop.",
+                              "It retries. It fails. It keeps going."),
+    "source-shape": ("The job should not retry (ASK-12 fixed it).",
+                     "The job retries on failure, and a fix landed."),
+}
+
+
+@pytest.mark.parametrize("rule", sorted(SPAN_CASES))
+def test_a_span_rewrite_rule_is_not_refused_for_the_words_it_ordered_rewritten(rule):
+    original, revised = SPAN_CASES[rule]
+    calls = []
+    out = revise.revise(original, [{"rule": rule, "detail": "x"}],
+                        runner=lambda prompt: calls.append(prompt) or revised)
+    assert out == revised and len(calls) == 1
+
+
+def test_a_span_rewrite_rule_still_refuses_an_added_figure():
+    with pytest.raises(revise.MeaningRefused):
+        _revise("It ends. Can you afford it?", "It ends. It costs 40 hours.",
+                [{"rule": "marketer-ending", "detail": "x"}])
+
+
+def test_every_exempted_rule_name_is_a_rule_the_reviser_has_guidance_for():
+    for name in revise.SPAN_REWRITE_RULES | revise._NUMBER_RULES | revise.REWRITE_RULES:
+        assert name in revise.RULE_GUIDANCE, name
+
+
+def test_a_shortened_magnitude_is_the_same_figure():
+    assert meaning_check.changes("It cost $5 million.", "It cost $5M.") == {}
+    assert meaning_check.changes("5 million users", "5M users") == {}
+    assert meaning_check.changes("5 million users", "50 million users") != {}
+
+
+def test_hyphenated_word_numbers_are_figures():
+    assert meaning_check.changes("It took twenty-one days.", "It took 21 days.") == {}
+    assert meaning_check.changes("It took twenty-one days.", "It took twenty-one weeks.")
+
+
+def test_would_and_shall_are_modals():
+    assert meaning_check.changes("It would break.", "It will break.") == {
+        "modals": ["+will", "-would"]}
+    assert meaning_check.changes("It would not run.", "It runs.")["modals"] == ["-would"]
+
+
+def test_by_default_cannot_be_built_across_a_sentence_boundary():
+    assert meaning_check.changes("It was decided by. Default is off.",
+                                 "It was decided. Default is off.") == {}
+
+
+def test_known_limit_the_compare_ignores_position():
+    # Pinned, not endorsed: a moved token reads as intact. The docstring says so; this
+    # test fails the day someone adds an ordered compare, so the docstring gets updated.
+    assert meaning_check.changes("from 900 ms to 120 ms", "from 120 ms to 900 ms") == {}
+
+
+def test_an_old_injected_revise_without_the_new_class_does_not_mask_the_real_error():
+    import types
+    from voiceloop import gate_and_judge
+    old = types.ModuleType("revise")
+    assert gate_and_judge._meaning_refused(old) is not Exception
+    assert issubclass(gate_and_judge._meaning_refused(old), Exception)
+    assert gate_and_judge._meaning_refused(revise) is revise.MeaningRefused

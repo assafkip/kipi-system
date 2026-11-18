@@ -201,6 +201,21 @@ RULE_GUIDANCE = {
     "slash-command": "name the command in prose without the leading slash.",
 }
 
+#: Rules whose own guidance orders a SPAN of prose replaced (ASK-5428 round 2, PR #843
+#: review, major). A paraphrase keeps the meaning and not the token multiset: "Rewrite the
+#: LAST LINE only" deletes a question that carries "can" and writes a verdict that may carry
+#: "never"; "trim connectives" removes an "if". The small-word compare refused those correct
+#: fixes after two writer-tier calls, and `decide` then discarded the candidate, the same
+#: starvation `REWRITE_RULES` documents for x-too-long. For these rules the negation, modal
+#: and condition compare is skipped and removals are allowed; an ADDED figure is still
+#: refused. The cost, stated: drift of a small word inside a rewritten span is not caught by
+#: this check for these rules; the style gates re-judge the result. Derived from
+#: RULE_GUIDANCE keys so a renamed rule fails `test_every_exempted_rule_name_...`.
+SPAN_REWRITE_RULES = frozenset(
+    name for name in RULE_GUIDANCE
+    if name in ("marketer-ending", "voice-echo", "voice-opener-echo", "source-shape")
+    or name.startswith(("voicefp-", "voice-style-")))
+
 
 #: Who the post is attributed to inside the instruction, when the caller names nobody.
 #:
@@ -309,7 +324,8 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
     # cross-source judgment the writer needs, not the cheap comparison a critic does.
     #
     # Through the one chokepoint, not its own subprocess (PR #410 review, ASK-2008):
-    # this call is the expensive one, up to two per draft at the writer's tier, and
+    # this call is the expensive one, up to two per revision (the meaning retry, ASK-5428) and
+    # up to four per style loop, all at the writer's tier, and
     # its own `claude -p` wrote no usage row, so a per-bot spend report charged the
     # repair loop to nobody. run_model meters it and hands back the same bytes.
     # allow_opencode=False: the reviser REQUIRES an explicit writer tier (the two
@@ -329,8 +345,9 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
 
 
 #: Rules whose fix changes numbers by design; the figure gate re-judges the result.
-_NUMBER_RULES = frozenset({"figure-unsourced", "figure-in-post", "stats-citation",
-                           "substance-number"})
+#: Every name here is a key of RULE_GUIDANCE ("figure-in-post" was a guessed name that
+#: matched no producer, PR #843 review).
+_NUMBER_RULES = frozenset({"figure-unsourced", "stats-citation", "substance-number"})
 
 
 class MeaningRefused(Exception):
@@ -350,9 +367,10 @@ class MeaningRefused(Exception):
 
 def _meaning_changes(text, out, violations):
     rules = {v.get("rule") for v in violations if isinstance(v, dict)}
+    span = bool(rules & SPAN_REWRITE_RULES)
     return meaning_check.changes(
         text, out, skip_numbers=bool(rules & _NUMBER_RULES),
-        allow_removals=bool(rules & REWRITE_RULES))
+        allow_removals=bool(rules & REWRITE_RULES) or span, skip_small_words=span)
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
