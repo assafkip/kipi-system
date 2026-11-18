@@ -155,15 +155,19 @@ def finished_pr_gate(ctx, path):
             "%s#%s state %r" % (slug, m.group(3), state or "lookup failed"))
 
 
-def _unlock_tree(path):
+def _unlock_tree(path, top=True):
     """A review run left .claims dirs at mode 000 (2026-11-18): du and rmtree both
     hit Permission denied, which counted as an error and raised the alert. Only
     called on a target every other gate already passed for deletion."""
     # the target itself too: a mode-000 target errored on every run (review PR 841, finding 4)
-    try:
-        os.chmod(path, 0o700)
-    except OSError:
-        pass
+    # top=False for git-gated rules: git_state() read a mode-000 checkout as not-a-repo
+    # and passed, so unlocking AFTER the gate must never be what lets dirty work be deleted
+    # (review round 3, major).
+    if top:
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
     for root, dirs, _files in os.walk(path, followlinks=False):
         for d in dirs:
             full = os.path.join(root, d)
@@ -666,7 +670,7 @@ def consider(ctx, rule, parent, path):
         errors.append("%s: %s" % (p, exc[1]))
 
     if is_dir:
-        _unlock_tree(path)
+        _unlock_tree(path, top=not rule.git_gate)
         shutil.rmtree(path, onerror=onerror)
     else:
         try:

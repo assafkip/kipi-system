@@ -163,6 +163,21 @@ class ReviewScratch(unittest.TestCase):
         self.assertFalse(os.path.exists(d))
         self.assertEqual(json.loads(r.stdout).get("errors"), 0)
 
+    def test_git_gated_mode_000_checkout_is_not_unlocked_into_deletion(self):
+        # review round 3: a mode-000 worktree with work must stay an error, never a delete.
+        base = os.path.join(self.e.home, ".config", "kipi", "worktrees")
+        os.makedirs(base)
+        d = os.path.join(base, "wip")
+        git("worktree", "add", "-q", "--detach", d, "HEAD", cwd=self.e.repo)
+        with open(os.path.join(d, "unsaved.txt"), "w") as fh:
+            fh.write("work")
+        age(d, 24 * 40)
+        os.chmod(d, 0)
+        self.addCleanup(os.chmod, d, 0o700)
+        self.e.run("kipi-worktrees")
+        os.chmod(d, 0o700)
+        self.assertTrue(os.path.exists(os.path.join(d, "unsaved.txt")))
+
     def test_run_dir_held_by_a_live_process_is_kept(self):
         d = self.mk("run.Live1234", 30)
         self.e.run("review-scratch-runs", live=[os.path.join(d, "sub")])
