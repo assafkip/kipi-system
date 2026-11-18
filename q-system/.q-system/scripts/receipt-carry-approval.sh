@@ -137,16 +137,38 @@ receipt_paths_only() {
 # only main's files and the plugin.json version line had moved. delta_kind called that
 # `other`, so nothing picked it up.
 #
-# HOW IT TELLS "PR's own change unchanged": `git patch-id --stable` of the diff
-# (merge-base(reviewed, other-parent) -> reviewed) equals that of (other-parent -> head).
-# The second diff is taken on the FINAL tree, so a conflict resolution that edits a PR
-# file, or an added file, changes the id. Main's own files never enter either diff.
-# A moved plugin.json is excluded from both ids only when reviewed -> head changed
-# nothing in it but `"version"` lines; any other line there keeps it `other`.
+# HOW IT TELLS "PR's own change unchanged": by tree entries (mode + object id), never by a
+# patch hash. Review round 1 of the fix PR: `git patch-id --stable` ignores whitespace, so
+# a merge that re-indents a reviewed Python line hashed equal and would have carried an
+# approval onto code the reviewer never read. With P = the PR's own paths
+# (merge-base(reviewed, other) -> reviewed), both directions must hold:
+#   A) every path head differs from reviewed on is NOT in P and equals `other` (main's file)
+#   B) every path head differs from `other` on IS in P and equals reviewed (the reviewed bytes)
+# So a PR file edited, a file added, or a main change reverted all decline. A PR file that
+# main also touched declines too: that is a merge needing a reviewer, not a carry.
+# A moved .claude-plugin/plugin.json is exempt from A and B when, with "version" dropped,
+# its parsed JSON is equal at reviewed and head (the parse, not the layout: pr-restack.py's
+# json.dump reformats the file, which a line grep refused).
 # Unknown is not carriable: every failed read returns 1.
+_tree_entry() {  # _tree_entry <tree> <commit> <path>: "mode oid" or ABSENT
+  local e; e="$(git -C "$1" ls-tree "$2" -- "$3" 2>/dev/null)" || { echo UNREADABLE; return; }
+  [ -n "$e" ] || { echo ABSENT; return; }
+  printf '%s\n' "$e" | awk '{print $1, $3}'
+}
+_json_same_sans_version() {  # _json_same_sans_version <tree> <sha-a> <sha-b> <path>
+  python3 - "$@" <<'PY' 2>/dev/null
+import json, subprocess, sys
+tree, a, b, path = sys.argv[1:5]
+def load(c):
+    d = json.loads(subprocess.check_output(["git", "-C", tree, "show", f"{c}:{path}"]))
+    d.pop("version", None)
+    return d
+sys.exit(0 if load(a) == load(b) else 1)
+PY
+}
 merge_only() {
   local tree="$1" reviewed="$2" head="$3" ref="$4" rrev line other="" nparents=0 p
-  local base_old old_id new_id moved f ex=()
+  local base_old own moved f vpaths="" a b
   rrev="$(git -C "$tree" rev-parse --verify "$reviewed^{commit}" 2>/dev/null)" || return 1
   line="$(git -C "$tree" rev-list --parents -n 1 "$head" 2>/dev/null)" || return 1
   for p in $line; do
@@ -160,20 +182,35 @@ merge_only() {
   git -C "$tree" merge-base --is-ancestor "$other" "$ref" 2>/dev/null || return 1
   base_old="$(git -C "$tree" merge-base "$rrev" "$other" 2>/dev/null)" || return 1
   [ -n "$base_old" ] || return 1
+  own="$(git -C "$tree" diff --name-only --no-renames "$base_old" "$rrev" 2>/dev/null)" || return 1
+  [ -n "$own" ] || return 1   # nothing of the PR's own to hold equal: nothing proven
   moved="$(git -C "$tree" diff --name-only --no-renames "$rrev" "$head" -- ':(glob)**/.claude-plugin/plugin.json' 2>/dev/null)" || return 1
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    # Only "version" lines may differ (-U0 so no context line is mistaken for a change).
-    if git -C "$tree" diff -U0 --no-renames "$rrev" "$head" -- "$f" 2>/dev/null \
-         | grep -E '^[-+]' | grep -Ev '^(\+\+\+|---) ' | grep -Evq '^[-+][[:space:]]*"version"[[:space:]]*:'; then
-      return 1
-    fi
-    ex+=(":(exclude)$f")
+    _json_same_sans_version "$tree" "$rrev" "$head" "$f" || return 1
+    vpaths="$vpaths
+$f"
   done <<< "$moved"
-  old_id="$(git -C "$tree" diff --no-renames "$base_old" "$rrev" -- . "${ex[@]}" 2>/dev/null | git patch-id --stable | cut -d' ' -f1)"
-  new_id="$(git -C "$tree" diff --no-renames "$other" "$head" -- . "${ex[@]}" 2>/dev/null | git patch-id --stable | cut -d' ' -f1)"
-  # An empty id is an empty diff (or a git failure): nothing was proven, so decline.
-  [ -n "$old_id" ] && [ "$old_id" = "$new_id" ]
+  _in() { printf '%s\n' "$2" | grep -Fxq -- "$1"; }   # exact whole-line match
+  # A) head vs reviewed
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$f" = __FAIL__ ] && return 1   # a failed diff must not read as "no differing path"
+    _in "$f" "$vpaths" && continue
+    _in "$f" "$own" && return 1
+    a="$(_tree_entry "$tree" "$head" "$f")"; b="$(_tree_entry "$tree" "$other" "$f")"
+    [ "$a" != UNREADABLE ] && [ "$a" = "$b" ] || return 1
+  done < <(git -C "$tree" diff --name-only --no-renames "$rrev" "$head" 2>/dev/null || echo __FAIL__)
+  # B) head vs the main side
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$f" = __FAIL__ ] && return 1
+    _in "$f" "$vpaths" && continue
+    _in "$f" "$own" || return 1
+    a="$(_tree_entry "$tree" "$head" "$f")"; b="$(_tree_entry "$tree" "$rrev" "$f")"
+    [ "$a" != UNREADABLE ] && [ "$a" = "$b" ] || return 1
+  done < <(git -C "$tree" diff --name-only --no-renames "$other" "$head" 2>/dev/null || echo __FAIL__)
+  return 0
 }
 
 # delta_kind <tree> <reviewed-sha> <head-sha> [base-ref]  ->  same | receipt-only | merge-only | other

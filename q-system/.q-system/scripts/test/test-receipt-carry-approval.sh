@@ -123,6 +123,13 @@ MERGE_OK="$(mkmerge ok 1 true)"
 MERGE_EVIL_PR="$(mkmerge evilpr 1 'echo SNEAK >> "$MR/pr.txt"')"
 MERGE_EVIL_JSON="$(mkmerge eviljson 2 true)"
 MERGE_EVIL_NEWFILE="$(mkmerge evilnew 1 'echo hook > "$MR/pkg/new-hook.sh"')"
+# Review round 1 of the fix PR: three more heads. NOPJ keeps the PR's own plugin.json (an
+# empty exclude list, which died under set -u on /bin/bash 3.2). WS re-indents a PR line,
+# which patch-id --stable cannot see. COMPACT rewrites plugin.json with another layout
+# (what pr-restack.py's json.dump does) and must still carry.
+MERGE_NOPJ="$(mkmerge nopj 1 'git -C "$MR" checkout -q "$MREV" -- pkg/.claude-plugin/plugin.json')"
+MERGE_WS="$(mkmerge ws 1 'perl -i -pe "s/^/ /g if \$. == 3" "$MR/pr.txt"')"
+MERGE_COMPACT="$(mkmerge compact 1 'printf "{\"name\":\"p\",\"version\":\"1.0.4\",\"x\":1}\n" > "$PJ"')"
 m checkout -q -B side "$MREV"; echo s > "$MR/side.txt"; m add -A; m commit -q -m "side, never on main"; SIDE="$(m rev-parse HEAD)"
 m checkout -q -B offmain "$MREV"; m merge -q --no-ff -m "merge a side branch" "$SIDE" >/dev/null 2>&1; MERGE_OFFMAIN="$(m rev-parse HEAD)"
 m checkout -q -B plain "$MREV"; echo more >> "$MR/pr.txt"; m commit -q -am "plain code commit"; PLAIN="$(m rev-parse HEAD)"
@@ -130,6 +137,10 @@ check_eq "main merged in, PR diff unchanged, version moved: merge-only" "merge-o
 check_eq "a merge that edits a PR file is NOT carriable"             "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_PR" main)"
 check_eq "a merge that changes plugin.json beyond the version is NOT" "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_JSON" main)"
 check_eq "a merge that adds a new file is NOT carriable"             "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_NEWFILE" main)"
+check_eq "a merge touching no plugin.json carries (empty exclude list, /bin/bash 3.2)" "merge-only" \
+  "$(RECEIPT_CARRY_BASE_REF=main /bin/bash "$SCRIPT" --delta-kind "$MR" "$MREV" "$MERGE_NOPJ" 2>/dev/null)"
+check_eq "re-indenting a PR line is NOT carriable (patch-id would call it equal)" "other" "$(delta_kind "$MR" "$MREV" "$MERGE_WS" main)"
+check_eq "plugin.json in another layout, same fields, still carries" "merge-only" "$(delta_kind "$MR" "$MREV" "$MERGE_COMPACT" main)"
 check_eq "a merge of a branch that is not on main is NOT"            "other" "$(delta_kind "$MR" "$MREV" "$MERGE_OFFMAIN" main)"
 check_eq "a plain code commit is NOT carriable"                      "other" "$(delta_kind "$MR" "$MREV" "$PLAIN" main)"
 check_eq "no ref to judge 'on main' against: NOT carriable"          "other" "$(delta_kind "$MR" "$MREV" "$MERGE_OK" no-such-ref)"
@@ -429,9 +440,10 @@ PY
   mutate "delta guard removed"        's/\[ "\$kind" = "receipt-only" \]/true/'
   mutate "approval guard removed"     's/\[ "\$state" = "success" \]/true/'
   mutate "no-overwrite guard removed" 's/\[ "\$head_state" = "none" \]/true/'
-  mutate "merge-only: PR diff equality removed"   's/\[ -n "\$old_id" \] \&\& \[ "\$old_id" = "\$new_id" \]/true/'
+  mutate "merge-only: main-side equality removed (A)" 's/b="\$(_tree_entry "\$tree" "\$other" "\$f")"/b="$a"/'
+  mutate "merge-only: reviewed-bytes equality removed (B)" 's/b="\$(_tree_entry "\$tree" "\$rrev" "\$f")"/b="$a"/'
   mutate "merge-only: on-main check removed"      's/git -C "\$tree" merge-base --is-ancestor "\$other" "\$ref" 2>\/dev\/null || return 1/true/'
-  mutate "merge-only: version-only check removed" 's/| grep -Evq .*; then$/| grep -Eq NOMATCHXX; then/'
+  mutate "merge-only: plugin.json JSON check removed" 's/_json_same_sans_version "\$tree" "\$rrev" "\$head" "\$f" || return 1/true/'
 fi
 
 # ASK-362, PR #431 review major: carry_post is the SECOND writer of
