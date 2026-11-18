@@ -35,15 +35,16 @@
 #   KIPI_GATE_PYTHON. sudo's env_reset drops them, so the founder's run uses the defaults.
 set -uo pipefail
 
-# BASE is the ASK-4283 gate that is live since 2026-11-10; PATCHED is the ASK-4681 source beside this file.
-BASE_SHA256="${KIPI_GATE_BASE_SHA256:-bd181154df2c7ff46250473c9af262d618e3222352f2fff93c9a2ee66330081b}"
-PATCHED_SHA256="c1daf50d640757731c42d3351bb41b282071a3ce35114b90523178e6bc172654"
+# BASE is the ASK-4681 gate live since 2026-11-13; PATCHED is the ASK-5448 source beside this file.
+BASE_SHA256="${KIPI_GATE_BASE_SHA256:-c1daf50d640757731c42d3351bb41b282071a3ce35114b90523178e6bc172654}"
+PATCHED_SHA256="ff679473923ee2d55282927530d6bacc6391594db021161d6eb07584819b168b"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/rule_gate.py"
-# Both reproducers run: the ASK-4283 one (tracked worktree rules survive) and the ASK-4681 one
-# (location-independent verdicts, Stop judges only its own tree, a split is not a change).
+# Three reproducers run: the ASK-4283 one (tracked worktree rules survive), the ASK-4681 one
+# (location-independent verdicts, Stop judges only its own tree, a split is not a change), and
+# the ASK-5448 one (identical synced copies in nested repos are one rule).
 if [ -n "${KIPI_GATE_REPRODUCER:-}" ]; then REPRO=("$KIPI_GATE_REPRODUCER")
-else REPRO=("$HERE/test_rule_gate_worktree_baseline.py" "$HERE/test_rule_gate_tree_scope.py"); fi
+else REPRO=("$HERE/test_rule_gate_worktree_baseline.py" "$HERE/test_rule_gate_tree_scope.py" "$HERE/test_rule_gate_shared_rule_id.py"); fi
 NO_CHOWN="${KIPI_GATE_NO_CHOWN:-0}"
 
 step() { printf '%-3s %s\n' "$1" "$2"; }
