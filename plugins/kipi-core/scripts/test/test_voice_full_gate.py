@@ -222,8 +222,12 @@ def test_live_forced_authorship_outage_refused():
     env = _live_env()
     # Force the declared LUAR env to refuse to build: it demands this much free disk first.
     env["KIPI_LUAR_MIN_FREE_GB"] = "1000000"
-    env["KIPI_LUAR_CACHE_DIR"] = "/nonexistent-kipi-luar-cache"
-    clean = "We shipped the parser on Tuesday. It broke on the first real file."
+    # Over the 20-word linkedin floor, so no hard row can be what refuses. why: the first
+    # version used 13 words, and substance-fragment refused it alongside the outage, so the
+    # test passed for a reason other than the one it names.
+    clean = ("We shipped the parser on Tuesday. It broke on the first real file, because the "
+             "vendor sends dates in two formats and we only tested one of them.")
     v = _gate().check(clean, "linkedin", engine_root=root, env=env)
     assert not v.ok
+    assert v.verdict == "OUTAGE" and not v.hard, (v.hard, v.reasons)
     assert v.parts.get("authorship", {}).get("ran") == 0, (v.parts, v.reasons)
