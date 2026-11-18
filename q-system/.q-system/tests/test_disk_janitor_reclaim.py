@@ -212,6 +212,10 @@ class ReviewScratch(unittest.TestCase):
         self.assertTrue(os.path.exists(d))
 
 
+# Birth time, F_LOG2PHYS_EXT and `cp -c` are macOS/APFS only; the janitor runs on
+# the Mac mini, and CI is Linux (verify run 44414270275: no st_birthtime). On a
+# platform without birth time the gate keeps every clone (skip-procs-unknown).
+@unittest.skipUnless(sys.platform == "darwin", "APFS clone mechanics are macOS only")
 class ChromeCodeSignClones(unittest.TestCase):
     """ASK-3976. Chrome makes X/<bundle-id>.code_sign_clone/code_sign_clone.<rand>
     at every launch and leaks it when the launch is killed. The old rule targeted
