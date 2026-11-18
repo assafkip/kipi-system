@@ -10,10 +10,10 @@ the whole style wave, the critic part reported 8 of 15 rows, and the receipt sti
 
 - `review` judges every row even when a quality row FAILS (no wave skip on a FAIL).
 - `run` revises up to its attempt cap, every pass judges every row, and a draft that
-  still fails at the cap is refused with the failed rows named AND the notify sink told.
+  still fails at the cap is refused with the failed rows named (the lane alerts on it).
 
-The "a partial run never yields complete" rule itself is `voiceloop.part_runs`
-(ASK-4969), pinned by `test_part_runs.py`. This file pins only that the critic stops
+The "a partial run never yields complete" rule itself is ASK-4969's shared
+partial-run check, on its own branch. This file pins only that the critic stops
 producing the partial run.
 
 Judge, reviser and regate are stubs; no model is called; every path is a tmp_path.
@@ -59,7 +59,7 @@ def test_a_quality_FAIL_still_judges_every_style_row(tmp_path):
     assert [v for _r, v, _d, _f in res] == [critic.FAIL, critic.PASS, critic.PASS]
 
 
-def test_a_draft_that_keeps_failing_retries_to_the_cap_then_is_refused_and_told(tmp_path):
+def test_a_draft_that_keeps_failing_retries_to_the_cap_then_is_refused_with_reasons(tmp_path):
     told = []
     revised = []
 
@@ -77,8 +77,22 @@ def test_a_draft_that_keeps_failing_retries_to_the_cap_then_is_refused_and_told(
     # Every pass judged all 3 rows: 3 passes x 3 rows of critique.
     crit = [r for r in out.rows if r["stage"] == critic.STAGE_CRITIQUE]
     assert len(crit) == 9, "a revision pass skipped rows (%d critique rows)" % len(crit)
-    assert len(told) == 1, "the refusal never reached the notify sink: %r" % told
-    assert "refused" in told[0] and "maps-to-a-buyer-problem" in told[0]
+    # One candidate's discard is routine (the slot refills), so the engine sends no
+    # "refused" alert per candidate (PR #840 review). The lane alerts on the POST.
+    assert told == [], "a per-candidate refusal reached the notify sink: %r" % told
+
+
+def test_a_raising_sink_on_an_empty_checklist_does_not_kill_the_run(tmp_path):
+    empty = tmp_path / "empty.json"
+    empty.write_text("[]", encoding="utf-8")
+
+    def sink(_msg):
+        raise RuntimeError("slack timed out")
+
+    out = critic.run(DRAFT, "linkedin", path=str(empty),
+                     log_path=str(tmp_path / "log.jsonl"), runner=_runner,
+                     notify=sink, at="2026-11-18T00:00:00Z")
+    assert out.status == critic.ACCEPTED
 
 
 def test_CONTROL_an_accepted_draft_is_not_reported_as_refused(tmp_path):

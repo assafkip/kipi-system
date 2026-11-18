@@ -411,9 +411,10 @@ def review(text, channel, runner=None, path=None, order=None, workers=None,
 
     CONCURRENT, bounded at `CRITIC_WORKERS` (2026-08-13). The rows are independent
     judgments by construction, so running them together changes no verdict; it only stops
-    13 serial model calls from being the wall clock. THE RETURNED ORDER IS ALWAYS ROW
-    ORDER, never completion order, because the log's readability and the failed-first
-    re-critique both depend on it -- `executor.map` preserves input order.
+    13 serial model calls from being the wall clock. THE RETURNED ORDER IS WAVE ORDER,
+    then row order inside a wave (every quality row, then every style row), never
+    completion order: the log's readability and the failed-first re-critique depend on
+    it, and `executor.map` preserves input order.
 
     NO EARLY EXIT on the first failure, deliberately. The full trail IS the product: the
     founder's review reads which rules a draft failed, and a short-circuited run would
@@ -456,7 +457,8 @@ def review(text, channel, runner=None, path=None, order=None, workers=None,
     results = _wave(quality)
     # A REFUSED row still skips style: the gate is shut for this job today, the style
     # wave would be refused too, and `run` already leaves the candidate as GATED, never
-    # accepted. A caller reading the parts sees ran < of and `part_runs.assess` (ASK-4969) refuses it.
+    # accepted. A DIRECT `review()` caller gets a short list here and must compare rows
+    # returned to rows counted; that rule is ASK-4969's shared partial-run check.
     if any(verdict == NOT_JUDGED for _row, verdict, _detail, _fmt in results):
         return results
     return results + _wave(style)
@@ -582,32 +584,14 @@ def violations_for(failures):
 def run(text, channel, at=None, runner=None, reviser=None, regate=None,
         path=None, log_path=None, attempts=CRITIC_MAX_ATTEMPTS, notify=None,
         capture=None, **kwargs):
-    """`_run`, plus: every refused draft reaches the notify sink, once (ASK-5411).
-
-    Founder, 2026-11-18: "when the post fails, it lets me know and tries again, not
-    fails open." The retry is `_run`'s revision loop, bounded by `attempts`. Before
-    this, a draft discarded at the cap left only log rows, and the deployment's
-    channel never heard. One wrapper, not a notify at each of the seven return sites,
-    so a new refusal branch cannot forget to tell. The sink is the caller's: the
-    engine names no alert path of its own.
-    """
-    outcome = _run(text, channel, at=at, runner=runner, reviser=reviser, regate=regate,
-                   path=path, log_path=log_path, attempts=attempts, notify=notify,
-                   capture=capture, **kwargs)
-    if notify and outcome.status != ACCEPTED:
-        try:
-            notify("%s: critic refused the draft (%s) after %d attempt(s): %s" % (
-                channel, outcome.status, outcome.attempts,
-                "; ".join(outcome.reasons) or "no reason recorded"))
-        except Exception:                         # noqa: BLE001 - a sink is not a slot
-            pass
-    return outcome
-
-
-def _run(text, channel, at=None, runner=None, reviser=None, regate=None,
-         path=None, log_path=None, attempts=CRITIC_MAX_ATTEMPTS, notify=None,
-         capture=None, **kwargs):
     """Critique, revise, re-gate, re-critique. Returns an `Outcome`, never a hold.
+
+    NO "REFUSED" ALERT HERE, deliberately (ASK-5411, PR #840 review). This judges ONE
+    candidate, and a discard is routine: the slot refills from the next candidate. An
+    alert per refused candidate told the founder "refused" for a slot that shipped, and
+    re-alerted a shut model gate per candidate, which `model_gate` already alerts once
+    per job per day. "Lets me know" belongs to the layer that knows the POST failed
+    after every candidate and retry: the deployment's lane, which reads `reasons`.
 
     `regate(text) -> (repaired_text, blocking_violations)` is supplied by the caller and
     is `decide.assess` with the slot's own arguments. It is required for revision:
@@ -742,8 +726,13 @@ def _run(text, channel, at=None, runner=None, reviser=None, regate=None,
                              f"{path}; nothing was judged",
                              1, STAGE_CHECKLIST))
         if notify:
-            notify(f"{channel}: critic checklist empty or unreadable; draft shipped "
-                   f"with no critique")
+            # Wrapped like the capture recovery: a Slack timeout in the sink must not
+            # cost the run (PR #840 review).
+            try:
+                notify(f"{channel}: critic checklist empty or unreadable; draft shipped "
+                       f"with no critique")
+            except Exception:                     # noqa: BLE001
+                pass
         _flush()
         return Outcome(ACCEPTED, text, log_rows)
     order = None
