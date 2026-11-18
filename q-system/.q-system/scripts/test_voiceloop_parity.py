@@ -27,7 +27,7 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKELETON = os.path.abspath(os.path.join(HERE, "..", ".."))
+SKELETON = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 ENGINE_REL = "plugins/kipi-core/voiceloop"
 CONSULTING = os.environ.get(
     "KIPI_PARITY_CONSULTING_REPO", os.path.expanduser("~/projects/consulting")
