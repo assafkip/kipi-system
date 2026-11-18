@@ -94,6 +94,50 @@ check_eq "the same sha is nothing to carry"           "same"         "$(delta_ki
 check_eq "an unrelated line of history is NOT carriable" "other"     "$(delta_kind "$REPO" "$REVIEWED" "$OTHER")"
 check_eq "a sha git cannot resolve is NOT carriable"  "other"        "$(delta_kind "$REPO" "$REVIEWED" "0000000000000000000000000000000000000000")"
 
+# ---------------------------------------- merge from main (PR #839, 2026-11-18)
+# PR #839 was approved at 060b3038, then main bumped kipi-core plugin.json and the PR
+# went CONFLICTING. The merge head 55e215b0 carried no verdict, the 3-round cap refused
+# a 4th, and `delta_kind` called the merge `other`: nothing could move the approval.
+# The PR's own diff was byte-identical (patch-id e9236439...) and only the version line
+# moved. Red before the merge-only kind existed: every "merge-only" below read `other`.
+echo "merge from main (the PR's own diff must not move)"
+MR="$TMP/mrepo"; git init -q -b main "$MR"
+m() { git -C "$MR" -c user.name=t -c user.email=t@t.invalid "$@"; }
+PJ="$MR/pkg/.claude-plugin/plugin.json"
+mkdir -p "$MR/pkg/.claude-plugin"
+mkjson() { printf '{\n  "name": "p",\n  "version": "%s",\n  "x": %s\n}\n' "$1" "${2:-1}" > "$PJ"; }
+mkjson 1.0.1
+seq 1 30 > "$MR/pr.txt"; seq 1 30 > "$MR/mainfile.txt"
+m add -A; m commit -q -m base
+m checkout -q -b pr
+mkjson 1.0.2; perl -i -pe 's/.*/PR LINE/ if $. == 3' "$MR/pr.txt"
+m commit -q -am "pr change"; MREV="$(m rev-parse HEAD)"
+m checkout -q main
+mkjson 1.0.3; perl -i -pe 's/.*/MAIN LINE/ if $. == 20' "$MR/mainfile.txt"
+m commit -q -am "main moves"; MTIP="$(m rev-parse HEAD)"
+mkmerge() {  # mkmerge <branch> <json-x> <extra-shell>: merge main into pr, version resolved to 1.0.4
+  m checkout -q -B "$1" "$MREV"; m merge -q --no-commit "$MTIP" >/dev/null 2>&1 || true
+  mkjson 1.0.4 "$2"; eval "$3"; m add -A; m commit -q -m "merge main"; m rev-parse HEAD
+}
+MERGE_OK="$(mkmerge ok 1 true)"
+MERGE_EVIL_PR="$(mkmerge evilpr 1 'echo SNEAK >> "$MR/pr.txt"')"
+MERGE_EVIL_JSON="$(mkmerge eviljson 2 true)"
+MERGE_EVIL_NEWFILE="$(mkmerge evilnew 1 'echo hook > "$MR/pkg/new-hook.sh"')"
+m checkout -q -B side "$MREV"; echo s > "$MR/side.txt"; m add -A; m commit -q -m "side, never on main"; SIDE="$(m rev-parse HEAD)"
+m checkout -q -B offmain "$MREV"; m merge -q --no-ff -m "merge a side branch" "$SIDE" >/dev/null 2>&1; MERGE_OFFMAIN="$(m rev-parse HEAD)"
+m checkout -q -B plain "$MREV"; echo more >> "$MR/pr.txt"; m commit -q -am "plain code commit"; PLAIN="$(m rev-parse HEAD)"
+check_eq "main merged in, PR diff unchanged, version moved: merge-only" "merge-only" "$(delta_kind "$MR" "$MREV" "$MERGE_OK" main)"
+check_eq "a merge that edits a PR file is NOT carriable"             "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_PR" main)"
+check_eq "a merge that changes plugin.json beyond the version is NOT" "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_JSON" main)"
+check_eq "a merge that adds a new file is NOT carriable"             "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_NEWFILE" main)"
+check_eq "a merge of a branch that is not on main is NOT"            "other" "$(delta_kind "$MR" "$MREV" "$MERGE_OFFMAIN" main)"
+check_eq "a plain code commit is NOT carriable"                      "other" "$(delta_kind "$MR" "$MREV" "$PLAIN" main)"
+check_eq "no ref to judge 'on main' against: NOT carriable"          "other" "$(delta_kind "$MR" "$MREV" "$MERGE_OK" no-such-ref)"
+check_eq "--delta-kind answers merge-only too (RECEIPT_CARRY_BASE_REF)" "merge-only" \
+  "$(RECEIPT_CARRY_BASE_REF=main bash "$SCRIPT" --delta-kind "$MR" "$MREV" "$MERGE_OK" 2>/dev/null)"
+check_eq "converge's exact-match on receipt-only still reads a merge as not a receipt" "no" \
+  "$([ "$(RECEIPT_CARRY_BASE_REF=main bash "$SCRIPT" --delta-kind "$MR" "$MREV" "$MERGE_OK" 2>/dev/null)" = "receipt-only" ] && echo yes || echo no)"
+
 # ---------------------------------------- receipt fragments (ASK-3829, PR #621 round 2)
 # A close now writes its receipt as one new file under .prd-os/receipts.d/. This rule
 # accepted the ledger file only, so a fragment read as unreviewed code and converge
@@ -385,6 +429,9 @@ PY
   mutate "delta guard removed"        's/\[ "\$kind" = "receipt-only" \]/true/'
   mutate "approval guard removed"     's/\[ "\$state" = "success" \]/true/'
   mutate "no-overwrite guard removed" 's/\[ "\$head_state" = "none" \]/true/'
+  mutate "merge-only: PR diff equality removed"   's/\[ -n "\$old_id" \] \&\& \[ "\$old_id" = "\$new_id" \]/true/'
+  mutate "merge-only: on-main check removed"      's/git -C "\$tree" merge-base --is-ancestor "\$other" "\$ref" 2>\/dev\/null || return 1/true/'
+  mutate "merge-only: version-only check removed" 's/| grep -Evq .*; then$/| grep -Eq NOMATCHXX; then/'
 fi
 
 # ASK-362, PR #431 review major: carry_post is the SECOND writer of

@@ -126,14 +126,69 @@ receipt_paths_only() {
   [ "$n" -gt 0 ]
 }
 
-# delta_kind <tree> <reviewed-sha> <head-sha>  ->  same | receipt-only | other
-# Every failure to answer is `other`: unknown is not carriable.
+# merge_only <tree> <reviewed-sha> <head-sha> <base-ref>: 0 when <head-sha> is a two-parent
+# merge of <reviewed-sha> with a commit already on <base-ref>, and the PR's OWN change
+# (its net diff against its base) is the same before and after the merge.
+#
+# WHY (PR #839, ASK-4969, 2026-11-18). Approved at 060b3038 with checks green; main then
+# bumped the kipi-core plugin.json version, the PR went CONFLICTING, and the merge-from-
+# main head 55e215b0 carried no verdict. kipi/reviewer-approved is per sha and the review
+# cap (3) was spent, so the PR could not move. The PR's own files were byte-identical:
+# only main's files and the plugin.json version line had moved. delta_kind called that
+# `other`, so nothing picked it up.
+#
+# HOW IT TELLS "PR's own change unchanged": `git patch-id --stable` of the diff
+# (merge-base(reviewed, other-parent) -> reviewed) equals that of (other-parent -> head).
+# The second diff is taken on the FINAL tree, so a conflict resolution that edits a PR
+# file, or an added file, changes the id. Main's own files never enter either diff.
+# A moved plugin.json is excluded from both ids only when reviewed -> head changed
+# nothing in it but `"version"` lines; any other line there keeps it `other`.
+# Unknown is not carriable: every failed read returns 1.
+merge_only() {
+  local tree="$1" reviewed="$2" head="$3" ref="$4" rrev line other="" nparents=0 p
+  local base_old old_id new_id moved f ex=()
+  rrev="$(git -C "$tree" rev-parse --verify "$reviewed^{commit}" 2>/dev/null)" || return 1
+  line="$(git -C "$tree" rev-list --parents -n 1 "$head" 2>/dev/null)" || return 1
+  for p in $line; do
+    nparents=$((nparents + 1))
+    [ "$nparents" -gt 1 ] && [ "$p" != "$rrev" ] && other="$p"
+  done
+  # head + exactly two parents, one of them the reviewed sha, the other a different commit.
+  [ "$nparents" -eq 3 ] && [ -n "$other" ] || return 1
+  case " $line " in *" $rrev "*) ;; *) return 1 ;; esac
+  # The merged-in side must already be on main. A side branch is code no reviewer read.
+  git -C "$tree" merge-base --is-ancestor "$other" "$ref" 2>/dev/null || return 1
+  base_old="$(git -C "$tree" merge-base "$rrev" "$other" 2>/dev/null)" || return 1
+  [ -n "$base_old" ] || return 1
+  moved="$(git -C "$tree" diff --name-only --no-renames "$rrev" "$head" -- ':(glob)**/.claude-plugin/plugin.json' 2>/dev/null)" || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # Only "version" lines may differ (-U0 so no context line is mistaken for a change).
+    if git -C "$tree" diff -U0 --no-renames "$rrev" "$head" -- "$f" 2>/dev/null \
+         | grep -E '^[-+]' | grep -Ev '^(\+\+\+|---) ' | grep -Evq '^[-+][[:space:]]*"version"[[:space:]]*:'; then
+      return 1
+    fi
+    ex+=(":(exclude)$f")
+  done <<< "$moved"
+  old_id="$(git -C "$tree" diff --no-renames "$base_old" "$rrev" -- . "${ex[@]}" 2>/dev/null | git patch-id --stable | cut -d' ' -f1)"
+  new_id="$(git -C "$tree" diff --no-renames "$other" "$head" -- . "${ex[@]}" 2>/dev/null | git patch-id --stable | cut -d' ' -f1)"
+  # An empty id is an empty diff (or a git failure): nothing was proven, so decline.
+  [ -n "$old_id" ] && [ "$old_id" = "$new_id" ]
+}
+
+# delta_kind <tree> <reviewed-sha> <head-sha> [base-ref]  ->  same | receipt-only | merge-only | other
+# base-ref defaults to $RECEIPT_CARRY_BASE_REF, then origin/main. Only merge-only reads it.
+# Every failure to answer is `other`: unknown is not carriable. converge's
+# receipt_only_ahead matches "receipt-only" exactly, so a merge-only head is never
+# pushed as a receipt; only the carry below accepts it.
 delta_kind() {
-  local tree="$1" reviewed="$2" head="$3" changes
+  local tree="$1" reviewed="$2" head="$3" ref="${4:-${RECEIPT_CARRY_BASE_REF:-origin/main}}" changes
   [ "$reviewed" = "$head" ] && { echo same; return 0; }
   git -C "$tree" merge-base --is-ancestor "$reviewed" "$head" 2>/dev/null || { echo other; return 0; }
   changes="$(git -C "$tree" diff --name-status --no-renames "$reviewed" "$head" 2>/dev/null)" || { echo other; return 0; }
-  if printf '%s\n' "$changes" | receipt_paths_only; then echo receipt-only; else echo other; fi
+  if printf '%s\n' "$changes" | receipt_paths_only; then echo receipt-only
+  elif merge_only "$tree" "$reviewed" "$head" "$ref"; then echo merge-only
+  else echo other; fi
 }
 
 read_statuses() {  # read_statuses <repo-path> <sha>
@@ -184,8 +239,8 @@ main() {
 
   local kind payload verdict state desc head_payload head_state
   kind="$(delta_kind "$tree" "$reviewed" "$head")"
-  if ! [ "$kind" = "receipt-only" ]; then
-    echo "carry: not carrying to $head -- beyond $reviewed it is '$kind', and only a receipt-only delta carries"
+  if ! { [ "$kind" = "receipt-only" ] || [ "$kind" = "merge-only" ]; }; then
+    echo "carry: not carrying to $head -- beyond $reviewed it is '$kind', and only a receipt-only or merge-only delta carries"
     exit "$EXIT_DECLINED"
   fi
 
@@ -211,7 +266,7 @@ main() {
     exit "$EXIT_DECLINED"
   fi
 
-  desc="$(printf '%.140s' "$CARRY_PREFIX$(printf '%.12s' "$reviewed") (receipt-only delta): $desc")"
+  desc="$(printf '%.140s' "$CARRY_PREFIX$(printf '%.12s' "$reviewed") ($kind delta): $desc")"
   if ! carry_post "$repo" "$head" "$desc" >/dev/null; then
     echo "carry: the status post on $head FAILED; the approval is still only on $reviewed" >&2
     exit 1
