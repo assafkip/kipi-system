@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import os
 
-from . import prompt_render
+from . import meaning_check, prompt_render
 
 TIMEOUT_SECONDS = 120
 
@@ -328,22 +328,64 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
     return out
 
 
+#: Rules whose fix changes numbers by design; the figure gate re-judges the result.
+_NUMBER_RULES = frozenset({"figure-unsourced", "figure-in-post", "stats-citation",
+                           "substance-number"})
+
+
+class MeaningRefused(Exception):
+    """A revision changed a number, negation, modal or condition. Never a silent pass.
+
+    An `Exception` on purpose: the decide ladder ("regenerator raised"), the critic
+    ("reviser raised") and the editor revise already turn an exception into a discard
+    whose reason carries `str(exc)`, so the changed tokens land in every trail without
+    a new reader. `gate_and_judge`'s style revise caught only `GateRefused` and gets its
+    own catch. `changes` is the dict from `meaning_check.changes`.
+    """
+
+    def __init__(self, changes):
+        self.changes = changes
+        super().__init__("revision changed meaning (%s)" % meaning_check.describe(changes))
+
+
+def _meaning_changes(text, out, violations):
+    rules = {v.get("rule") for v in violations if isinstance(v, dict)}
+    return meaning_check.changes(
+        text, out, skip_numbers=bool(rules & _NUMBER_RULES),
+        allow_removals=bool(rules & REWRITE_RULES))
+
+
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
            model=None, author=None):
     """Return the revised post, or None. None is a discard upstream, never a hold.
 
     Raises `prompt_render.GateRefused` when the model gate refused the call: that is
     not an empty revision, and a caller must not report it as one.
+
+    Raises `MeaningRefused` when the revision changed a number, negation, modal or
+    condition word of the draft (ASK-5428). The model gets ONE retry with the changed
+    tokens named; a second drift is the refusal. Founder ruling ASK-5411: a failed check
+    lets him know and tries again, it does not fail open.
     """
-    out = _run_prompt(build_prompt(text, violations, author=author), claude_bin, timeout,
-                      runner, model=model)
-    out = prompt_render.strip_preamble(out or "")
-    if not out:
-        return None
-    # A model that echoed the prompt scaffolding back is a failure, not a revision.
-    if "FAILED CHECKS" in out or "POST:" in out:
-        return None
-    return out
+    prompt = build_prompt(text, violations, author=author)
+    for attempt in (1, 2):
+        out = _run_prompt(prompt, claude_bin, timeout, runner, model=model)
+        out = prompt_render.strip_preamble(out or "")
+        if not out:
+            return None
+        # A model that echoed the prompt scaffolding back is a failure, not a revision.
+        if "FAILED CHECKS" in out or "POST:" in out:
+            return None
+        found = _meaning_changes(text, out, violations)
+        if not found:
+            return out
+        if attempt == 2:
+            raise MeaningRefused(found)
+        prompt += ("\nYOUR LAST ANSWER CHANGED THE MEANING (%s). Numbers, units, "
+                   "negations (not, never, no), modals (may, might, must, should, will, "
+                   "can, could) and condition words (if, unless, only if, by default, "
+                   "except) must stay exactly as in the POST above, unless a check above "
+                   "names them. Redo it keeping them.\n" % meaning_check.describe(found))
 
 
 def reviser(claude_bin=None, runner=None, model=None, author=None):

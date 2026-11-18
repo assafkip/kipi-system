@@ -348,6 +348,14 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
                                reason=f"style revision not run: {exc}")
             trail["style"] = style_stage
             return None
+        except revise.MeaningRefused as exc:
+            # ASK-5428: the style revision changed a number, negation, modal or
+            # condition. Same posture as "no-improvement" below: the revision is
+            # discarded, the already-SHIPPABLE first-pass verdict stands, and the trail
+            # names the changed tokens so the refusal is readable, not inferred.
+            revisions += 1
+            style_stage[f"attempt{revisions}"] = f"meaning-refused: {exc}"
+            break
         if not revised:
             break
         # THE RE-CHECK DETECTS; ONLY THE FIRST PASS REJECTS. A style revision is the
