@@ -382,7 +382,7 @@ PY
       pass "mutant '$1' killed"
     fi
   }
-  mutate "delta guard removed"        's/\[ "\$kind" = "receipt-only" \]/true/'
+  mutate "delta guard removed"        's/\[ "\$kind" = "\$want" \]/true/'
   mutate "approval guard removed"     's/\[ "\$state" = "success" \]/true/'
   mutate "no-overwrite guard removed" 's/\[ "\$head_state" = "none" \]/true/'
 fi
