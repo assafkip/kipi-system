@@ -10,7 +10,9 @@
 #
 # Cases: 1 default applies when nothing is set; 2 explicit value wins, including
 # empty; 3 NEGATIVE: a fixture skeleton or registry must never read the founder's
-# live overlay; 4 the facts block actually calls the function (wiring).
+# live overlay; 4 the worker's real facts block, run against a fixture registry
+# and overlay, yields the pinned remote (4a), exports it to children (4b), and an
+# explicit empty value leaves it unpinned (4c). Eight cases in all.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER="${KIPI_WORKER_UNDER_TEST:-$HERE/../linear-worker.sh}"
@@ -46,8 +48,12 @@ out="$(call KIPI_DISPATCH_REGISTRY=/fixture/r.json)"
 # hand to preflight. A grep stayed green with the export deleted and with
 # OVERLAY="" ; this fails on both.
 BLOCK="$(awk '/^KIPI_DISPATCH_TARGETS="\$\(dispatch_targets_default\)"/{p=1} p{print} p&&/^\)"$/{exit}' "$WORKER")"
-if [ -z "$BLOCK" ]; then
-  bad "4 facts block found in the worker" "could not cut the block"
+# END ANCHOR (PR #838 round 2): the cut ends on a bare `)"` at column 0. If that
+# line is ever reindented the awk runs on to a later `)"` and would execute
+# hundreds of worker lines (gh, the Linear picker) inside $( ). So the cut must
+# be short and must contain the REGISTRY_FACTS assignment, or the test fails.
+if [ -z "$BLOCK" ] || [ "$(printf '%s\n' "$BLOCK" | wc -l)" -gt 20 ] || ! printf '%s' "$BLOCK" | grep -q '^REGISTRY_FACTS='; then
+  bad "4 facts block cut is the short facts block" "lines=$(printf '%s\n' "$BLOCK" | wc -l)"
 else
   mkdir -p "$T/skel" "$T/cl" "$T/.config/kipi"
   printf '{"skeleton":{"name":"s","path":"%s"},"instances":[{"name":"cl","path":"%s","linear_project":"cl"}]}' "$T/skel" "$T/cl" > "$T/skel/instance-registry.json"
@@ -62,7 +68,7 @@ else
     bad "4a" "$out"
   fi
   if printf '%s' "$out" | grep -q "CHILD=$T/.config/kipi/dispatch-targets.json"; then
-    ok "4b hand run: child processes (preflight, slug lib) inherit the overlay"
+    ok "4b hand run: child processes (slug lib, pr-owner) inherit the overlay"
   else
     bad "4b" "$out"
   fi
