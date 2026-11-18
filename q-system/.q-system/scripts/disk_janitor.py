@@ -109,7 +109,7 @@ class Rule(object):
     def __init__(self, name, parents, kind="dir", match=r".*", min_age_days=7,
                  git_gate=False, open_files_gate=False, recursive=False, note="",
                  parent_match=None, gate=None, apply_switch=None, floor_min_age_days=None, wt_child=None, unlock=False,
-                 shared_probe=None):
+                 shared_probe=None, ignored_dirty=False):
         self.name = name
         self.parents = parents
         self.kind = kind                    # "dir" or "file"
@@ -137,6 +137,11 @@ class Rule(object):
         # ASK-3976: shared_probe(ctx, path) True means the target's blocks are shared
         # with another file (an APFS clone), so its du bytes are not what a delete frees.
         self.shared_probe = shared_probe
+        # PR 849 review, finding 3: `--untracked-files=normal` hides ignored files, so a
+        # clean worktree holding a local .env or output/ read as clean and was deleted.
+        # True for the worktree rules: any ignored path except Python byte-code caches
+        # (IGNORED_REGENERABLE) is a keep.
+        self.ignored_dirty = ignored_dirty
 
 
 def finished_pr_gate(ctx, path):
@@ -202,7 +207,39 @@ def staged_snapshot_gate(ctx, path):
         return ("skip-repo-missing", "main repo %s is gone; prune cannot run" % repo)
     if ctx.is_live(os.path.realpath(wt)):
         return ("skip-live", "a live process holds the snapshot worktree")
+    # PR 849 review, finding 5: any tmp.X/wt linked worktree used to pass, and agent
+    # jobs park worktrees under tmp.X too. verify.sh always adds wt with --detach and
+    # never edits a tracked file, so a branch checkout or a dirty one is not its.
+    # Ignored files are not checked here: a leaked snapshot measured 2026-11-18 holds
+    # __pycache__ and test .lock files from the pytest run it was killed in.
+    if _git_out(wt, "symbolic-ref", "-q", "HEAD") != ("", 1):
+        return ("skip-not-snapshot", "wt/ is on a branch or git could not read it")
+    if git_state(wt) != "clean":
+        return ("skip-not-snapshot", "wt/ has uncommitted or untracked work, or git could not read it")
+    # The marker: --staged writes $TMP/index, the select path verify-select-plugin.
+    # --changed writes neither, but checks out an existing commit, so its HEAD is on
+    # some ref. A detached commit that is on no ref and has no marker could be the
+    # only copy of someone's commits: keep it.
+    if not any(os.path.lexists(os.path.join(path, m)) for m in SNAPSHOT_MARKERS):
+        out = _git_out(wt, "for-each-ref", "--contains", "HEAD", "--count=1", "--format=%(refname)")
+        if out[1] != 0 or not out[0].strip():
+            return ("skip-not-snapshot", "no verify.sh marker and HEAD is on no ref")
     return None
+
+
+SNAPSHOT_MARKERS = ("index", "verify-select-plugin")
+
+
+def _git_out(path, *args):
+    """(stdout, returncode) of `git -C path args`; -1 when git cannot run, -2 on any
+    stderr (git did not see everything)."""
+    try:
+        r = subprocess.run(["git", "-C", path] + list(args), capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return ("", -1)
+    if r.stderr.strip():
+        return (r.stdout, -2)
+    return (r.stdout, r.returncode)
 
 
 def session_ended_gate(ctx, path):
@@ -253,19 +290,43 @@ def clone_live_gate(ctx, path):
         return ("skip-procs-unknown", "process table could not be read")
     parent = os.path.dirname(path)
     bundle = os.path.basename(parent)[:-len(".code_sign_clone")]
+    # PR 849 review, finding 1 (major): this gate failed OPEN. A running Chrome
+    # whose Info.plist could not be read, or whose bundle id differed from the
+    # folder name, was not counted, `starts` came out empty and every clone was
+    # deleted, the live one included. So the app is read from the clone itself,
+    # and an unreadable plist, or a running process of that app that does not
+    # resolve to this bundle id, keeps everything.
+    try:
+        apps = [n[:-len(".bundle")] for n in os.listdir(path) if n.endswith(".app.bundle")]
+    except OSError:
+        return ("skip-procs-unknown", "cannot list this clone to tell which app it is")
+    if not apps:
+        return ("skip-procs-unknown", "clone holds no <App>.app.bundle; its app cannot be told")
+    needles = ["/%s/Contents/MacOS/" % a for a in apps]
+    bare = set(a[:-len(".app")] for a in apps)
     starts = []
     for start, exe in procs:
         m = MAIN_EXE_RE.match(exe)
         # Helpers live under Contents/Frameworks/.../Helpers/X.app; only the
         # outermost .app is a main process.
-        if not m or "/Contents/" in m.group(1):
-            continue
-        if _app_bundle_id(m.group(1), ctx.bundle_cache) == bundle:
-            starts.append(start)
+        if m and "/Contents/" not in m.group(1):
+            bid = _app_bundle_id(m.group(1), ctx.bundle_cache)
+            if bid is None:
+                return ("skip-procs-unknown", "cannot read the bundle id of running %s" % m.group(1))
+            if bid == bundle:
+                starts.append(start)
+                continue
+        if any(n in exe for n in needles) or exe.strip() in bare:
+            return ("skip-procs-unknown", "running %r did not resolve to bundle %s" % (exe, bundle))
     if not starts:
         return None
     births = []
-    for name in os.listdir(parent):
+    try:
+        siblings = os.listdir(parent)
+    except OSError as e:
+        # finding 6: unguarded, this aborted the whole run.
+        return ("skip-procs-unknown", "cannot list the clone folder (%s)" % e)
+    for name in siblings:
         try:
             births.append(os.stat(os.path.join(parent, name)).st_birthtime)
         except (OSError, AttributeError):
@@ -374,14 +435,18 @@ RULES = [
          note="ASK-4228: trees of merged or closed PRs at any age"),
     Rule("review-tree-locks", ["{HOME}/.config/kipi/review-trees"], kind="file",
          match=r"\.lock$", min_age_days=14),
+    # ignored_dirty: review trees are left out on purpose. pr-review-agent.sh makes
+    # them and nobody works in them, and their test residue (.lock files) would make
+    # review-trees-finished keep every tree forever.
     Rule("kipi-worktrees", ["{HOME}/.config/kipi/worktrees"], min_age_days=21, git_gate=True,
+         ignored_dirty=True,
          note="Sana's issue worktrees; 21 days + clean, unfinished work is never touched"),
     Rule("agent-worktrees",
          ["{HOME}/projects/*/.claude/worktrees", "{HOME}/projects/*/projects/*/.claude/worktrees"],
-         match=r"^agent-", min_age_days=7, git_gate=True,
+         match=r"^agent-", min_age_days=7, git_gate=True, ignored_dirty=True,
          note="Claude Code EnterWorktree leftovers"),
-    Rule("projects-wt", ["{HOME}/projects/_wt"], min_age_days=21, git_gate=True),
-    Rule("sana-work", ["{HOME}/.cache/sana-work"], min_age_days=14, git_gate=True),
+    Rule("projects-wt", ["{HOME}/projects/_wt"], min_age_days=21, git_gate=True, ignored_dirty=True),
+    Rule("sana-work", ["{HOME}/.cache/sana-work"], min_age_days=14, git_gate=True, ignored_dirty=True),
     Rule("codex-sessions", ["{HOME}/.codex/sessions"], kind="file", recursive=True, min_age_days=30),
     # Age 0 (ASK-4228): the 7-day gate kept 1.5 GB of downloads the founder then
     # deleted by hand at 100% disk. An app re-downloads its update; a cache an
@@ -544,17 +609,7 @@ class Ctx(object):
             return None
         if r.returncode != 0 or not r.stdout.strip():
             return None
-        out = []
-        for line in r.stdout.splitlines():
-            parts = line.split(None, 5)
-            if len(parts) < 6:
-                continue
-            try:
-                start = time.mktime(time.strptime(" ".join(parts[:5]), "%a %b %d %H:%M:%S %Y"))
-            except ValueError:
-                return None
-            out.append((start, parts[5]))
-        return out
+        return parse_ps_lstart(r.stdout)
 
     def pr_state(self, slug, n):
         """MERGED / CLOSED / OPEN from gh, or "" for any failure. One call per PR."""
@@ -582,6 +637,23 @@ class Ctx(object):
         _append_json(self.log_path, rec)
 
 
+def parse_ps_lstart(text):
+    """`ps -axww -o lstart=,comm=` under LC_ALL=C -> [(start epoch, comm)], or None
+    when any line's date does not parse (then the table is unknown, never partial).
+    Pinned against captured output by test_disk_janitor_reclaim.PsParser."""
+    out = []
+    for line in text.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            continue
+        try:
+            start = time.mktime(time.strptime(" ".join(parts[:5]), "%a %b %d %H:%M:%S %Y"))
+        except ValueError:
+            return None
+        out.append((start, parts[5]))
+    return out
+
+
 def _darwin_tmp_base():
     # $TMPDIR is /var/folders/xx/yyy/T/ ; the base (T, C, X siblings) is its parent.
     # launchd jobs have no TMPDIR, so ask confstr, which is what the shell does.
@@ -603,7 +675,10 @@ def _live_census():
     not-ok, and the session-scratch class (no real age gate) then keeps all."""
     raw = os.environ.get("JANITOR_LIVE")
     if raw is not None:
-        return sorted(set(os.path.realpath(p) for p in json.loads(raw))), True
+        data = json.loads(raw)
+        if data is None:        # test seam: a census that failed
+            return [], False
+        return sorted(set(os.path.realpath(p) for p in data)), True
     try:
         out = subprocess.run(["lsof", "-n", "-Fn"], capture_output=True,
                              text=True, timeout=180).stdout
@@ -695,17 +770,25 @@ def tree_bytes(path):
     return total
 
 
-def git_state(path):
-    """'clean' | 'dirty' | 'error' | 'not-a-repo' | 'unreadable'."""
+IGNORED_REGENERABLE = re.compile(r"(^|/)(__pycache__/|\.pytest_cache/|[^/]*\.pyc$)")
+
+
+def git_state(path, ignored=False):
+    """'clean' | 'dirty' | 'error' | 'not-a-repo' | 'unreadable'. ignored=True counts
+    any ignored path as dirty except Python byte-code caches, which only the
+    interpreter writes and which every worker tree that ran a test holds."""
     # PR 841 round 4: a mode-000 target hid its .git, read as not-a-repo, passed the
     # gate and then failed rmtree on every run, paging each time.
     if not os.access(path, os.R_OK | os.X_OK):
         return "unreadable"
-    if not os.path.exists(os.path.join(path, ".git")):
+    # lexists, finding 2: a dangling .git symlink is not "no repo"; git then errors.
+    if not os.path.lexists(os.path.join(path, ".git")):
         return "not-a-repo"
+    cmd = ["git", "-C", path, "status", "--porcelain", "--untracked-files=normal"]
+    if ignored:
+        cmd.append("--ignored=matching")
     try:
-        r = subprocess.run(["git", "-C", path, "status", "--porcelain", "--untracked-files=normal"],
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         return "error"
     # PR 841 round 4, major: with a mode-000 subdir git exits 0, prints nothing on
@@ -714,7 +797,13 @@ def git_state(path):
     # stderr means git did not see the whole tree, so it is not "clean".
     if r.returncode != 0 or r.stderr.strip():
         return "error"
-    return "dirty" if r.stdout.strip() else "clean"
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("!! ") and IGNORED_REGENERABLE.search(line[3:].strip('"')):
+            continue
+        return "dirty"
+    return "clean"
 
 
 def parent_repo_of_worktree(path):
@@ -797,7 +886,14 @@ def consider(ctx, rule, parent, path):
         ctx.log(rule.name, path, "skip", reason="held by a live process")
         return "skip"
     if rule.git_gate and is_dir:
-        state = git_state(path)
+        state = git_state(path, ignored=rule.ignored_dirty)
+        if state == "not-a-repo":
+            # PR 849 review, finding 2 (major): not-a-repo used to fall through as
+            # clean, so every git-gated rule deleted any aged folder with no .git.
+            # No rule here needs to remove a plain folder, so none opts out.
+            ctx.bump(rule.name, "skip-not-a-repo")
+            ctx.log(rule.name, path, "skip", reason="git-gated rule and no .git: not a checkout")
+            return "skip"
         if state == "dirty":
             ctx.bump(rule.name, "skip-dirty")
             ctx.log(rule.name, path, "skip", reason="dirty git checkout")
@@ -891,7 +987,21 @@ def expand_parents(ctx, rule):
     return out
 
 
+def needs_census(ctx, rule):
+    """A rule whose age gate is under a day, or whose own gate reads liveness, leans
+    on the lsof census to keep what a process is using. Finding 4: with lsof
+    failed the census is empty, and only the session rule used to notice."""
+    min_age = rule.min_age_days
+    if ctx.trigger == "floor" and rule.floor_min_age_days is not None:
+        min_age = rule.floor_min_age_days
+    return min_age < 1.0 or rule.gate is not None
+
+
 def run_rule(ctx, rule):
+    if not ctx.live_ok and needs_census(ctx, rule):
+        ctx.bump(rule.name, "skip-census-unknown")
+        ctx.log(rule.name, "", "skip", reason="the lsof census failed and this rule needs it")
+        return
     for parent in expand_parents(ctx, rule):
         if rule.recursive:
             for root, dirs, files in os.walk(parent, followlinks=False):

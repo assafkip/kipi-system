@@ -64,7 +64,7 @@ class Env(object):
 
     def run(self, rules, live=()):
         env = dict(os.environ, JANITOR_HOME=self.home, JANITOR_TMPBASE=self.tmpbase,
-                   JANITOR_CLAUDETMP=self.claude, JANITOR_LIVE=json.dumps(list(live)),
+                   JANITOR_CLAUDETMP=self.claude, JANITOR_LIVE=json.dumps(None if live is None else list(live)),
                    JANITOR_NO_NOTIFY="1", JANITOR_FREE_GB="100", JANITOR_NO_OPENFILES="1", JANITOR_NO_UV="1")
         r = subprocess.run([sys.executable, SCRIPT, "--apply", "--rules", rules, "--json"],
                            capture_output=True, text=True, env=env, timeout=120)
@@ -333,6 +333,205 @@ class ChromeCodeSignClones(unittest.TestCase):
             plistlib.dump({"CFBundleIdentifier": "com.google.Chrome"}, fh)
         self.run_clones([{"start": born - 1, "exe": helper}])
         self.assertFalse(os.path.exists(a))
+
+    # PR 849 review, finding 1 (major): the gate failed open. A running Chrome it
+    # could not resolve left `starts` empty, and an empty `starts` deleted every clone.
+    def test_running_chrome_with_unreadable_plist_keeps_every_clone(self):
+        live, born = self.clone("code_sign_clone.LiveLv")
+        orphan, _ = self.clone("code_sign_clone.Orphan", hours_ago=12)
+        plist = os.path.join(os.path.dirname(os.path.dirname(self.exe)), "Info.plist")
+        os.chmod(plist, 0)
+        self.addCleanup(os.chmod, plist, 0o600)
+        s = self.run_clones([{"start": born - 1, "exe": self.exe}])
+        self.assertTrue(os.path.exists(live), s)
+        self.assertTrue(os.path.exists(orphan), "unknown owner means keep, not delete: %s" % s)
+
+    def test_running_app_whose_bundle_id_differs_from_the_folder_keeps_every_clone(self):
+        live, born = self.clone("code_sign_clone.LiveLv")
+        orphan, _ = self.clone("code_sign_clone.Orphan", hours_ago=12)
+        import plistlib
+        with open(os.path.join(os.path.dirname(os.path.dirname(self.exe)), "Info.plist"), "wb") as fh:
+            plistlib.dump({"CFBundleIdentifier": "com.google.Chrome.beta"}, fh)
+        s = self.run_clones([{"start": born - 1, "exe": self.exe}])
+        self.assertTrue(os.path.exists(live) and os.path.exists(orphan), s)
+
+    def test_unlistable_clone_folder_is_a_skip_not_a_crash(self):
+        # Finding 6: os.listdir(parent) was unguarded. run_rule's own listdir would
+        # skip an unreadable parent, so the race (folder gone mid-run) is hit directly.
+        sys.path.insert(0, os.path.dirname(SCRIPT))
+        import disk_janitor as dj
+        a, born = self.clone("code_sign_clone.AAAAAA")
+        ctx = type("C", (), {})()
+        ctx.processes = lambda: [(born + 1000, self.exe)]
+        ctx.bundle_cache = {}
+        real_listdir = os.listdir
+
+        def flaky(p):
+            if p == self.parent:
+                raise PermissionError(13, "Permission denied", p)
+            return real_listdir(p)
+        dj.os.listdir = flaky
+        try:
+            verdict = dj.clone_live_gate(ctx, a)
+        finally:
+            dj.os.listdir = real_listdir
+        self.assertEqual(verdict[0], "skip-procs-unknown", verdict)
+
+
+class GitGatedRulesKeepWhatGitCannotVouchFor(unittest.TestCase):
+    """PR 849 review, findings 2 and 3."""
+
+    def setUp(self):
+        self.e = Env()
+        self.addCleanup(self.e.td.cleanup)
+        self.base = os.path.join(self.e.home, ".config", "kipi", "worktrees")
+        os.makedirs(self.base)
+        with open(os.path.join(self.e.repo, ".git", "info", "exclude"), "a") as fh:
+            fh.write(".env\n__pycache__/\n")
+
+    def wt(self, name):
+        d = os.path.join(self.base, name)
+        git("worktree", "add", "-q", "--detach", d, "HEAD", cwd=self.e.repo)
+        return d
+
+    def test_old_plain_folder_under_a_worktree_parent_survives(self):
+        d = os.path.join(self.base, "notes")
+        os.makedirs(d)
+        with open(os.path.join(d, "draft.md"), "w") as fh:
+            fh.write("only copy")
+        age(d, 24 * 40)
+        r = self.e.run("kipi-worktrees")
+        self.assertTrue(os.path.exists(os.path.join(d, "draft.md")), r.stdout)
+        self.assertEqual(json.loads(r.stdout)["rules"]["kipi-worktrees"].get("skip-not-a-repo"), 1)
+
+    def test_dangling_dot_git_symlink_is_not_read_as_no_repo(self):
+        d = os.path.join(self.base, "dangling")
+        os.makedirs(d)
+        os.symlink(os.path.join(self.e.td.name, "gone"), os.path.join(d, ".git"))
+        with open(os.path.join(d, "work.txt"), "w") as fh:
+            fh.write("x")
+        age(d, 24 * 40)
+        self.e.run("kipi-worktrees")
+        self.assertTrue(os.path.exists(os.path.join(d, "work.txt")))
+
+    def test_clean_worktree_with_an_ignored_env_file_survives(self):
+        d = self.wt("withenv")
+        with open(os.path.join(d, ".env"), "w") as fh:
+            fh.write("TOKEN=local-only")
+        age(d, 24 * 40)
+        r = self.e.run("kipi-worktrees")
+        self.assertTrue(os.path.exists(os.path.join(d, ".env")), r.stdout)
+
+    def test_worktree_with_only_bytecode_caches_still_goes(self):
+        # Control: without this exemption every tree that ran a test is kept forever.
+        d = self.wt("pyc")
+        os.makedirs(os.path.join(d, "__pycache__"))
+        with open(os.path.join(d, "__pycache__", "a.cpython-39.pyc"), "w") as fh:
+            fh.write("x")
+        age(d, 24 * 40)
+        r = self.e.run("kipi-worktrees")
+        self.assertFalse(os.path.exists(d), r.stdout)
+
+
+class CensusFailure(unittest.TestCase):
+    """PR 849 review, finding 4: lsof failing left an empty census, and only the
+    session rule checked live_ok."""
+
+    def setUp(self):
+        self.e = Env()
+        self.addCleanup(self.e.td.cleanup)
+
+    def test_short_age_rule_is_skipped_when_lsof_failed(self):
+        d = self.e.snapshot("tmp.CensusGone1", hours=3)
+        r = self.e.run("tmp-verify-staged", live=None)
+        self.assertTrue(os.path.exists(d), r.stdout)
+        self.assertEqual(json.loads(r.stdout)["rules"]["tmp-verify-staged"].get("skip-census-unknown"), 1)
+
+    def test_day_old_rule_without_a_gate_still_runs(self):
+        # Control: the age gate alone bounds a rule of a day or more.
+        d = os.path.join(self.e.T, "tmpabcdef12")
+        os.makedirs(d)
+        age(d, 24 * 3)
+        r = self.e.run("tmp-mkdtemp", live=None)
+        self.assertFalse(os.path.exists(d), r.stdout)
+
+
+class StagedSnapshotMustBeVerifys(unittest.TestCase):
+    """PR 849 review, finding 5: any tmp.X/wt linked worktree passed."""
+
+    def setUp(self):
+        self.e = Env()
+        self.addCleanup(self.e.td.cleanup)
+
+    def test_branch_checkout_parked_under_tmp_survives(self):
+        d = os.path.join(self.e.T, "tmp.Parked1234")
+        os.makedirs(d)
+        git("worktree", "add", "-q", "-b", "agent-work", os.path.join(d, "wt"), cwd=self.e.repo)
+        age(d, 3)
+        self.e.run("tmp-verify-staged")
+        self.assertTrue(os.path.exists(d))
+
+    def test_snapshot_with_untracked_work_survives(self):
+        d = self.e.snapshot("tmp.Untracked12", hours=3)
+        with open(os.path.join(d, "wt", "new.txt"), "w") as fh:
+            fh.write("work")
+        age(d, 3)
+        self.e.run("tmp-verify-staged")
+        self.assertTrue(os.path.exists(os.path.join(d, "wt", "new.txt")))
+
+    def test_unmarked_detached_commit_on_no_ref_survives(self):
+        d = os.path.join(self.e.T, "tmp.Unreach123")
+        os.makedirs(d)
+        wt = os.path.join(d, "wt")
+        git("worktree", "add", "-q", "--detach", wt, "HEAD", cwd=self.e.repo)
+        git("commit", "-q", "--allow-empty", "-m", "only copy", cwd=wt)
+        age(d, 3)
+        self.e.run("tmp-verify-staged")
+        self.assertTrue(os.path.exists(d), "a commit on no ref may be the only copy")
+
+    def test_changed_mode_snapshot_without_marker_goes(self):
+        # Control: verify.sh --changed writes no marker; its HEAD is on a ref.
+        d = os.path.join(self.e.T, "tmp.Changed123")
+        os.makedirs(d)
+        git("worktree", "add", "-q", "--detach", os.path.join(d, "wt"), "HEAD", cwd=self.e.repo)
+        age(d, 3)
+        self.e.run("tmp-verify-staged")
+        self.assertFalse(os.path.exists(d))
+
+
+class PsParser(unittest.TestCase):
+    """PR 849 review, finding 7: every Chrome test injected JANITOR_PROCS, so the
+    real ps parser was never run. The fixture is real ps output; read its
+    provenance field."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.dirname(SCRIPT))
+        import disk_janitor
+        self.dj = disk_janitor
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                               "ps-lstart-comm-2026-11-18.json")) as fh:
+            self.fx = json.load(fh)
+
+    def test_parses_every_captured_line(self):
+        procs = self.dj.parse_ps_lstart(self.fx["stdout"])
+        self.assertIsNotNone(procs)
+        self.assertEqual(len(procs), len(self.fx["stdout"].splitlines()))
+
+    def test_paths_with_spaces_and_start_times_survive(self):
+        procs = self.dj.parse_ps_lstart(self.fx["stdout"])
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        starts = sorted(s for s, exe in procs if exe == chrome)
+        want = sorted(time.mktime(time.strptime(t, "%a %b %d %H:%M:%S %Y"))
+                      for t in ("Wed Nov 18 11:10:53 2026", "Wed Nov 18 15:03:29 2026"))
+        self.assertEqual(starts, want)
+        mains = [exe for _s, exe in procs if self.dj.MAIN_EXE_RE.match(exe)
+                 and "/Contents/" not in self.dj.MAIN_EXE_RE.match(exe).group(1)]
+        self.assertEqual(mains.count(chrome), 2)
+        self.assertFalse(any("Helper" in m for m in mains), "helpers are not main processes")
+
+    def test_a_line_with_an_unparseable_date_makes_the_table_unknown(self):
+        bad = self.fx["stdout"] + "Xyz Nov 18 11:10:53 2026     /bin/x\n"
+        self.assertIsNone(self.dj.parse_ps_lstart(bad))
 
 
 if __name__ == "__main__":
