@@ -69,7 +69,8 @@ The hand-off said an aborted round counted. Measured: it did not. `review_is_usa
 
 ## Action items
 
-- [x] Sana: add `merge-only` with a red test and three mutants (PR #845) — owner: sana — type: code
+- [x] Sana: add `merge-only` with a red test and mutants (PR #845). Three review rounds: r1 patch-id ignores whitespace and an empty array dies on /bin/bash 3.2; r2 a merge that reverts main's change to a PR file, and the mutation harness reported every mutant killed because its file was not named receipt-carry-approval.sh (a no-op control now proves it can say SURVIVED); r3 APPROVE WITH NITS — owner: sana — type: code
+- [ ] Sana: wire merge-only into converge/review-redrive (ASK-5434). Open r3 minors go there: the plugin.json exemption compares reviewed-vs-head only, so discarding main's non-version plugin.json change reads merge-only — owner: sana — type: code
 - [ ] Sana: run the carry on #839 once #845 merges, record the merge-only evidence on the PR — owner: sana — type: process
 - [ ] Sana: a launchd or converge consumer that runs the carry on a PR whose head is a merge-only descendant, so the next one needs no hand — owner: sana — type: code (filed as a Linear issue for Sana if not done in this run)
 
