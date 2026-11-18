@@ -328,10 +328,12 @@ def windowed_reply(text, offsets, encode, documents, count_tokens):
 
 
 def embed(texts, backend):
-    """THE single-document embed site: exemplars, the reference, and the draft on a
-    backend that cannot window. The windowed draft read does NOT pass through here
-    (`windowed_reply` calls `backend.encode`), and its shape is named by
-    TOKENIZATION_WINDOWED, not by TOKENIZATION.
+    """The single-document embed, called only for a backend with no `encode_windowed`
+    (a test fake, an old transport): its only caller is the `else` branch of the
+    scoring function. A backend that windows (both real ones) produces every vector,
+    exemplars and reference included, in `windowed_reply` via `backend.encode`, so
+    this function is not reached; that shape is named by TOKENIZATION_WINDOWED, and
+    this one by TOKENIZATION.
 
     Single-document: each text becomes exactly ONE document, so the list handed
     to the backend has the same length as `texts`.
