@@ -12,9 +12,10 @@ TEST ISOLATION (fable-discipline). Two layers.
   - The STUB ENGINE tests run everywhere, CI included. The stub replaces only the
     engine's output (`pipeline.gate_draft.evaluate`) inside a temp dir. The refusal rule
     under test is the REAL one in this checkout. Nothing reads a live corpus or ledger.
-  - The LIVE tests run the real consulting engine read-only, and only when it is present
-    AND `KIPI_FULL_GATE_LIVE=1`: one run is about 70 s and makes critic model calls, so an
-    unasked local suite must not spend that. Skips name the reason.
+  - The LIVE tests run the real consulting engine, and only when it is present AND
+    `KIPI_FULL_GATE_LIVE=1`: one run is about 70 s and makes real critic model calls (it
+    spends), so an unasked local suite must not. The usage ledger and the model-gate day
+    log go to temp paths, never the live ones. Skips name the reason.
 
 CONTROL FIRST: `test_clean_result_passes` is the verified-good control. Without it, every
 refusal below could come from a wrapper that refuses everything.
@@ -67,7 +68,9 @@ def _gate():
 
 
 def _result(**over):
-    out = {"hard": [], "notes": [], "parts": dict(ALL_RAN), "outages": []}
+    # The producer's full shape (gate_draft.evaluate), figure_check and repairs included.
+    out = {"figure_check": "not-run", "hard": [], "notes": [], "parts": dict(ALL_RAN),
+           "outages": [], "repairs": []}
     out.update(over)
     return out
 
@@ -198,7 +201,7 @@ def test_cli_hard_exits_2(tmp_path):
     assert json.loads(out.stdout)["verdict"] == "REFUSE"
 
 
-# ---- live: the real engine, read-only, opt-in -----------------------------------------
+# ---- live: the real engine, opt-in, spends model calls, state in temp ---------------
 
 def _live_root():
     if os.environ.get("KIPI_FULL_GATE_LIVE") != "1":
@@ -211,22 +214,28 @@ def _live_root():
     return root
 
 
-def _live_env():
-    # The engine strips nothing for us: a model or env backend that keys off pytest must
-    # see the run the founder's exits see.
-    return {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+def _live_env(tmp_path):
+    # PYTEST_CURRENT_TEST is stripped so the engine runs its real critic path, not the
+    # pytest short-circuit. That same variable is what keeps the engine off the live usage
+    # ledger and model-gate log (usage_ledger.py, model_gate.py), so both are pointed at
+    # temp paths here. why: round 1 review of #839 showed the first version appended rows
+    # to the live ~/.config/kipi/usage-ledger.jsonl and the live model-gate day log.
+    env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+    env["KIPI_USAGE_LEDGER"] = str(tmp_path / "usage-ledger.jsonl")
+    env["KIPI_MODEL_GATE_DIR"] = str(tmp_path / "model-gate")
+    return env
 
 
-def test_live_ai_shaped_paragraph_refused():
+def test_live_ai_shaped_paragraph_refused(tmp_path):
     root = _live_root()
-    v = _gate().check(AI_SHAPED, "linkedin", engine_root=root, env=_live_env())
+    v = _gate().check(AI_SHAPED, "linkedin", engine_root=root, env=_live_env(tmp_path))
     assert not v.ok, v.reasons
     assert v.verdict == "REFUSE", v.reasons
 
 
-def test_live_forced_authorship_outage_refused():
+def test_live_forced_authorship_outage_refused(tmp_path):
     root = _live_root()
-    env = _live_env()
+    env = _live_env(tmp_path)
     # Force the declared LUAR env to refuse to build: it demands this much free disk first.
     env["KIPI_LUAR_MIN_FREE_GB"] = "1000000"
     # Over the 20-word linkedin floor, so no hard row can be what refuses. why: the first
@@ -252,3 +261,34 @@ def test_cli_malformed_result_prints_json_and_exits_2(tmp_path):
     out = _cli(tmp_path, _stub_engine(tmp_path, _result(hard=1)))
     assert out.returncode == 2, out.stderr
     assert json.loads(out.stdout)["verdict"] == "OUTAGE"
+
+
+@pytest.mark.parametrize("key", ["hard", "notes", "parts", "outages"])
+def test_missing_result_key_is_an_outage(tmp_path, key):
+    """Round 1 review of #839: a renamed key upstream read as 'no hard rows', a silent PASS."""
+    result = _result()
+    del result[key]
+    v = _gate().check("a post", "linkedin", engine_root=_stub_engine(tmp_path, result))
+    assert v.verdict == "OUTAGE" and not v.ok, v.reasons
+
+
+def test_timeout_kills_the_whole_engine_tree(tmp_path):
+    """Round 1 review of #839: subprocess.run(timeout=) killed only the child, and a uv-run
+    grandchild survived holding the cache lock (the ASK-3515 scar)."""
+    import time
+    pidfile = tmp_path / "grandchild.pid"
+    body = ("import subprocess; p = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(60)']); open(%r, 'w').write(str(p.pid)); "
+            "time.sleep(60)" % str(pidfile))
+    v = _gate().check("a post", "linkedin", engine_root=_stub_engine(tmp_path, body=body),
+                      timeout=3)
+    assert v.verdict == "OUTAGE"
+    pid = int(pidfile.read_text())
+    for _ in range(20):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    os.kill(pid, 9)
+    pytest.fail("engine grandchild %d outlived the timeout" % pid)

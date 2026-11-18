@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -58,6 +59,8 @@ PYTHON_ENV = "KIPI_VOICE_PYTHON"
 # rows). Chief's voiceloop call uses 600 s. A run past this is an outage, never a pass.
 DEFAULT_TIMEOUT_S = 600
 EXIT_PASS, EXIT_REFUSE, EXIT_USAGE = 0, 2, 64
+# The evaluate keys judge() reads. Absent means the engine's shape drifted: an OUTAGE.
+REQUIRED_KEYS = ("hard", "notes", "parts", "outages")
 
 # The child. It reads {"text", "surface", "source_text"} on stdin and prints evaluate's
 # dict as ONE json line after a marker, so a library that prints to stdout cannot corrupt
@@ -149,18 +152,29 @@ def check(text: str, surface: str, *, source_text: str | None = None,
         return _outage(surface, "no voice engine at %s (set %s)" % (root, ENGINE_ENV))
     payload = json.dumps({"text": text, "surface": surface, "source_text": source_text})
     try:
-        proc = subprocess.run([python or default_python(), "-c", _CHILD], input=payload,
-                              cwd=str(root), capture_output=True, text=True,
-                              timeout=timeout or DEFAULT_TIMEOUT_S,
-                              env=env if env is not None else None)
-    except subprocess.TimeoutExpired:
-        return _outage(surface, "timed out after %ss" % (timeout or DEFAULT_TIMEOUT_S))
+        # A new session so a timeout can kill the whole tree. why (round 1 review of #839,
+        # the ASK-3515 scar in luar_env_backend._run_bounded): subprocess.run(timeout=)
+        # kills only the direct child, and the engine's `uv run` grandchild survived
+        # holding the uv cache lock.
+        proc = subprocess.Popen([python or default_python(), "-c", _CHILD], cwd=str(root),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True,
+                                env=env if env is not None else None)
     except OSError as exc:
         return _outage(surface, "could not start the interpreter (%s)" % exc)
-    tail = (proc.stderr or "").strip().splitlines()[-3:]
+    try:
+        stdout, stderr = proc.communicate(payload, timeout=timeout or DEFAULT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        return _outage(surface, "timed out after %ss" % (timeout or DEFAULT_TIMEOUT_S))
+    tail = (stderr or "").strip().splitlines()[-3:]
     if proc.returncode != 0:
         return _outage(surface, "exited %d: %s" % (proc.returncode, " | ".join(tail)[:400]))
-    line = next((ln for ln in reversed(proc.stdout.splitlines()) if ln.startswith(_MARK)), None)
+    line = next((ln for ln in reversed(stdout.splitlines()) if ln.startswith(_MARK)), None)
     if line is None:
         return _outage(surface, "printed no result (%s)" % " | ".join(tail)[:300])
     try:
@@ -179,9 +193,14 @@ def check(text: str, surface: str, *, source_text: str | None = None,
 
 
 def _malformed(result: dict) -> list:
-    """Names of evaluate fields whose shape judge() cannot read. Absent fields are fine."""
-    bad = [k for k in ("hard", "notes") if not isinstance(result.get(k) or [], list)]
-    if not isinstance(result.get("parts") or {}, dict):
+    """Names of evaluate fields that are absent or have a shape judge() cannot read.
+
+    why absent counts (round 1 review of #839): `result.get("hard") or []` read a key
+    renamed upstream as "no hard rows fired", a silent PASS. gate_draft.verify itself does
+    result["hard"] and fails loud on the same drift."""
+    bad = [k for k in REQUIRED_KEYS if k not in result]
+    bad += [k for k in ("hard", "notes") if k in result and not isinstance(result[k], list)]
+    if "parts" in result and not isinstance(result["parts"], dict):
         bad.append("parts")
     outages = result.get("outages") or []
     if not isinstance(outages, list) or not all(isinstance(o, (list, tuple)) for o in outages):
