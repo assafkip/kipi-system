@@ -10,7 +10,9 @@ truth. Evidence, measured 2026-11-18 on origin/main of each repo:
     copy, so it is downstream of the skeleton, one hop late.
 So the exporter's source is a replica, and a replica that is ahead of the skeleton is
 lost work at the next sync (the roll-back scar, 2026-09-06). Two things hold that line:
-  - this test: the two copies are byte-identical, or it fails and names the files;
+  - this test: the two copies, as committed on consulting's origin/main, are byte-identical,
+    or it fails and names the files. It does NOT see consulting commits that are not
+    pushed or an uncommitted working tree; the updater refusal covers those;
   - kipi-update.sh: an engine file ahead of the skeleton refuses the sync with no flag
     (test-kipi-update-instance-ahead.sh, properties 5 and 6).
 
@@ -98,7 +100,16 @@ def _consulting_ref():
         ["git", "-C", CONSULTING, "rev-parse", "--verify", "-q", "origin/main"],
         capture_output=True,
     )
-    return "origin/main" if probe.returncode == 0 else None
+    if probe.returncode != 0:
+        return None
+    # Best effort: a stale origin/main reads parity for work already pushed since
+    # (review of PR 836, finding 4). An offline run keeps the ref it has.
+    try:
+        subprocess.run(["git", "-C", CONSULTING, "fetch", "-q", "origin", "main"],
+                       capture_output=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return "origin/main"
 
 
 class ParityLogic(unittest.TestCase):
@@ -146,6 +157,28 @@ class ParityLogic(unittest.TestCase):
         empty = tempfile.mkdtemp()
         self.assertTrue(drift(tree_from_dir(a), tree_from_dir(empty)))
         self.assertTrue(drift(tree_from_dir(empty), tree_from_dir(empty)))
+
+
+class GitReader(unittest.TestCase):
+    """tree_from_git only ran in the branch CI skips, so a broken slice stayed green
+    (review of PR 836, finding 3). A temp repo exercises it everywhere."""
+
+    def test_reads_committed_bytes_not_the_working_tree(self):
+        repo = tempfile.mkdtemp()
+        sub = os.path.join(repo, "plugins", "kipi-core", "voiceloop")
+        os.makedirs(os.path.join(sub, "__pycache__"))
+        for name, body in (("gate.py", "RULE = 1\n"), ("__pycache__/x.pyc", "z")):
+            with open(os.path.join(sub, name), "w") as fh:
+                fh.write(body)
+        g = ["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t"]
+        subprocess.run(g + ["init", "-q", "-b", "main"], check=True)
+        subprocess.run(g + ["add", "-A", "-f"], check=True)
+        subprocess.run(g + ["commit", "-qm", "c"], check=True)
+        with open(os.path.join(sub, "gate.py"), "w") as fh:
+            fh.write("RULE = 2  # uncommitted\n")
+        got = tree_from_git(repo, "HEAD", ENGINE_REL)
+        self.assertEqual(got, {"gate.py": b"RULE = 1\n"})
+        self.assertEqual(drift(got, {"gate.py": b"RULE = 1\n"}), [])
 
 
 class LiveParity(unittest.TestCase):

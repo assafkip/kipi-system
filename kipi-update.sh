@@ -48,9 +48,10 @@ ONLY=""
 # --refuse-instance-ahead: abandon an instance BEFORE its pre-sync commit when
 # the run would overwrite a file whose instance copy the skeleton never shipped
 # (see instance_ahead_scan). Off by default: fleet-wide the hit is usually
-# hook churn, and a refusal that fires on 24 instances gets switched off. The
-# consulting run script passes it, because there "ahead" has meant real work
-# every time (2026-09-06, three times in one day).
+# hook churn, and a refusal that fires on 24 instances gets switched off. No
+# caller passes it today (checked 2026-11-18: no script, plist or workflow does);
+# the one path where "ahead" has meant real work every time (2026-09-06, three
+# times in one day) is the voiceloop engine, which refuses with no flag, below.
 REFUSE_INSTANCE_AHEAD=0
 # --refuse-unlanded-sync: abandon an instance BEFORE its pre-sync commit while its
 # checked-out branch still holds updater commits origin does not have (ASK-3655,
