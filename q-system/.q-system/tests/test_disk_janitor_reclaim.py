@@ -65,7 +65,7 @@ class Env(object):
     def run(self, rules, live=()):
         env = dict(os.environ, JANITOR_HOME=self.home, JANITOR_TMPBASE=self.tmpbase,
                    JANITOR_CLAUDETMP=self.claude, JANITOR_LIVE=json.dumps(list(live)),
-                   JANITOR_NO_NOTIFY="1", JANITOR_FREE_GB="100", JANITOR_NO_OPENFILES="1")
+                   JANITOR_NO_NOTIFY="1", JANITOR_FREE_GB="100", JANITOR_NO_OPENFILES="1", JANITOR_NO_UV="1")
         r = subprocess.run([sys.executable, SCRIPT, "--apply", "--rules", rules, "--json"],
                            capture_output=True, text=True, env=env, timeout=120)
         return r
@@ -154,6 +154,14 @@ class ReviewScratch(unittest.TestCase):
         self.assertFalse(os.path.exists(d))
         summary = json.loads(r.stdout)
         self.assertEqual(summary.get("errors"), 0)
+
+    def test_mode_000_target_itself_is_removed(self):
+        d = self.mk("run.TopLock12", 30)
+        age(d, 30)
+        os.chmod(d, 0)
+        r = self.e.run("review-scratch-runs")
+        self.assertFalse(os.path.exists(d))
+        self.assertEqual(json.loads(r.stdout).get("errors"), 0)
 
     def test_run_dir_held_by_a_live_process_is_kept(self):
         d = self.mk("run.Live1234", 30)

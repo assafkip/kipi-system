@@ -70,7 +70,7 @@ Test env overrides (all optional): JANITOR_HOME, JANITOR_TMPBASE, JANITOR_NOW
 lsof census), JANITOR_NO_OPENFILES=1 (skip the per-rule lsof +D check),
 JANITOR_NO_NOTIFY=1, JANITOR_REPO (where slack-notify.sh lives),
 JANITOR_CLAUDETMP (the Claude temp root), JANITOR_GH (the gh binary),
-JANITOR_FREE_GB (the free-space reading). Tests: test_disk_janitor.py.
+JANITOR_FREE_GB (the free-space reading). Tests: test_disk_janitor_reclaim.py. JANITOR_NO_UV=1 skips `uv cache prune` (tests set it).
 """
 import argparse
 import fcntl
@@ -159,6 +159,11 @@ def _unlock_tree(path):
     """A review run left .claims dirs at mode 000 (2026-11-18): du and rmtree both
     hit Permission denied, which counted as an error and raised the alert. Only
     called on a target every other gate already passed for deletion."""
+    # the target itself too: a mode-000 target errored on every run (review PR 841, finding 4)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
     for root, dirs, _files in os.walk(path, followlinks=False):
         for d in dirs:
             full = os.path.join(root, d)
@@ -726,7 +731,7 @@ def uv_prune(ctx):
     (a running `uv run` MCP server) is a skip, never a failure."""
     # launchd's PATH has no /opt/homebrew/bin, so look there too.
     uv = shutil.which("uv") or shutil.which("uv", path="/opt/homebrew/bin:/usr/local/bin")
-    if ctx.mode != "apply" or not uv:
+    if ctx.mode != "apply" or not uv or os.environ.get("JANITOR_NO_UV"):
         return
     env = dict(os.environ, UV_LOCK_TIMEOUT="10")
     try:
