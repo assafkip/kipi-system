@@ -56,7 +56,7 @@ mkcase() {
   pj 1.13.70 base > "$d/$PJ"; echo pr-change > "$d/a.txt"; [ "$extra" = "delete" ] && git -C "$d" rm -q d.txt
   g add -A; g commit -q -m "pr work"; REVIEWED="$(g rev-parse HEAD)"
   g checkout -q main
-  pj 1.13.71 base > "$d/$PJ"; echo b > "$d/b.txt"; echo c-main-fix > "$d/c.txt"
+  pj 1.13.71 "$([ "$extra" = main-desc ] && echo mdesc || echo base)" > "$d/$PJ"; echo b > "$d/b.txt"; echo c-main-fix > "$d/c.txt"
   g add -A; g commit -q -m "main bump"
   g checkout -q pr
   g merge -q --no-edit main >/dev/null 2>&1 || true
@@ -92,6 +92,10 @@ mkcase "$TMP/revert" 1.13.72 base revert
 check_eq "version bump that silently reverts a main change: refused" "0" "$(run "$TMP/revert")"
 mkcase "$TMP/del" 1.13.72 base delete
 check_eq "a PR that deletes a file can still use the mode"          "1"  "$(run "$TMP/del")"
+mkcase "$TMP/mdr" 1.13.72 base main-desc
+check_eq "head reverts main's own non-version plugin.json edit: refused" "0" "$(run "$TMP/mdr")"
+mkcase "$TMP/mdk" 1.13.72 mdesc main-desc
+check_eq "head keeps main's plugin.json edit and bumps: carried"        "1" "$(run "$TMP/mdk")"
 mkcase "$TMP/nm" 1.13.72 base none
 : > "$CALLS"
 STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$FX/reviewed-approved.json" STUB_HEAD_PAYLOAD="$FX/head-absent.json" \
@@ -107,7 +111,8 @@ if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ]; then
   }
   mutate "strictly-greater guard removed" 's/^  version_gt "\$hv" "\$mv"$/  true/'
   mutate "merge-result reference swapped for reviewed sha" 's/merge-tree --write-tree --no-messages "\$mainref" "\$reviewed"/rev-parse "$reviewed^{tree}"/'
-  mutate "other-fields guard removed"           's/\[ "\$hrest" = "\$rrest" \]/true/'
+  mutate "main's fields no longer required"  's/\[ "\$hrest" = "\$mrest" \] || return 1/true/'
+  mutate "other-fields guard removed"          's/\[ "\$hrest" = "\$rrest" \]/true/'
 fi
 echo; echo "passed $PASS, failed $FAIL"
 [ "$FAIL" = "0" ]

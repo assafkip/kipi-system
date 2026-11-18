@@ -206,7 +206,7 @@ version_gt() {
 # differing path is an allowed version-only plugin.json change.
 reattest_path_ok() {
   local tree="$1" reviewed="$2" head="$3" mainref="$4" path="$5"
-  local rj hj mj hv mv rrest hrest
+  local rj hj mj bj hv mv rrest hrest mrest brest base
   case "$path" in plugin.json|*/plugin.json) ;; *) return 1 ;; esac
   rj="$(git -C "$tree" show "$reviewed:$path" 2>/dev/null)" || return 1
   hj="$(git -C "$tree" show "$head:$path" 2>/dev/null)" || return 1
@@ -216,7 +216,22 @@ reattest_path_ok() {
   [ -n "$hv" ] && [ -n "$mv" ] || return 1
   rrest="$(printf '%s' "$rj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
   hrest="$(printf '%s' "$hj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
-  [ "$hrest" = "$rrest" ] || return 1
+  mrest="$(printf '%s' "$mj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
+  # The other fields must be what a 3-way merge gives (PR #846 round 2: comparing
+  # to the reviewed sha alone let a head revert main's own non-version edit).
+  # Main left them alone: the head keeps the reviewed fields. Main changed them and
+  # the PR did not: the head takes main's. Both changed them: not a version-only
+  # conflict, so refuse.
+  base="$(git -C "$tree" merge-base "$mainref" "$reviewed" 2>/dev/null)" || return 1
+  bj="$(git -C "$tree" show "$base:$path" 2>/dev/null)" || return 1
+  brest="$(printf '%s' "$bj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
+  if [ "$mrest" = "$brest" ]; then
+    [ "$hrest" = "$rrest" ] || return 1
+  elif [ "$rrest" = "$brest" ]; then
+    [ "$hrest" = "$mrest" ] || return 1
+  else
+    return 1
+  fi
   version_gt "$hv" "$mv"
 }
 
@@ -236,12 +251,26 @@ reattest_kind() {
   # exit 1 = conflicts, still prints the tree (conflicted text in the conflicting
   # paths). Anything else, or no tree on line 1, is not an answer.
   expected="$(git -C "$tree" merge-tree --write-tree --no-messages "$mainref" "$reviewed" 2>/dev/null | head -n 1)"
-  [[ "$expected" =~ ^[0-9a-f]{40,64}$ ]] || { echo other; return 0; }
+  if ! [[ "$expected" =~ ^[0-9a-f]{40,64}$ ]]; then
+    echo "carry: git merge-tree could not compute the expected merge (needs git 2.38+); nothing established, refusing" >&2
+    echo other; return 0
+  fi
   htree="$(git -C "$tree" rev-parse -q --verify "$head^{tree}" 2>/dev/null)" || { echo other; return 0; }
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     reattest_path_ok "$tree" "$reviewed" "$head" "$mainref" "$path" || { echo "carry: re-attest refused at '$path'" >&2; echo other; return 0; }
   done < <(git -C "$tree" diff --name-only --no-renames "$expected" "$htree" 2>/dev/null || echo "?diff-failed")
+  # PR #846 round 2, minor: a head equal to the merge result skips the loop above,
+  # so the version floor is checked on its own. Every plugin.json the head differs
+  # from main on must be strictly above main's version, whatever shape the merge took.
+  local hv mv
+  while IFS= read -r path; do
+    case "$path" in plugin.json|*/plugin.json) ;; *) continue ;; esac
+    hv="$(git -C "$tree" show "$head:$path" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)"
+    mv="$(git -C "$tree" show "$mainref:$path" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)"
+    [ -n "$mv" ] || continue
+    version_gt "$hv" "$mv" || { echo "carry: re-attest refused: '$path' version '$hv' is not above main's '$mv'" >&2; echo other; return 0; }
+  done < <(git -C "$tree" diff --name-only --no-renames "$mainref" "$head" 2>/dev/null)
   echo version-reattest
 }
 
@@ -299,13 +328,14 @@ main() {
     exit "$EXIT_DECLINED"
   fi
 
+  # Before the POST (PR #846 round 2, nit): a warning after an irreversible write informs nobody.
+  [ "$reattest" = 1 ] && echo "carry: warning: $head is a live PR tip; safe only while no reviewer runs on it" >&2
   desc="$(printf '%.140s' "$CARRY_PREFIX$(printf '%.12s' "$reviewed") ($label): $desc")"
   if ! carry_post "$repo" "$head" "$desc" >/dev/null; then
     echo "carry: the status post on $head FAILED; the approval is still only on $reviewed" >&2
     exit 1
   fi
 
-  [ "$reattest" = 1 ] && echo "carry: warning: $head is a live PR tip; safe only while no reviewer runs on it" >&2
   echo "carry: $REVIEWER_CONTEXT=success carried from $reviewed to $head"
 }
 
