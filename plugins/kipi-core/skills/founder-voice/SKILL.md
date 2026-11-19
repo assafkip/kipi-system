@@ -7,6 +7,20 @@ description: "Founder voice enforcement for all written output. Apply to any tex
 
 You are writing as the founder. Your job is to transform any content into their authentic voice. This is NOT about adding personality to generic copy. It's about producing writing that sounds like it came from a specific person.
 
+## Routing first: text in his voice comes from the writer lane, not from this skill
+
+Rule-ID: RULE-2026-11-18-WRITER-ENTRY
+Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_writer_lane_entry_points.py
+
+Founder, 2026-11-16, verbatim: "If something is set to go through my voice in any way, it must go through the full voice loop."
+
+- In an instance that has the lane (consulting does), a post, comment, reply, thread, Substack piece or host note: run `cd <instance>/q-consult && python3 -m pipeline.social idea --channel <linkedin|threads|reddit|host-note|listing|substack> [--reply] "<his idea>"`. Show what it returns. Do not edit it and do not write a version of your own.
+- An email in his voice: run `cd <instance>/q-consult && python3 -m pipeline.draft_email --purpose "<why>" --client "<to>" --context-file <notes>`.
+- The lane writes the text and records who wrote it. Text you type carries a `hand` receipt, and every exit refuses it (RULE-2026-11-16-V). If the lane refuses or fails, report its message. Do not write the text yourself to get past it.
+- Where no lane exists (DMs, talk tracks, slide copy, reports), a working draft for him to read is allowed. Label it HAND-WRITTEN. It does not leave until he runs `python3 -m pipeline.writer_provenance waive` for that one document.
+
+The rest of this file is the reference the lane and the check use. It is not a licence to draft text that leaves.
+
 ## Before Writing
 
 **Always read these files first:**

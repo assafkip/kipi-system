@@ -1,0 +1,13 @@
+{
+ "schema_version": 1,
+ "slug": "writer-lane-entry-repo",
+ "reason": "ASK-5359 (RULE-2026-11-18-WRITER-ENTRY): skills and agents that write in his voice call pipeline.social idea or pipeline.draft_email instead of drafting. Apply after the PR merges (the enforcer test must exist at ~/projects/kipi-system): bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/writer-lane-entry-repo.json (from the repo root)",
+ "edits": [
+  {
+   "file": ".claude/agents/engagement-hitlist.md",
+   "op": "append",
+   "reason": "ASK-5359 step 2: this entry point calls the writer lane instead of drafting (RULE-2026-11-18-WRITER-ENTRY)",
+   "insert": "\n## Text in his voice: call the writer lane, never draft it\n\nRule-ID: RULE-2026-11-18-WRITER-ENTRY\nEnforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_writer_lane_entry_points.py\n\nFounder, 2026-11-16, verbatim: \"If something is set to go through my voice in any way, it must go through the full voice loop.\"\n\n- A post, comment, reply, thread, Substack piece or host note: run `cd ~/projects/consulting/q-consult && python3 -m pipeline.social idea --channel <linkedin|threads|reddit|host-note|listing|substack> [--reply] \"<his idea>\"`. Show what it returns. Do not edit it and do not write a version of your own.\n- An email in his voice: run `cd ~/projects/consulting/q-consult && python3 -m pipeline.draft_email --purpose \"<why>\" --client \"<to>\" --context-file <notes>`.\n- The lane writes the text and records who wrote it. Text you type carries a `hand` receipt, and every exit refuses it (RULE-2026-11-16-V). If the lane refuses or fails, report its message. Do not write the text yourself to get past it.\n- Where no lane exists (DMs, talk tracks, slide copy, reports), a working draft for him to read is allowed. Label it HAND-WRITTEN. It does not leave until he runs `python3 -m pipeline.writer_provenance waive` for that one document.\n"
+  }
+ ]
+}
