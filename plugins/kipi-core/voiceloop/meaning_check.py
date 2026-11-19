@@ -172,7 +172,7 @@ def _small_words_in(text):
 
 
 def _sentences(text):
-    return [x for x in re.split(r"(?<=[.!?])\s+|\n+", text or "") if x.strip()]
+    return [x for x in re.split(r"(?<=[.!?])\s+", text or "") if x.strip()]
 
 
 _FIGURE_TEXT = re.compile(r"[$]?\d[\d,.]*\s*(?:%|[kmb]\b)?", re.I)
@@ -182,18 +182,6 @@ def _norm_sentence(sentence):
     # Figures are blanked so "It might drop 42 rows." and "It might drop rows." are the SAME
     # sentence: a number rule ordered the figure out, and that edit is not a removal.
     return " ".join(_FIGURE_TEXT.sub(" ", sentence.lower()).split())
-
-
-def _content_words(text):
-    return [w for w in _words(_FIGURE_TEXT.sub(" ", text or ""))
-            if len(w) > 3 and w not in MODALS and w not in NEGATIONS and w not in CONDITIONS]
-
-
-def _gone(words, revised_words):
-    """True when fewer than a third of `words` survive in the revision."""
-    if not words:
-        return True
-    return sum(1 for w in words if w in revised_words) / len(words) < 1 / 3
 
 
 def _diff(before, after, render, allow_removals):
@@ -250,13 +238,13 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
                 kept[key] -= 1
             else:
                 unmatched.append(sentence)
-        # An unmatched original sentence counts as removed WHOLE only when its content words
-        # are gone from the revision. A sentence that was merged into another, split, or
-        # hard-wrapped still has its words in the revised text, so its small words keep
-        # counting (PR #861 review: greedy pairing forgave a merged sentence's negation).
-        revised_words = set(_content_words(revised))
-        unmatched = [x for x in unmatched
-                     if _gone(_content_words(x), revised_words)]
+        # EXACT, not fuzzy (PR #861 rounds 1 and 2: pairing by similarity, then by shared
+        # vocabulary, each forgave an edited sentence or refused a deleted one). A sentence
+        # counts as removed whole only if EVERY sentence of the revision is a sentence of the
+        # original, verbatim once figures are blanked. One reworded sentence anywhere and
+        # nothing is forgiven: the compare runs strict, the refusing direction.
+        if any(kept[key] > 0 for key in kept):
+            unmatched = []
         for sentence in unmatched:
             for before, gone in zip((n0, m0, c0), _small_words(sentence)):
                 before.subtract(gone)

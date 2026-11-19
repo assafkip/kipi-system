@@ -329,3 +329,30 @@ def test_only_does_not_read_the_next_sentence():
     assert meaning_check.changes("It runs only. If it fails it stops.",
                                  "It runs only.", unit_removals=True,
                                  skip_numbers=True) == {}
+
+
+@pytest.mark.parametrize("original,revised", [
+    # PR #861 round 2, major: an EDITED sentence (inflected, reworded) must never read as a
+    # removed one. These flip polarity in a kept sentence and were forgiven by the fuzzy test.
+    ("It does not retry jobs. The queue drains.", "It retried jobs. The queue drains."),
+    ("It may retry the failed jobs. The queue drains.", "It must retry the failed jobs. The queue drains."),
+])
+def test_an_edited_sentence_is_never_forgiven_as_a_removed_one(original, revised):
+    assert meaning_check.changes(original, revised, unit_removals=True, skip_numbers=True)
+
+
+def test_removal_is_forgiven_only_when_every_kept_sentence_is_verbatim():
+    # Exact rule: the revision is the original minus whole sentences (figures aside).
+    assert meaning_check.changes(
+        "It might drop 42 rows. The job ends. It will not retry.",
+        "The job ends. It will not retry.", unit_removals=True, skip_numbers=True) == {}
+    # one reworded sentence anywhere turns the forgiveness off for the whole revision
+    assert meaning_check.changes(
+        "It might drop 42 rows. The job ends.", "The run ends.",
+        unit_removals=True, skip_numbers=True) == {"modals": ["-might"]}
+
+
+def test_a_hard_line_break_does_not_split_a_sentence():
+    # PR #861 round 2, minor: a re-wrap between "only" and "if" reported +only/-only.
+    assert meaning_check.changes("It retries only if the queue is empty.",
+                                 "It retries only\nif the queue is empty.") == {}
