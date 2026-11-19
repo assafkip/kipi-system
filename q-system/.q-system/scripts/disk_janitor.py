@@ -255,7 +255,23 @@ def mktemp_shell_gate(ctx, path):
         # worktree's reflog goes with the delete (same rail as staged_snapshot_gate).
         head = _git_out(c, "symbolic-ref", "-q", "HEAD")
         if head[1] == 0:
-            continue                      # on a branch: the commits live in the repo's refs
+            # On a branch. In a linked worktree (.git is a file) the branch lives in the
+            # main repo, so the delete loses nothing. A standalone clone (.git is a dir)
+            # holds its branches itself: keep it unless every local branch is pushed.
+            if os.path.isdir(os.path.join(c, ".git")):
+                ahead = _git_out(c, "for-each-ref", "refs/heads", "--format=%(refname:short) %(upstream:short) %(upstream:track)")
+                if ahead[1] != 0:
+                    return ("skip-git-error", "%s: git could not list branches" % c)
+                # Ref names cannot hold a space, so split is exact. No upstream leaves
+                # one field. git 2.54 prints track as "[ahead 1]", "[ahead 1, behind 2]"
+                # or "[gone]" (probed 2026-11-18). Read the track field only: matching
+                # the whole line kept a synced branch named "ahead-x" (PR 853 review).
+                for line in ahead[0].splitlines():
+                    parts = line.split(None, 2)
+                    track = parts[2] if len(parts) > 2 else ""
+                    if len(parts) < 2 or "ahead" in track or track == "[gone]":
+                        return ("skip-unpushed", "%s: standalone clone with an unpushed branch (%s)" % (c, line.strip()))
+            continue
         if head != ("", 1):
             return ("skip-git-error", "%s: git could not read HEAD" % c)
         out = _git_out(c, "for-each-ref", "--contains", "HEAD", "--count=1", "--format=%(refname)")
