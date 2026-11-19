@@ -304,7 +304,8 @@ def _usable(slot, state, at=None, facts=None):
     if _mark_current(slot, state.get("exhausted", {}).get(str(slot)), at, facts):
         return False
     left = spend.credit_left(slot, at, facts)
-    return left is not None and left > 0.0
+    # Above the founder's reserve, not above $0 (spend.reserve_usd, 2026-11-19).
+    return left is not None and left > spend.reserve_usd()
 
 
 def mark_exhausted(slot, at=None):
@@ -781,7 +782,8 @@ def cmd_exec(argv, actor=None):
     # BILLABLE keys only. A key whose auto-reload is unconfirmed still has a
     # credit_left, and counting it let a spent fleet through this check to
     # refuse later with a "paused" message that named the wrong cause.
-    if all((spend.credit_left(s, None, facts) or 0.0) <= 0.0
+    floor = spend.reserve_usd()
+    if all((spend.credit_left(s, None, facts) or 0.0) <= floor
            for s in spend.billable_slots(facts)):
         sys.stderr.write("fleet_api_key: every known key's cycle credit is spent; "
                          "no run. Nothing here buys credit.\n")

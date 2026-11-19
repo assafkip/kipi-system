@@ -1185,5 +1185,18 @@ class TestTheDetectorDirectly(Base):
         self.assertFalse(keymod.declared_error("not a dict"))
 
 
+class TestTheReserveFloor(Base):
+    """Founder, 2026-11-19: "I want the fleet to stop at $20 left in either account." """
+
+    def test_a_key_with_15_left_is_exhausted_at_a_20_reserve(self):
+        facts = json.loads(json.dumps(FACTS))
+        facts["reserve_usd"] = 20
+        write_facts(self.facts, facts)
+        spend.record(1, 85.0, actor="worker")          # key 1: $100 - $85 = $15
+        self.assertEqual(self.run_exec(), 0)
+        self.assertEqual([c["slot"] for c in self.calls()], ["2"],
+                         "key 1 had $15 left, under the $20 reserve, and still ran")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
