@@ -126,7 +126,22 @@ REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 # parking. Injectable for the same reason REVIEWER_CMD is: otherwise every test
 # case of "what if the second runner is also refused" bills a real model run, so
 # the branch stays untested, which is how the single-runner assumption shipped.
-CODEX_CMD="${KIPI_CODEX_RUNNER:-codex exec --skip-git-repo-check -s workspace-write}"
+# THE INVOCATION COMES FROM THE ONE RESOLVER (ASK-3831). This line used to type
+# `codex exec` itself, which made the worker the second of four places that each
+# knew how to reach Codex and the second of four that had never heard of a
+# second Codex account. The worker-specific flags stay here because they are the
+# worker's: `-s workspace-write` is what lets the second runner do the Edit under
+# `.claude/**` that Sana is refused (probed live 2026-08-01).
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/reviewer-resolve.sh"
+CODEX_WORKER_FLAGS="--skip-git-repo-check -s workspace-write"
+CODEX_CMD="$(reviewer_codex_cmd "$REVIEWER_PRIMARY_ACCOUNT") $CODEX_WORKER_FLAGS"
+# The second account, empty when none is configured. `|| true` because
+# reviewer_codex_cmd refuses an account it does not know, and "no second account"
+# is the normal state, not an error.
+CODEX_ACCOUNT_2="$(reviewer_secondary_account)"
+CODEX_CMD_2=""
+[ -n "$CODEX_ACCOUNT_2" ] && CODEX_CMD_2="$(reviewer_codex_cmd "$CODEX_ACCOUNT_2" || true) $CODEX_WORKER_FLAGS"
 # How long one Codex outage announcement stands (PR #421 rounds 8 and 9). Nothing
 # but a capability refusal ever reaches Codex, so nothing else would end it: past
 # this the claim may be taken over (one page a day at most) and an issue held
@@ -3881,8 +3896,54 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
       SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""; CODEX_DOWN_MARK=""
-      # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
-      # is refused too (a Claude limit) does the outage path below apply.
+      # THE OTHER CODEX ACCOUNT, BEFORE THE OPUS STAND-IN (ASK-3831). A credit
+      # outage is per-ACCOUNT, so the rung that costs nothing in independence
+      # comes first: a second logged-in Codex is still a different lab from
+      # Sana, where the Opus stand-in is DEGRADED by construction (same lab).
+      # Skipped entirely when no second account is configured, so with none the
+      # chain below is byte-for-byte what it was before.
+      # THE PRIMARY'S HEALTH IS RECORDED EITHER WAY, AND BEFORE THE NEXT RUNG
+      # (PR #701 review, major, one layer out). This used to be noted only inside
+      # the `[ -n "$CODEX_CMD_2" ]` branch below and only on a failure, so with no
+      # second account configured the worker recorded no outage at all -- and a
+      # SUCCESS never cleared one. A day stamp nothing clears is a day-long
+      # "the reviewer is down to Opus" issue over a 03:00 transient, which is the
+      # finding fleet-health-daily.py's reader half fixes. Both halves or neither.
+      # ONE DECISION, IN THE RESOLVER (PR #701 review round 3, major). This used
+      # to be a two-way branch here: a refusal was an outage and EVERYTHING ELSE
+      # was `ok`, including a non-zero exit. `last_ok` is what the health detector
+      # reads to decide an account is still a live second opinion, so a timeout
+      # stamped "this account answered" on an account that answered nothing --
+      # the mirror image of the agent's bug, which recorded an outage on the same
+      # input. Two call sites, two semantics, one input: that is the defect class
+      # this resolver exists to remove, so the question moved into it. The issue
+      # id no longer goes along either: the ledger carries a bucketed code, and
+      # `ASK-529` read as the PROVIDER being overloaded (round-3 minor).
+      reviewer_note_codex_result "$REVIEWER_PRIMARY_ACCOUNT" "$crc" "$CODEX_OUT"
+      if [ -n "$CODEX_CMD_2" ] && codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
+        say "$ISSUE Codex is unavailable on the $REVIEWER_PRIMARY_ACCOUNT account; trying the '$CODEX_ACCOUNT_2' account before any stand-in"
+        : > "$RUN_OUT_FILE" 2>/dev/null || true
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD_2 \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
+          crc=0
+        else
+          crc=$?
+        fi
+        CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+        # Same one decision for this account's health...
+        reviewer_note_codex_result "$CODEX_ACCOUNT_2" "$crc" "$CODEX_OUT"
+        # ...and the RUNNER label is a separate question with a separate answer:
+        # it names who produced the work, so only a run that actually came back
+        # (rc 0) may claim this account reviewed the issue. The old `else` branch
+        # claimed it on a timeout too, because it keyed the label off "was this a
+        # refusal" rather than off "did it answer".
+        if [ "$crc" = "0" ]; then
+          SECOND_RUNNER="Codex on the '$CODEX_ACCOUNT_2' account"
+          say "$ISSUE the '$CODEX_ACCOUNT_2' Codex account answered -- NOT degraded, still a different lab from Sana"
+        fi
+      fi
+      # BOTH CODEX ACCOUNTS DOWN IS NOT A BLOCKER: run the same prompt on Opus.
+      # Only if Opus is refused too (a Claude limit) does the outage path below
+      # apply.
       if [ -n "$SECOND_RUNNER_FALLBACK" ] && CODEX_DOWN_WHY="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
         CODEX_DOWN_MARK="$(codex_env_marker "$CODEX_OUT" "$crc")"
         CODEX_STOOD_IN=1

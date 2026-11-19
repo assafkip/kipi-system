@@ -55,10 +55,20 @@ mkrepo() {  # mkrepo <dir> <name> <marker>
 mkdir -p "$WORK/skel/q-system/.q-system/scripts"
 mkrepo "$WORK/skel"  repo-alpha ALPHA_CODE
 mkrepo "$WORK/beta"  repo-beta  BETA_CODE
-cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-[ -f "$SRC_DIR/repo-slug-lib.sh" ] && cp "$SRC_DIR/repo-slug-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-cp "$SRC_DIR/env-failure-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-cp "$SRC_DIR/reviewer-token-lib.sh" "$SRC_DIR/review-lean-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
+cp "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts/"
+# THE LIB SET IS DERIVED FROM THE SCRIPT, NOT TYPED HERE (ASK-3831). Same change
+# and same reason as test-review-dry-run-labelled.sh: a hand-written list of four
+# went stale the moment the agent gained a fifth source, and the run then died
+# mid-review on an unbound variable instead of naming the missing file.
+#
+# THE DERIVATION MOVED OUT OF THIS FILE (round 6): it lived here and in
+# test-review-dry-run-labelled.sh while eight other fixtures typed the list by
+# hand. reviewer-fixture-lib.sh is the single reader; the assertion below is what
+# keeps it falsifiable from here.
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
+stage_reviewer_libs "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts" "$SRC_DIR"
+[ -f "$WORK/skel/q-system/.q-system/scripts/reviewer-resolve.sh" ] \
+  || { echo "FAIL: the derivation copied no reviewer-resolve.sh, so it is not reading the agent's sources" >&2; exit 1; }
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" push -q origin main
 AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"
