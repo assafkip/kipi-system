@@ -210,12 +210,18 @@ RULE_GUIDANCE = {
 #: review): rounds 1 and 2 listed the exempt rules by name and each round missed some
 #: (`figure-in-post`, 8 of 13 `voice-style-*`). A name missing from an exempt list FAILS
 #: CLOSED: a correct repair is refused after two writer-tier calls and `decide` discards the
-#: candidate. A name missing from THIS list fails open for one rule. The cost, stated: small
-#: word drift inside a lenient rule's rewrite is not caught here; the downstream gates
+#: candidate. A name missing from THIS list makes that rule lenient, and the lenient
+#: setting is BUNDLE-WIDE: while any lenient rule is in a revision's violation list, the
+#: small-word compare is skipped for the strict rules beside it too. The cost, stated: small
+#: word drift inside a revision that carries a lenient rule is not caught here; the downstream gates
 #: re-judge the result. A literal set, so a renamed RULE_GUIDANCE key fails
 #: `test_every_strict_rule_name_...` (a set derived from the keys could not fail).
 STRICT_RULES = frozenset({"banned-word", "banned-phrase", "emdash", "double-dash",
                           "capitalization", "slash-command"})
+
+#: post_repair's fail-closed sentinel (a lint that crashed). It is not a rewrite request,
+#: so it must not switch the meaning check off for the whole revision (PR #854 review).
+_FAIL_CLOSED_RULES = frozenset({"voice-lint-error"})
 
 
 #: Who the post is attributed to inside the instruction, when the caller names nobody.
@@ -354,10 +360,11 @@ MeaningRefused = meaning_check.MeaningRefused
 
 def _meaning_changes(text, out, violations):
     rules = {v.get("rule") for v in violations if isinstance(v, dict)}
-    span = bool(rules - STRICT_RULES - REWRITE_RULES - _NUMBER_RULES - {None})
+    span = bool(rules - STRICT_RULES - REWRITE_RULES - _NUMBER_RULES
+                - _FAIL_CLOSED_RULES - {None})
     return meaning_check.changes(
         text, out, skip_numbers=bool(rules & _NUMBER_RULES),
-        allow_removals=bool(rules & REWRITE_RULES) or span, skip_small_words=span)
+        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES)) or span, skip_small_words=span)
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,

@@ -251,3 +251,19 @@ def test_known_limit_the_compare_ignores_position():
     # Pinned, not endorsed: a moved token reads as intact. The docstring says so; this
     # test fails the day someone adds an ordered compare, so the docstring gets updated.
     assert meaning_check.changes("from 900 ms to 120 ms", "from 120 ms to 900 ms") == {}
+
+
+def test_a_number_rule_may_delete_a_figure_with_the_sentence_that_carried_it():
+    # PR #854 review, major: figure-unsourced orders the deletion; the sentence it sat in
+    # also held a modal, and the removal was refused.
+    original = "It might drop 42 rows. The job ends."
+    out = _revise(original, "The job ends.", [{"rule": "figure-unsourced", "detail": "42"}])
+    assert out == "The job ends."
+    with pytest.raises(revise.MeaningRefused):
+        _revise(original, "It must drop 42 rows. The job ends.",
+                [{"rule": "figure-unsourced", "detail": "42"}])
+
+
+def test_the_fail_closed_sentinel_does_not_switch_the_check_off():
+    with pytest.raises(revise.MeaningRefused):
+        _revise("It might fail.", "It fails.", [{"rule": "voice-lint-error", "detail": "x"}])

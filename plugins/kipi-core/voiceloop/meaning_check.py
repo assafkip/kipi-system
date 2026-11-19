@@ -21,7 +21,7 @@ Four categories, each a multiset compare (count of each token before vs after):
 - numbers: (value, unit). "3 hours" and "three hours" are the same figure; "3" and "30",
   "hours" and "days" are not. A bare number carries unit "" so "3" -> "30" still flags.
 - negations: not / never / no / n't. "does not" and "doesn't" are the same token.
-- modals: may might must should will can could. "won't" is will + not, "cannot" is can + not.
+- modals: may might must should will can could would shall ought. "won't" is will + not, "cannot" is can + not.
 - conditions: if, unless, except, "by default", and "only" when it gates a clause ("only if").
   A bare "only" ("the only option") is a quantifier, not a condition, and counting it would
   refuse every reword of "the only" to "the sole".
