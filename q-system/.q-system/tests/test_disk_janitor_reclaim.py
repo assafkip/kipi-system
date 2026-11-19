@@ -499,6 +499,119 @@ class StagedSnapshotMustBeVerifys(unittest.TestCase):
         self.assertFalse(os.path.exists(d))
 
 
+class MktempShellKeepsParkedWork(unittest.TestCase):
+    """ASK-5443: tmp-mktemp-shell had no git gate. The trees tmp-verify-staged keeps
+    (skip-not-snapshot) fell through to it at day 7 and were rmtree'd, uncommitted
+    work included."""
+
+    def setUp(self):
+        self.e = Env()
+        self.addCleanup(self.e.td.cleanup)
+
+    def parked(self, name, detach=True):
+        d = os.path.join(self.e.T, name)
+        os.makedirs(d)
+        wt = os.path.join(d, "wt")
+        if detach:
+            git("worktree", "add", "-q", "--detach", wt, "HEAD", cwd=self.e.repo)
+        else:
+            git("worktree", "add", "-q", "-b", "agent-" + name, wt, cwd=self.e.repo)
+        return d, wt
+
+    def test_parked_worktree_with_uncommitted_file_survives(self):
+        d, wt = self.parked("tmp.Dirty12345")
+        with open(os.path.join(wt, "work.txt"), "w") as fh:
+            fh.write("uncommitted")
+        age(d, 24 * 10)
+        r = self.e.run("tmp-verify-staged,tmp-mktemp-shell")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(wt, "work.txt")), r.stdout)
+
+    def test_dirty_checkout_at_the_top_level_survives(self):
+        d = os.path.join(self.e.T, "tmp.TopDirty123")
+        git("clone", "-q", self.e.repo, d)
+        with open(os.path.join(d, "a.txt"), "w") as fh:
+            fh.write("edited")
+        age(d, 24 * 10)
+        self.e.run("tmp-mktemp-shell")
+        self.assertTrue(os.path.exists(d))
+
+    def test_ignored_file_counts_as_work(self):
+        d, wt = self.parked("tmp.Ignored123")
+        with open(os.path.join(wt, ".gitignore"), "w") as fh:
+            fh.write("secret.env\n")
+        git("add", ".gitignore", cwd=wt)
+        git("commit", "-qm", "ignore", cwd=wt)
+        with open(os.path.join(wt, "secret.env"), "w") as fh:
+            fh.write("k=v")
+        age(d, 24 * 10)
+        self.e.run("tmp-mktemp-shell")
+        self.assertTrue(os.path.exists(os.path.join(wt, "secret.env")))
+
+    def test_detached_commit_on_no_ref_survives(self):
+        d, wt = self.parked("tmp.NoRef12345")
+        git("commit", "-q", "--allow-empty", "-m", "only copy", cwd=wt)
+        age(d, 24 * 10)
+        self.e.run("tmp-mktemp-shell")
+        self.assertTrue(os.path.exists(d), "a commit on no ref may be the only copy")
+
+    def test_clean_branch_worktree_goes_and_is_pruned(self):
+        d, wt = self.parked("tmp.CleanBr123", detach=False)
+        age(d, 24 * 10)
+        r = self.e.run("tmp-mktemp-shell")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(d), r.stdout)
+        self.assertNotIn("tmp.CleanBr123", self.e.worktrees(), "registration must be pruned")
+
+    def standalone(self, name):
+        # PR 853 review: a standalone clone (.git is a dir) holds its branches itself.
+        # Unlike a linked worktree, "on a branch" does not mean the commits live elsewhere.
+        d = os.path.join(self.e.T, name)
+        os.makedirs(d)
+        cl = os.path.join(d, "wt")
+        git("clone", "-q", self.e.repo, cl)
+        return d, cl
+
+    def test_standalone_clone_with_unpushed_branch_survives(self):
+        d, cl = self.standalone("tmp.Unpushed12")
+        git("checkout", "-q", "-b", "agent-local", "--track", "origin/main", cwd=cl)
+        git("commit", "-q", "--allow-empty", "-m", "only copy", cwd=cl)
+        age(d, 24 * 10)
+        r = self.e.run("tmp-mktemp-shell")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertTrue(os.path.exists(d), "an unpushed local branch may be the only copy: " + r.stdout)
+
+    def test_standalone_clone_with_branch_lacking_upstream_survives(self):
+        d, cl = self.standalone("tmp.NoUpstr123")
+        git("checkout", "-q", "-b", "agent-local", cwd=cl)
+        age(d, 24 * 10)
+        r = self.e.run("tmp-mktemp-shell")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertTrue(os.path.exists(d), "a branch with no upstream cannot be shown pushed: " + r.stdout)
+
+    def test_standalone_clone_fully_pushed_still_goes(self):
+        # Control: the clone gate must not keep every clone. main tracks origin/main,
+        # not ahead. A second synced branch is named "ahead-synced" so a gate that
+        # matches the whole line instead of the track field fails here.
+        d, cl = self.standalone("tmp.Synced1234")
+        git("branch", "-q", "--track", "ahead-synced", "origin/main", cwd=cl)
+        age(d, 24 * 10)
+        r = self.e.run("tmp-mktemp-shell")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(d), r.stdout)
+
+    def test_plain_old_mktemp_dir_without_git_still_goes(self):
+        # Negative control: the gate must not turn the rule into a keep-everything.
+        d = os.path.join(self.e.T, "tmp.Plain12345")
+        os.makedirs(os.path.join(d, "sub"))
+        with open(os.path.join(d, "sub", "f.txt"), "w") as fh:
+            fh.write("x")
+        age(d, 24 * 10)
+        r = self.e.run("tmp-mktemp-shell")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(d), r.stdout)
+
+
 class PsParser(unittest.TestCase):
     """PR 849 review, finding 7: every Chrome test injected JANITOR_PROCS, so the
     real ps parser was never run. The fixture is real ps output; read its

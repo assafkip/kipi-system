@@ -230,6 +230,56 @@ def staged_snapshot_gate(ctx, path):
 SNAPSHOT_MARKERS = ("index", "verify-select-plugin")
 
 
+def mktemp_shell_gate(ctx, path):
+    """tmp-mktemp-shell: pass a plain mktemp dir, keep any git checkout in it that git
+    cannot vouch for. ASK-5443: this rule had no git gate, so the parked worktrees
+    tmp-verify-staged keeps (skip-not-snapshot) fell through to it at day 7 and were
+    rmtree'd with their uncommitted work. Checked: the target itself and each
+    top-level child (wt/ is the shape agents use) whose .git lexists."""
+    candidates = [path]
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return ("skip-unreadable", "target is not readable; cannot look for a checkout")
+    candidates += [os.path.join(path, n) for n in names
+                   if not os.path.islink(os.path.join(path, n)) and os.path.isdir(os.path.join(path, n))]
+    for c in candidates:
+        if not os.path.lexists(os.path.join(c, ".git")):
+            continue
+        # ignored=True: an agent's .env or build output is work too; only byte-code
+        # caches are exempt (git_state's IGNORED_REGENERABLE).
+        state = git_state(c, ignored=True)
+        if state != "clean":
+            return ("skip-git-" + state, "%s is a git checkout git reports %s" % (c, state))
+        # A clean detached HEAD on no ref may be the only copy of a commit; the
+        # worktree's reflog goes with the delete (same rail as staged_snapshot_gate).
+        head = _git_out(c, "symbolic-ref", "-q", "HEAD")
+        if head[1] == 0:
+            # On a branch. In a linked worktree (.git is a file) the branch lives in the
+            # main repo, so the delete loses nothing. A standalone clone (.git is a dir)
+            # holds its branches itself: keep it unless every local branch is pushed.
+            if os.path.isdir(os.path.join(c, ".git")):
+                ahead = _git_out(c, "for-each-ref", "refs/heads", "--format=%(refname:short) %(upstream:short) %(upstream:track)")
+                if ahead[1] != 0:
+                    return ("skip-git-error", "%s: git could not list branches" % c)
+                # Ref names cannot hold a space, so split is exact. No upstream leaves
+                # one field. git 2.54 prints track as "[ahead 1]", "[ahead 1, behind 2]"
+                # or "[gone]" (probed 2026-11-18). Read the track field only: matching
+                # the whole line kept a synced branch named "ahead-x" (PR 853 review).
+                for line in ahead[0].splitlines():
+                    parts = line.split(None, 2)
+                    track = parts[2] if len(parts) > 2 else ""
+                    if len(parts) < 2 or "ahead" in track or track == "[gone]":
+                        return ("skip-unpushed", "%s: standalone clone with an unpushed branch (%s)" % (c, line.strip()))
+            continue
+        if head != ("", 1):
+            return ("skip-git-error", "%s: git could not read HEAD" % c)
+        out = _git_out(c, "for-each-ref", "--contains", "HEAD", "--count=1", "--format=%(refname)")
+        if out[1] != 0 or not out[0].strip():
+            return ("skip-unreachable", "%s HEAD is detached on no ref" % c)
+    return None
+
+
 def _git_out(path, *args):
     """(stdout, returncode) of `git -C path args`; -1 when git cannot run, -2 on any
     stderr (git did not see everything)."""
@@ -418,7 +468,10 @@ RULES = [
     # script's review_scratch_cleanup). Hand-made dirs (sana*, pr334*) do not match.
     Rule("review-scratch-runs", ["{HOME}/.config/kipi/review-scratch"], match=r"^(run|ctx)\.[A-Za-z0-9]+$",
          min_age_days=1, unlock=True, note="ASK-4234: orphaned review run and PR-context dirs"),
+    # ASK-5443: gate + wt_child. The gate keeps a parked checkout git cannot vouch for;
+    # wt_child prunes the .git/worktrees entry of a clean wt/ it does delete.
     Rule("tmp-mktemp-shell", ["{TMP}/T"], match=r"^tmp\.[A-Za-z0-9]{6,}$", min_age_days=7,
+         gate=mktemp_shell_gate, wt_child="wt",
          note="shell mktemp -d dirs; 7 days because agent jobs park worktrees here"),
     # ASK-3976. The old rule targeted the PARENT folder with an open-files gate. The
     # parent always holds the live clone, so it skipped every day from 2026-09-29.
