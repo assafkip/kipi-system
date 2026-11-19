@@ -57,6 +57,21 @@ SEND_TOOLS = {
     "mcp__claude_ai_Gmail__reply": "client-email",
     "mcp__claude_ai_Gmail__forward": "client-email",
 }
+# Gmail tools that cannot transmit text. Anything under the Gmail prefix that is in neither
+# SEND_TOOLS nor this set is REFUSED by name: a renamed or new sender must not fail open (PR #859
+# round 1). The names are the connector's own tool list as listed in a live session.
+GMAIL_PREFIX = "mcp__claude_ai_Gmail__"
+NON_SENDING_GMAIL = frozenset(GMAIL_PREFIX + n for n in (
+    "apply_sensitive_message_label", "apply_sensitive_thread_label", "create_draft",
+    "create_label", "delete_draft", "delete_label", "download_gmail_attachment", "get_draft",
+    "get_message", "get_thread", "label_message", "label_thread", "list_drafts", "list_labels",
+    "mark_message_spam", "mark_thread_spam", "search_threads", "trash_message", "trash_thread",
+    "unlabel_message", "unlabel_thread", "unmark_message_spam", "unmark_thread_spam",
+    "untrash_message", "untrash_thread", "update_draft", "update_label",
+    "update_message_labels"))
+MODE_ENV = "KIPI_VOICE_SEND_MODE"   # "report": log the verdict and let the send through
+LOG_ENV = "KIPI_VOICE_SEND_LOG"
+RECEIPT_TTL_S = 24 * 3600
 _TAGS = re.compile(r"<[^>]+>")
 
 
@@ -96,7 +111,11 @@ def _spend(directory: Path, text: str, surface: str) -> bool:
         rec = json.loads(_receipt_path(directory, sha, surface).read_text())
     except (OSError, ValueError):
         return False
-    return (isinstance(rec, dict) and rec.get("sha256") == sha
+    # why the TTL (PR #859 round 1): the receipt carries no manifest hash, so a rule change
+    # would otherwise leave a PASS valid for the same bytes forever. A day bounds that.
+    fresh = isinstance(rec, dict) and isinstance(rec.get("ts"), (int, float)) \
+        and 0 <= time.time() - rec["ts"] <= RECEIPT_TTL_S
+    return (isinstance(rec, dict) and fresh and rec.get("sha256") == sha
             and rec.get("surface") == surface and rec.get("verdict") == "PASS")
 
 
@@ -126,6 +145,20 @@ def send_check(text: str, surface: str, *, receipts_dir: Path | str | None = Non
     return verdict
 
 
+def _log(row: dict) -> None:
+    """One row per hook decision: the block rate is measured, not guessed. Never changes a verdict."""
+    path = Path(os.environ.get(LOG_ENV) or Path.home() / ".local" / "state" / "kipi" / "voice-send-log.jsonl")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (json.dumps(dict(row, ts=int(time.time()))) + "\n").encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def _hook(payload_text: str) -> int:
     try:
         payload = json.loads(payload_text)
@@ -135,6 +168,12 @@ def _hook(payload_text: str) -> int:
         return voice_full_gate.EXIT_REFUSE
     surface = SEND_TOOLS.get(tool)
     if surface is None:
+        if tool.startswith(GMAIL_PREFIX) and tool not in NON_SENDING_GMAIL:
+            _log({"tool": tool, "decision": "refuse-unclassified"})
+            print("voice_send_check: REFUSE: %s is a Gmail tool this gate has not classified as "
+                  "sending or not sending. Add it to SEND_TOOLS or NON_SENDING_GMAIL in "
+                  "voice_send_check.py." % tool, file=sys.stderr)
+            return voice_full_gate.EXIT_REFUSE
         return voice_full_gate.EXIT_PASS  # not a sender: nothing leaves
     text = text_that_leaves(tool, payload.get("tool_input") or {})
     if text is None:
@@ -144,7 +183,18 @@ def _hook(payload_text: str) -> int:
         return voice_full_gate.EXIT_REFUSE
     verdict = send_check(text, surface)
     if verdict.ok:
+        _log({"tool": tool, "decision": "pass", "surface": surface})
         return voice_full_gate.EXIT_PASS
+    # The founder's override, set in the environment the hook is launched from (his shell or a
+    # launchd plist), so a session cannot grant it to itself mid-run. Logged on every use.
+    if os.environ.get(MODE_ENV) == "report":
+        _log({"tool": tool, "decision": "report-only-pass", "verdict": verdict.verdict,
+              "reasons": verdict.reasons[:3], "surface": surface})
+        print("voice_send_check: %s on the bytes that leave, NOT blocking (%s=report):\n%s"
+              % (verdict.verdict, MODE_ENV, verdict.to_json()), file=sys.stderr)
+        return voice_full_gate.EXIT_PASS
+    _log({"tool": tool, "decision": "refuse", "verdict": verdict.verdict,
+          "reasons": verdict.reasons[:3], "surface": surface})
     print("voice_send_check: %s on the bytes that leave (%s):\n%s"
           % (verdict.verdict, tool, verdict.to_json()), file=sys.stderr)
     return voice_full_gate.EXIT_REFUSE

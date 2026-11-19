@@ -140,13 +140,17 @@ def test_duration_is_measured(tmp_path):
 # ---- (1) one pinned interpreter -------------------------------------------------------
 
 def test_env_pin_wins(tmp_path):
+    """The shim writes a marker when the launcher runs it, so a launcher that ignored the pin
+    (PR #859 round 1 mutant) leaves no marker and fails here."""
     s = _script(tmp_path, "import sys; print(sys.executable)")
     pin = Path(os.popen("command -v python3").read().strip()).resolve()
+    marker = tmp_path / "used"
     shim = tmp_path / "mypy"
-    shim.write_text('#!/bin/sh\nexec %s "$@"\n' % pin)
+    shim.write_text('#!/bin/sh\necho used >> %s\nexec %s "$@"\n' % (marker, pin))
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     r = _run(tmp_path, s, env={"KIPI_VOICE_PYTHON": str(shim)})
     assert r.returncode == 0, r.stderr
+    assert marker.exists(), "the launcher did not run anything under the pinned interpreter"
 
 
 def test_a_broken_pin_fails_closed_not_to_another_python(tmp_path):

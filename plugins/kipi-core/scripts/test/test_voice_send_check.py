@@ -215,6 +215,55 @@ def test_hook_ignores_a_tool_that_does_not_send(tmp_path):
     assert r.returncode == 0
 
 
+# ---- PR #859 round 1: unclassified tools, override, log, TTL ---------------------------
+
+def test_an_unclassified_gmail_tool_is_refused_not_passed(tmp_path):
+    root = _stub_engine(tmp_path / "e", _result())
+    r = _fire(tmp_path, root, {"body": "x"}, tool="mcp__claude_ai_Gmail__send_message_v2")
+    assert r.returncode == 2 and "not classified" in r.stderr, (r.returncode, r.stderr)
+
+
+def test_every_known_non_sending_gmail_tool_passes(tmp_path):
+    root = _stub_engine(tmp_path / "e", _result(hard=["x"]))
+    for i, tool in enumerate(sorted(vsc.NON_SENDING_GMAIL)[:3]):
+        assert _fire(tmp_path / str(i), root, {"q": "x"}, tool=tool).returncode == 0, tool
+
+
+def test_the_matcher_reaches_every_gmail_tool_name():
+    matcher, _ = _send_hook_command()
+    for tool in list(vsc.SEND_TOOLS) + sorted(vsc.NON_SENDING_GMAIL) + [vsc.GMAIL_PREFIX + "brand_new"]:
+        assert re.fullmatch(matcher, tool), tool
+
+
+def test_report_mode_passes_and_logs_but_the_default_refuses(tmp_path):
+    root = _stub_engine(tmp_path / "e", _result(hard=["banned-word: 'x'"]))
+    log = tmp_path / "send-log.jsonl"
+    os.environ["KIPI_VOICE_SEND_LOG"] = str(log)
+    try:
+        refused = _fire(tmp_path / "a", root, {"subject": "s", "body": "A note."})
+        os.environ["KIPI_VOICE_SEND_MODE"] = "report"
+        passed = _fire(tmp_path / "b", root, {"subject": "s", "body": "A note."})
+    finally:
+        os.environ.pop("KIPI_VOICE_SEND_MODE", None)
+        os.environ.pop("KIPI_VOICE_SEND_LOG", None)
+    assert refused.returncode == 2 and passed.returncode == 0
+    rows = [json.loads(x) for x in log.read_text().splitlines()]
+    assert [r["decision"] for r in rows] == ["refuse", "report-only-pass"], rows
+
+
+def test_an_expired_receipt_is_not_spent(tmp_path):
+    clean = _stub_engine(tmp_path / "a", _result())
+    r = tmp_path / "r"
+    vsc.send_check("A short note.", "client-email", receipts_dir=r, engine_root=clean)
+    f = next(r.glob("*.json"))
+    rec = json.loads(f.read_text())
+    rec["ts"] = 0
+    f.write_text(json.dumps(rec))
+    dirty = _stub_engine(tmp_path / "b", _result(hard=["x"]))
+    assert vsc.send_check("A short note.", "client-email", receipts_dir=r,
+                          engine_root=dirty).verdict == "REFUSE"
+
+
 # ---- live: the real engine, the real outage lever ------------------------------------
 
 LIVE = os.environ.get("KIPI_FULL_GATE_LIVE") == "1"

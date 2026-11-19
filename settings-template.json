@@ -263,7 +263,7 @@
         ]
       },
       {
-        "matcher": "mcp__claude_ai_Gmail__(send_message|reply|forward)",
+        "matcher": "mcp__claude_ai_Gmail__.*",
         "hooks": [
           {
             "type": "command",
