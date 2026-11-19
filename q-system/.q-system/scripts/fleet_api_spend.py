@@ -202,6 +202,26 @@ def key_facts():
     return out
 
 
+def reserve_usd():
+    """Dollars to leave untouched in each key's org. `reserve_usd` at the top of
+    the facts file; $0 when absent.
+
+    Founder, 2026-11-19, verbatim: "I don't know that I always have $200. Maybe
+    one day I'll have more. I want the fleet to stop at $20 left in either
+    account." Scar: org 66a0d86c reached -$0.44 that day and two Starwish runs
+    sharing it died mid-job. credit_left() is the fleet's own ESTIMATE (credit
+    in the facts file minus this ledger's spend); spend outside the fleet in
+    the same org is invisible to it, which is what the floor absorbs.
+    """
+    path = facts_path()
+    try:
+        with open(path, "r") as fh:
+            doc = json.load(fh)
+    except (OSError, TypeError, ValueError):
+        return 0.0
+    return (_number(doc.get("reserve_usd")) if isinstance(doc, dict) else None) or 0.0
+
+
 def configured(slot, facts=None, at=None):
     """Does this key have a known credit AND a cycle that has not ended yet?
 
