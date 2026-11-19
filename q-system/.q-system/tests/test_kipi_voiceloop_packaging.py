@@ -13,7 +13,6 @@ make the import succeed without the install (the negative test below proves it).
 """
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import subprocess
@@ -43,16 +42,13 @@ def venv(tmp_path):
 
 
 def _need_index():
-    """Build isolation fetches setuptools from the index. Offline FAILS with the way
-    out named, unless KIPI_TESTS_OFFLINE=1: verify.sh runs pytest without -rs, so a
-    plain skip printed nowhere and the one test that proves the claim read green
-    (review of PR 856, r2 finding 2)."""
+    """Build isolation fetches setuptools from the index. Offline FAILS, always: a skip
+    printed nowhere under verify.sh (pytest without -rs), and the opt-out env var that
+    first replaced it left the same hole (review of PR 856, r2 finding 2, r3 minor 4)."""
     try:
         socket.create_connection(("pypi.org", 443), timeout=3).close()
     except OSError:
-        if os.environ.get("KIPI_TESTS_OFFLINE") == "1":
-            pytest.skip("KIPI_TESTS_OFFLINE=1 and pypi.org unreachable")
-        pytest.fail("pypi.org unreachable: pip cannot fetch setuptools. Set KIPI_TESTS_OFFLINE=1 to skip knowingly.")
+        pytest.fail("pypi.org unreachable: pip cannot fetch setuptools for the build")
 
 
 def test_import_fails_without_the_install(venv, tmp_path):
@@ -102,6 +98,8 @@ def test_install_leaves_a_checkout_clean(venv, tmp_path, editable):
     assert _run(g + ["init", "-q"]).returncode == 0
     assert _run(g + ["add", "-A"]).returncode == 0
     assert _run(g + ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
+                     "-c", "core.hooksPath=/dev/null",  # a machine-wide hooksPath must not run in the fixture
+                    
                      "commit", "-qm", "base"]).returncode == 0
     cmd = [str(venv), "-m", "pip", "install", "-q"] + (["-e"] if editable else []) + [str(repo / "plugins" / "kipi-core")]
     r = _run(cmd)
@@ -131,6 +129,12 @@ def test_a_shadowing_voice_loop_wins_until_it_is_uninstalled(venv, tmp_path):
     assert _run(pip + ["-e", str(src)]).returncode == 0
     r = _run([str(venv), "-I", "-c", PROBE], cwd=tmp_path)
     assert "site-packages" in r.stdout, f"expected the shadow to win, got {r.stdout}"
+    # `voice-loop` is the mirror's real dist name (voice_loop-0.2.0.dist-info in chief's
+    # venv, name in ~/projects/voice-loop/pyproject.toml). uninstall exits 0 when the
+    # name matches nothing, so assert the dist was present before and gone after.
+    show = [str(venv), "-m", "pip", "show", "voice-loop"]
+    assert _run(show).returncode == 0
     assert _run([str(venv), "-m", "pip", "uninstall", "-q", "-y", "voice-loop"]).returncode == 0
+    assert _run(show).returncode != 0
     r = _run([str(venv), "-I", "-c", PROBE], cwd=tmp_path)
     assert Path(r.stdout.strip()).is_relative_to(src), r.stdout + r.stderr
