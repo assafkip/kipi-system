@@ -39,6 +39,11 @@ up computing two different numbers under one name.
   because his weakest real posts sit below the entire control distribution and
   set the floor. Against the median, 0% of long controls and 3% of short controls
   clear the line.
+  ASK-5457: the reference is built in the DRAFT's shape. Each exemplar is read in
+  windows against the others, and the reference is the median over exemplars of
+  its lowest window (`authorship_reference`, pairs with `authorship`) and of its
+  median window (`authorship_reference_median`, pairs with `authorship_median`).
+  Before, it was a first-512-tokens statistic, compared with a whole-text one.
 - **Band by the draft's OWN word count**, at the cuts the experiment used: short
   under 60, mid 60 to 150, long over 150. Banding is per length band only --
   pooled AUC (0.664) is worse than either band alone because cosine scale rises
@@ -258,7 +263,10 @@ class TransformersBackend:
         return windowed_reply(
             text, enc["offset_mapping"], self.encode, documents,
             count_tokens=lambda t: len(self._tok(
-                t, add_special_tokens=False)["input_ids"]))
+                t, add_special_tokens=False)["input_ids"]),
+            offsets_of=lambda t: self._tok(
+                t, add_special_tokens=False,
+                return_offsets_mapping=True)["offset_mapping"])
 
 
 # ---------------------------------------------------------------- windows ----
@@ -290,13 +298,21 @@ def share_read(ranges, n_tokens):
     return len(covered) / n_tokens
 
 
-def windowed_reply(text, offsets, encode, documents, count_tokens):
+def windowed_reply(text, offsets, encode, documents, count_tokens,
+                   offsets_of=None):
     """Cut `text` into windows on token offsets, then embed windows + documents.
 
     Shared by every backend that can tokenize, so the cut and the share-read are
     computed one way. `count_tokens` re-counts each cut window: a window that
     re-tokenizes past MAX_TOKENS - 2 is truncated by the model, and the share
     read then says so instead of claiming the whole text.
+
+    `offsets_of` (ASK-5457) is what lets the REFERENCE be built in the draft's
+    shape: with it, each document is cut into the same windows and the reply
+    carries `document_windows`, one list of window vectors per document. A
+    document that fits one window reuses its own vector, so a corpus of short
+    exemplars costs no extra embed and its reference does not move. Without it
+    the reply has no `document_windows` and the caller says so in the record.
     """
     offsets = [tuple(o) for o in offsets]
     n = len(offsets)
@@ -317,11 +333,29 @@ def windowed_reply(text, offsets, encode, documents, count_tokens):
         # marked its unread tail as read (PR #837 review, Codex P2).
         read.append((start, end if held <= cap
                      else start + (end - start) * cap // held))
-    vectors = encode(list(windows) + list(documents))
-    return {"window_vectors": vectors[:len(windows)],
-            "vectors": vectors[len(windows):],
-            "tokens": n,
-            "share_read": share_read(read, n)}
+    documents = list(documents)
+    # (document index, piece) for every window of every multi-window document.
+    extra = []
+    if offsets_of is not None:
+        for i, doc in enumerate(documents):
+            doc_offsets = [tuple(o) for o in offsets_of(doc)]
+            doc_plan = plan_windows(len(doc_offsets), WINDOW_TOKENS)
+            if len(doc_plan) > 1:
+                extra += [(i, doc[doc_offsets[a][0]:doc_offsets[b - 1][1]])
+                          for a, b in doc_plan]
+    vectors = encode(windows + documents + [piece for _, piece in extra])
+    doc_vectors = vectors[len(windows):len(windows) + len(documents)]
+    reply = {"window_vectors": vectors[:len(windows)],
+             "vectors": doc_vectors,
+             "tokens": n,
+             "share_read": share_read(read, n)}
+    if offsets_of is not None:
+        by_doc = {}
+        for (i, _), vec in zip(extra, vectors[len(windows) + len(documents):]):
+            by_doc.setdefault(i, []).append(vec)
+        reply["document_windows"] = [by_doc.get(i, [doc_vectors[i]])
+                                     for i in range(len(documents))]
+    return reply
 
 
 # ------------------------------------------------------------ the one embed ----
@@ -451,6 +485,28 @@ def leave_one_out_median(vectors):
     return statistics.median(scores)
 
 
+def leave_one_out_window_medians(vectors, windows):
+    """The reference in the DRAFT's shape: (median of lowest, median of median).
+
+    For each exemplar, score every one of ITS windows against the region of the
+    OTHER exemplars, then take that exemplar's lowest window and median window,
+    the two statistics `score` reports for a draft. The reference is the median,
+    over exemplars, of each. ASK-5457: it was the median of first-512-token
+    cosines, so a draft read whole was compared with a reference read in part and
+    the floor compared unlike things. None pair when the band is too thin.
+    """
+    if len(vectors) < MIN_REFERENCE_ROWS:
+        return None, None
+    lows, mids = [], []
+    for i, wins in enumerate(windows):
+        others = vectors[:i] + vectors[i + 1:]
+        region = region_vector(others)
+        scores = [cosine(w, region) for w in wins]
+        lows.append(min(scores))
+        mids.append(statistics.median(scores))
+    return statistics.median(lows), statistics.median(mids)
+
+
 # -------------------------------------------------------------- the record ----
 
 
@@ -524,6 +580,20 @@ def score(text, exemplars, backend=None):
         by_text = dict(zip(distinct, [_unit(v) for v in reply["vectors"]]))
         window_vecs = [_unit(v) for v in reply["window_vectors"]]
         shape, read = TOKENIZATION_WINDOWED, reply["share_read"]
+        # ASK-5457: the exemplars' own windows, so the reference is the draft's
+        # statistic. A reply without them (a backend that cannot tokenize a
+        # document) leaves the reference in the old shape, and the record says so.
+        doc_windows = reply.get("document_windows")
+        if doc_windows is not None:
+            if (not isinstance(doc_windows, list)
+                    or len(doc_windows) != len(distinct)
+                    or any(not isinstance(w, list) or not w
+                           for w in doc_windows)):
+                raise ScorerUnavailable("malformed exemplar windows")
+            windows_by_text = dict(zip(
+                distinct, [[_unit(v) for v in w] for w in doc_windows]))
+        else:
+            windows_by_text = None
     else:
         # A backend that cannot tokenize (a test fake, an old transport) scores
         # the old way and says the share read was not measured, never 1.0.
@@ -531,6 +601,7 @@ def score(text, exemplars, backend=None):
         by_text = dict(zip(distinct, embed(distinct, backend)))
         window_vecs = [by_text[text]]
         shape, read = TOKENIZATION, None
+        windows_by_text = None
     region_vecs = [by_text[r["text"]] for r in region_rows]
     window_scores = [region_cosine(v, region_vecs) for v in window_vecs]
     # The reference is a property of the BAND, so it is computed BEFORE the draft
@@ -542,8 +613,17 @@ def score(text, exemplars, backend=None):
     # survivors was still a number and read 1.0. Leave-one-out already stops any
     # row being compared against itself inside this computation, which is why the
     # draft's own row is safe to leave in.
-    reference = (leave_one_out_median([by_text[t] for t in banded_texts])
-                 if band in BANDED else None)
+    band_vecs = [by_text[t] for t in banded_texts]
+    ref_shape = TOKENIZATION_WINDOWED if windows_by_text is not None else TOKENIZATION
+    if band not in BANDED:
+        reference = reference_median = None
+    elif windows_by_text is not None:
+        # The reference in the draft's own shape: lowest window and median
+        # window per exemplar, each against the others (ASK-5457).
+        reference, reference_median = leave_one_out_window_medians(
+            band_vecs, [windows_by_text[t] for t in banded_texts])
+    else:
+        reference = reference_median = leave_one_out_median(band_vecs)
     return {
         # The LOWEST window, decided on ASK-5358: every consumer reads this one
         # key, and a median lets up to half the text be someone else's and still
@@ -554,13 +634,18 @@ def score(text, exemplars, backend=None):
         # Share of the draft's tokens a window read. None = not measured.
         "authorship_share_read": read,
         "authorship_band": band,
+        # Matches `authorship` (the lowest window) ...
         "authorship_reference": reference,
+        # ... and this one matches `authorship_median`. A consumer compares a
+        # draft statistic with the reference of the SAME name, never the other.
+        "authorship_reference_median": reference_median,
         # The shape rides WITH the number. A stored score whose tokenization is
         # implicit cannot be compared to a later one.
         "authorship_tokenization": shape,
-        # The region and the reference are still one vector per exemplar, so
-        # their shape is named apart from the draft's (PR #837 review).
-        "authorship_reference_tokenization": TOKENIZATION,
+        # The region is still one vector per exemplar; the reference is windowed
+        # when the backend returned the exemplars' windows (ASK-5457) and says
+        # single-document-512 when it did not.
+        "authorship_reference_tokenization": ref_shape,
         "authorship_model": getattr(backend, "model_id", MODEL_ID),
         "authorship_words": words,
         "authorship_region_n": len(region_vecs),

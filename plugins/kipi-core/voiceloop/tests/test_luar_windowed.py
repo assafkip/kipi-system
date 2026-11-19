@@ -54,7 +54,8 @@ class TruncatingFake:
 
     def encode_windowed(self, text, documents):
         return s.windowed_reply(text, _offsets(text), self.encode, documents,
-                                count_tokens=lambda t: len(t.split()) * TOKENS_PER_WORD)
+                                count_tokens=lambda t: len(t.split()) * TOKENS_PER_WORD,
+                                offsets_of=_offsets)
 
 
 def _essay(n, tag="d"):
@@ -78,7 +79,8 @@ class WindowedAuthorship(unittest.TestCase):
         self.assertEqual(padded["authorship_share_read"], 1.0)
         self.assertGreater(padded["authorship_windows"], 1)
         self.assertEqual(padded["authorship_tokenization"], s.TOKENIZATION_WINDOWED)
-        self.assertEqual(padded["authorship_reference_tokenization"], s.TOKENIZATION)
+        self.assertEqual(padded["authorship_reference_tokenization"],
+                         s.TOKENIZATION_WINDOWED)
 
     def test_one_filler_window_moves_the_lowest_not_the_median(self):
         # The decision on ASK-5358: a median lets a minority of the text be
