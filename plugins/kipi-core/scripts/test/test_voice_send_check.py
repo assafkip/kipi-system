@@ -161,6 +161,10 @@ def _fire(tmp_path, engine_root, tool_input, tool="mcp__claude_ai_Gmail__send_me
     env = dict(os.environ, CLAUDE_PROJECT_DIR=str(inst), KIPI_VOICE_ENGINE_ROOT=str(engine_root),
                KIPI_VOICE_RECEIPTS=str(tmp_path / "receipts"),
                KIPI_VOICE_HOOK_LOG=str(tmp_path / "timing.jsonl"))
+    if LIVE:
+        # The real engine refuses to run its critic under pytest; the ledger and gate-day
+        # redirects below (set by the live test) keep it off the live data paths.
+        env.pop("PYTEST_CURRENT_TEST", None)
     payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool,
                           "tool_input": tool_input})
     return subprocess.run(["/bin/sh", "-c", hook["command"]], input=payload, env=env,
@@ -230,4 +234,9 @@ def test_live_ai_shaped_send_refused_and_forced_authorship_outage_refused(tmp_pa
         r2 = _fire(tmp_path / "b", ENGINE, {"subject": "Update", "body": "Short plain note."})
     finally:
         os.environ.pop("KIPI_LUAR_MIN_FREE_GB", None)
-    assert r2.returncode == 2 and "OUTAGE" in r2.stderr, r2.stderr[-600:]
+    # Refused for the outage: authorship ran 0 and is listed as an outage. The verdict word may
+    # be REFUSE or OUTAGE depending on whether a short note also trips a band row (it did, live);
+    # what matters is that a part that ran 0 is on the record and the send is refused.
+    verdict = json.loads(r2.stderr[r2.stderr.index("{"):])
+    assert r2.returncode == 2 and verdict["parts"]["authorship"]["ran"] == 0, r2.stderr[-600:]
+    assert any(o[1] == "authorship" for o in verdict["outages"]), verdict["outages"]
