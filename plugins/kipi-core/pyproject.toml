@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# ASK-5450: the voice engine ships from kipi-system, not from the retired
+# github.com/assafkip/voice-loop mirror (founder 2026-11-18: "We don't need the
+# mirror"). Chief installs this dist editable from a kipi-system checkout.
+[project]
+name = "kipi-voiceloop"
+version = "0.3.0"
+description = "The kipi voice engine (voiceloop), stdlib only."
+requires-python = ">=3.12"
+dependencies = []
+
+# Explicit list: plugins/kipi-core also holds hooks/, scripts/, skills/, kipi-mcp/
+# and reddit_arctic/. Auto-discovery sees several top-level dirs in a flat layout
+# and aborts the build. voiceloop/tests ships nothing.
+[tool.setuptools]
+packages = ["voiceloop"]
