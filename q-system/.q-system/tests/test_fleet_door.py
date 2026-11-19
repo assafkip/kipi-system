@@ -222,6 +222,22 @@ class TestDoorRefusedTellsTheDoorFromTheChild(Base):
         res, calls = self._refused_with(facts=facts)
         self.assertEqual((door.door_refused(res), calls), (True, []), res.stderr)
 
+    def test_every_key_at_its_reserve_floor_is_a_refusal(self):
+        """PR #862 round 1: the exit-5 floor sentence had no case of its own."""
+        with open(self.facts) as fh:
+            facts = json.load(fh)
+        facts["reserve_usd"] = 100000            # above any balance: both floored
+        res, calls = self._refused_with(facts=facts)
+        self.assertEqual(res.returncode, door.EXIT_CREDIT_GONE, res.stderr)
+        self.assertEqual((door.door_refused(res), calls), (True, []), res.stderr)
+
+    def test_an_unset_reserve_is_a_refusal(self):
+        with open(self.facts) as fh:
+            facts = json.load(fh)
+        facts.pop("reserve_usd", None)
+        res, calls = self._refused_with(facts=facts)
+        self.assertEqual((door.door_refused(res), calls), (True, []), res.stderr)
+
     def test_a_paused_fleet_is_a_refusal(self):
         spend = sys.modules.get("fleet_api_spend") or _load("fleet_api_spend")
         res, calls = self._refused_with(state={

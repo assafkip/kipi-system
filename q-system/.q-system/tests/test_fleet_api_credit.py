@@ -83,6 +83,8 @@ def utc_of_local(*parts):
 #: arithmetic below reads in whole budget days.
 EXP_NOV26 = utc_of_local(2026, 11, 26, 7, 0, 0)
 EXP_DEC26 = utc_of_local(2026, 12, 26, 7, 0, 0)
+#: A purchased-balance read inside the fixture cycle (2026-10-26 -> 2026-11-26).
+IN_CYCLE = utc_of_local(2026, 11, 5, 12, 0, 0)
 
 #: The facts every case starts from, shaped like ~/.config/kipi/fleet-api.json.
 #: Fixture amounts, not the live ones: key 1 $100 and key 2 $200, both expiring
@@ -1239,7 +1241,8 @@ class TestTheReserveFloor(Base):
         """The floor is $20 LEFT of the org's balance, grant plus purchased, not
         a fixed $200 ceiling. $450 grant + $50 purchased = $500."""
         self._facts(reserve=20, key1={"monthly_credit_usd": 450,
-                                      "purchased_balance_usd_observed": 50})
+                                      "purchased_balance_usd_observed": 50,
+                                      "purchased_balance_observed_at": IN_CYCLE})
         spend.record(1, 300.0, actor="worker")         # $200 left: far above $20
         self.assertEqual(self.run_exec(), 0)
         spend.record(1, 175.0, actor="worker")         # $500 - $475.25 = $24.75
@@ -1252,16 +1255,74 @@ class TestTheReserveFloor(Base):
                          "key 1 ran with under $20 of a $500 balance left")
 
     def test_purchased_balance_counts_toward_what_is_left(self):
-        self._facts(reserve=20, key1={"purchased_balance_usd_observed": 13.34})
+        self._facts(reserve=20, key1={"purchased_balance_usd_observed": 13.34,
+                                      "purchased_balance_observed_at": IN_CYCLE})
         self.assertAlmostEqual(spend.credit_left(1), 113.34, places=6)
         self.assertAlmostEqual(spend.spendable_left(1), 93.34, places=6)
+
+    def test_an_undated_purchased_snapshot_counts_nothing(self):
+        self._facts(reserve=20, key1={"purchased_balance_usd_observed": 50})
+        self.assertAlmostEqual(spend.credit_left(1), 100.0, places=6)
+
+    def test_purchased_credit_is_not_granted_again_at_the_cycle_roll(self):
+        """PR #862 round 1, major. Purchased credit does not expire but
+        spent_cycle() resets, so a snapshot from the old cycle was counted again:
+        $50 bought once authorized $100 over two cycles."""
+        os.environ["KIPI_FLEET_NOW"] = NOW
+        self._facts(reserve=20, key1={"purchased_balance_usd_observed": 50,
+                                      "purchased_balance_observed_at": IN_CYCLE})
+        self.assertAlmostEqual(spend.credit_left(1), 150.0, places=6)
+        spend.record(1, 130.0, actor="worker")
+        self.assertAlmostEqual(spend.spendable_left(1), 0.0, places=6)
+        # The cycle rolls: the orchestrator writes the next expiry.
+        self._facts(reserve=20, key1={"purchased_balance_usd_observed": 50,
+                                      "purchased_balance_observed_at": IN_CYCLE,
+                                      "current_cycle_expires_utc": EXP_DEC26})
+        os.environ["KIPI_FLEET_NOW"] = str(int(dt.datetime(2026, 11, 27, 12).timestamp()))
+        self.assertEqual(spend.spent_cycle(1), 0.0)
+        self.assertAlmostEqual(spend.credit_left(1), 100.0, places=6,
+                               msg="the old cycle's purchased snapshot was counted again")
+
+    def test_the_daily_re_probe_skips_a_key_under_its_floor(self):
+        """PR #862 round 1, minor: the paused branch returned known[0] unasked."""
+        os.environ["KIPI_FLEET_NOW"] = NOW
+        self._facts(reserve=20)
+        spend.record(1, 85.0, actor="worker")              # key 1: $15 left
+        cid = spend.cycle_id(1)
+        keymod.write_state({"active_slot": 1, "exhausted": {"1": cid, "2": cid},
+                            "paused": True, "paused_since": "2026-11-08T12:00:00",
+                            "last_probe_day": "2026-11-08"})
+        self.assertEqual(self.run_exec(), 0)
+        self.assertEqual([c["slot"] for c in self.calls()], ["2"])
+
+    def test_a_floored_fleet_files_a_floor_event_not_a_pause(self):
+        self._facts(reserve=20)
+        spend.record(1, 85.0, actor="worker")
+        spend.record(2, 181.0, actor="worker")
+        self.run_exec()
+        kinds = [e["kind"] for e in spend.events()]
+        self.assertIn("floor", kinds)
+        self.assertNotIn("pause", kinds)
+
+    def test_a_bad_env_reserve_is_named_as_the_env_not_the_file(self):
+        self._facts(reserve=20)
+        os.environ["KIPI_FLEET_RESERVE_USD"] = "20usd"
+        out = io.StringIO()
+        saved, sys.stdout = sys.stdout, out
+        try:
+            keymod._main(["probe"])
+        finally:
+            sys.stdout = saved
+        self.assertIn("KIPI_FLEET_RESERVE_USD", out.getvalue())
+        self.assertNotIn("reserve_usd unset", out.getvalue())
 
     def test_the_allowance_never_paces_the_reserve(self):
         os.environ["KIPI_FLEET_NOW"] = NOW
         self._facts(reserve=20)
         b = spend.budget()
         self.assertAlmostEqual(b["allowance_usd"], 80.0 / 17 + 180.0 / 17, places=4)
-        self.assertAlmostEqual(b["total_credit_left_usd"], 260.0, places=2)
+        self.assertAlmostEqual(b["total_credit_left_usd"], 300.0, places=2)
+        self.assertAlmostEqual(b["total_spendable_usd"], 260.0, places=2)
 
     def test_a_per_key_reserve_overrides_the_shared_one(self):
         self._facts(reserve=20, key2={"reserve_usd": 50})

@@ -75,7 +75,7 @@ DEFAULT_CHIEF_ROOT = os.path.join(os.path.expanduser("~"), "projects", "chief")
 #: which also reads as a quiet day unless it is said. `no_reserve` for the same
 #: reason: a key with no reserve floor set runs nothing (2026-11-19).
 STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key", "unconfirmed",
-                      "no_reserve")
+                      "no_reserve", "floor")
 
 
 def receipt_path():
@@ -201,6 +201,8 @@ FOUNDER_SENTENCES = {
     "no_key": "For part of the day the fleet had no key it could use, so it ran nothing then. Sana has it.",
     "unconfirmed": "A key is not used until its auto-reload is confirmed off. Sana has it.",
     "no_reserve": "A key is not used until its reserve floor is set. Sana has it.",
+    "floor": ("Both keys are down to the amount you keep in each account, so the fleet "
+              "stopped starting work. It starts again when a key's credit renews."),
 }
 
 

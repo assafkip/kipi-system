@@ -406,14 +406,21 @@ def _usable_slot(at=None, consume=False):
     if state.get("paused"):
         if state.get("last_probe_day") == day:
             return None
+        # THE RE-PROBE ASKS THE FLOOR TOO (PR #862 review round 1, minor). It
+        # returned known[0] unasked, so a key under its reserve was billed while
+        # the other key had credit. Marks are cleared for the probe, so the
+        # floor is the only thing _usable can still refuse on here.
+        probe_state = dict(state, exhausted={})
+        pick = next((s for s in known if _usable(s, probe_state, at, facts)),
+                    known[0])
         if consume:
             state["last_probe_day"] = day
-            state["active_slot"] = known[0]
+            state["active_slot"] = pick
             state["exhausted"] = {}
             _write_unlocked(state)
             spend.event("probe", "new budget day %s: re-probing key %d"
-                                 % (day, known[0]))
-        return known[0]
+                                 % (day, pick))
+        return pick
 
     active = state.get("active_slot", known[0])
     if _usable(active, state, at, facts):
@@ -518,10 +525,10 @@ def note_no_reserve(slots):
     """One `no_reserve` event a budget day while a known key has no reserve floor.
     Its own kind, so a `no_key` or `unconfirmed` row does not dedupe it away."""
     spend.event_once("no_reserve",
-                     "key %s: reserve_usd is unset, so the fleet does not bill it "
-                     "(exit %d). Set reserve_usd in %s (founder ruling 2026-11-19)"
-                     % (", ".join(str(s) for s in slots), EXIT_NO_KEY,
-                        spend.facts_path() or "the facts file"))
+                     "key %s: %s, so the fleet does not bill it (exit %d). Fix it "
+                     "in %s (founder ruling 2026-11-19)"
+                     % (", ".join(str(s) for s in slots), spend.reserve_problem(),
+                        EXIT_NO_KEY, spend.facts_path() or "the facts file"))
 
 
 def note_missing_key(slots):
@@ -810,7 +817,9 @@ def cmd_exec(argv, actor=None):
            for s in spend.billable_slots(facts)):
         sys.stderr.write("fleet_api_key: every known key is at its reserve floor "
                          "(reserve_usd); no run. Nothing here buys credit.\n")
-        spend.event_once("pause", "every known key is at its reserve floor")
+        # Its own kind, not "pause": a pause re-probes and clears by itself, a
+        # floor holds until a cycle renews or credit is added (PR #862 round 1).
+        spend.event_once("floor", "every known key is at its reserve floor")
         return EXIT_CREDIT_GONE
 
     # The only consuming caller: this is the path that actually runs something,
@@ -945,7 +954,7 @@ def _main(argv):
             if missing:
                 note_missing_key(missing)
             why = ["%d (auto-reload off not confirmed)" % s for s in unconfirmed]
-            why += ["%d (reserve_usd unset)" % s for s in no_reserve
+            why += ["%d (%s)" % (s, spend.reserve_problem()) for s in no_reserve
                     if s not in unconfirmed]
             why += ["%d (no Keychain item)" % s for s in missing
                     if s not in unconfirmed and s not in no_reserve]

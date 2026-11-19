@@ -176,6 +176,7 @@ def key_facts():
     """
     out = dict((s, {"credit_usd": None, "expires_at": None, "expires_utc": None,
                     "confirmed_at": None, "purchased_usd": 0.0,
+                    "purchased_observed_at": None,
                     "reserve_usd": None}) for s in SLOTS)
     path = facts_path()
     if not path:
@@ -209,6 +210,8 @@ def key_facts():
         # is the safe direction. See credit_left() for how this drifts.
         out[slot]["purchased_usd"] = _number(
             row.get("purchased_balance_usd_observed")) or 0.0
+        out[slot]["purchased_observed_at"] = _utc_instant(
+            row.get("purchased_balance_observed_at"))
         # A per-key reserve overrides the shared one; see reserve_usd().
         if "reserve_usd" in row:
             out[slot]["reserve_usd"] = _number(row.get("reserve_usd"))
@@ -237,6 +240,15 @@ def reserve_usd(slot, facts=None):
         except ValueError:
             return None
     return ((facts or key_facts()).get(slot) or {}).get("reserve_usd")
+
+
+def reserve_problem():
+    """Why the reserve is unusable, naming the source that is actually wrong.
+    A bad env override must not send the fixer to a facts file that is fine
+    (PR #862 review round 1, minor)."""
+    if os.environ.get("KIPI_FLEET_RESERVE_USD", "").strip():
+        return "KIPI_FLEET_RESERVE_USD is not a non-negative number"
+    return "reserve_usd unset"
 
 
 def configured(slot, facts=None, at=None):
@@ -541,12 +553,33 @@ def unmetered_today(at=None):
                if row.get("day") == day and row.get("unmetered") is True)
 
 
-def balance_usd(slot, facts=None):
+def purchased_usd(slot, at=None, facts=None):
+    """Purchased credit this cycle may count, or $0.
+
+    ONLY A SNAPSHOT READ IN THIS CYCLE COUNTS (PR #862 review round 1, major).
+    Purchased credit does not expire, but spent_cycle() resets at every roll, so
+    an undated snapshot was handed to the fleet again each cycle: $50 bought
+    once authorized $100 over two cycles. A snapshot with no
+    `purchased_balance_observed_at`, or one older than this cycle's start, is
+    $0: the same "unknown is not a number" rule as the rest of this module, and
+    under-counting stops the fleet early, the safe direction.
+    """
+    facts = facts or key_facts()
+    row = facts.get(slot) or {}
+    seen = row.get("purchased_observed_at")
+    bounds = cycle(slot, at, facts)
+    if not row.get("purchased_usd") or seen is None or not bounds:
+        return 0.0
+    return row["purchased_usd"] if budget_day(seen) >= bounds[0] else 0.0
+
+
+def balance_usd(slot, facts=None, at=None):
     """The org's starting balance this cycle: grant plus purchased credit."""
-    row = (facts or key_facts()).get(slot) or {}
+    facts = facts or key_facts()
+    row = facts.get(slot) or {}
     if row.get("credit_usd") is None:
         return None
-    return row["credit_usd"] + (row.get("purchased_usd") or 0.0)
+    return row["credit_usd"] + purchased_usd(slot, at, facts)
 
 
 def credit_left(slot, at=None, facts=None):
@@ -560,9 +593,10 @@ def credit_left(slot, at=None, facts=None):
          (Claudemy) dev runs share org 66a0d86c, which is how that org reached
          -$0.44 on 2026-11-19 while this meter still showed credit.
       2. Unmetered runs (a killed child, no cost envelope) add $0 here.
-      3. purchased_balance_usd_observed is a hand-read snapshot. It does not
-         expire with the cycle, and spend of it in an earlier cycle is not
-         subtracted after spent_cycle() resets.
+      3. purchased_balance_usd_observed is a hand-read snapshot. It counts only
+         when purchased_balance_observed_at falls in this cycle (see
+         purchased_usd()), and spend before that read inside the cycle is
+         subtracted again, so it under-counts, never over-counts.
       4. A Console refund, grant or top-up shows up only when the file is
          edited.
     Drift 1 is why the reserve floor exists at all: the $20 is the margin for
@@ -575,7 +609,7 @@ def credit_left(slot, at=None, facts=None):
     facts = facts or key_facts()
     if not configured(slot, facts, at):
         return None
-    left = balance_usd(slot, facts) - spent_cycle(slot, at, facts)
+    left = balance_usd(slot, facts, at) - spent_cycle(slot, at, facts)
     return round(max(0.0, left), 6)
 
 
@@ -597,7 +631,7 @@ def credit(at=None):
     per_reserve, per_spendable = {}, {}
     for slot in SLOTS:
         per_key[slot] = credit_left(slot, at, facts)
-        per_credit[slot] = balance_usd(slot, facts)
+        per_credit[slot] = balance_usd(slot, facts, at)
         per_reserve[slot] = reserve_usd(slot, facts)
         per_spendable[slot] = spendable_left(slot, at, facts)
         bounds = cycle(slot, at, facts)
@@ -638,7 +672,7 @@ def budget(at=None):
     for slot in known:
         # Paced out of the balance ABOVE the reserve: pacing the reserve too
         # would plan to spend money the founder ruled untouched (2026-11-19).
-        base = max(0.0, balance_usd(slot, facts) - reserve_usd(slot, facts)
+        base = max(0.0, balance_usd(slot, facts, at) - reserve_usd(slot, facts)
                    - spent_cycle(slot, at, facts, before_today=True))
         allowance += base / days_left_in_cycle(slot, at, facts)
     allowance = round(allowance, 6)
@@ -650,6 +684,7 @@ def budget(at=None):
     spent_billable = spent_today(at, slots=known)
     # What the fleet may still spend: above each key's reserve floor.
     left = round(sum(spendable_left(s, at, facts) for s in known), 6)
+    credit_total = round(sum(credit_left(s, at, facts) for s in known), 6)
     if not known:
         reason = ("no key is billable (each needs monthly_credit_usd, a future "
                   "current_cycle_expires_utc, auto_reload_off_confirmed_at and "
@@ -665,7 +700,10 @@ def budget(at=None):
         "allowance_usd": allowance,
         "spent_usd": spent,
         "remaining_usd": round(max(0.0, allowance - spent_billable), 6),
-        "total_credit_left_usd": left,
+        # Two numbers, two names (PR #862 round 1, minor): the org balance
+        # estimate, and what is left above the reserve floors.
+        "total_credit_left_usd": credit_total,
+        "total_spendable_usd": left,
         "known_keys": list(known),
         # Exhausted when the day's allowance is gone, when every known credit
         # is (the hard ceiling Anthropic enforces), or when no key is known.
@@ -793,9 +831,10 @@ def _main(argv):
             print(json.dumps(state, sort_keys=True))
         else:
             print("day=%s allowance=$%.2f spent=$%.2f remaining=$%.2f "
-                  "credit_left=$%.2f exhausted=%s%s"
+                  "credit_left=$%.2f above_reserve=$%.2f exhausted=%s%s"
                   % (state["day"], state["allowance_usd"], state["spent_usd"],
                      state["remaining_usd"], state["total_credit_left_usd"],
+                     state["total_spendable_usd"],
                      "yes" if state["exhausted"] else "no",
                      " (%s)" % state["reason"] if state["reason"] else ""))
         return EXIT_BUDGET_SPENT if state["exhausted"] else EXIT_OK
