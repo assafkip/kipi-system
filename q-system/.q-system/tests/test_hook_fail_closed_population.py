@@ -80,6 +80,10 @@ SECURITY = {
 # ("lints stay as they are"): a lint failing open costs one bad file landing.
 # Moving a name from here to SECURITY is how the tail gets picked up.
 NOT_SECURITY = {
+    # voice-send-check.py (ASK-4969) is not classified by the in-script helper. It fails
+    # closed one layer out: voice-hook-run.sh turns a crash, a timeout and a missing file
+    # into exit 2. That is pinned by test_voice_hook_run.py and test_voice_send_check.py.
+    "voice-send-check.py",
     "token-guard.py", "read-first-gate.py", "agent-brief-one-job-guard.py", "miyo-research-gate.py", "design-chain-gate.py",
     "design-engine-door.py", "enforced-claim-lint.py", "voice-lint.py",
     "voice-substance-lint.py", "voiceloop-band-lint.py", "memory-confidence-validator.py",
