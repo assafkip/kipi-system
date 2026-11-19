@@ -168,7 +168,7 @@ import datetime, json, sys
 end = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=20)
 row = {"monthly_credit_usd": 200, "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z",
        "current_cycle_expires_utc": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
-json.dump({"keys": {"1": row, "2": dict(row)}}, open(sys.argv[1], "w"))
+json.dump({"reserve_usd": 0, "keys": {"1": row, "2": dict(row)}}, open(sys.argv[1], "w"))
 PY
 
 # --- harness ----------------------------------------------------------------

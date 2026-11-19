@@ -31,7 +31,10 @@ never failed over to. An exhausted mark lasts until that key's own billing cycle
 rolls, not until the 1st.
 
 WHAT THE DAY'S BUDGET GATES AND WHAT IT DOES NOT. This module refuses on the
-hard ceiling (every known key's cycle credit gone), never on the day's allowance. The
+hard ceiling (every known key down to its reserve floor, `reserve_usd` in the
+facts file; founder, 2026-11-19: "I want the fleet to stop at $20 left in either
+account"), never on the day's allowance. The ceiling is checked when a run
+starts, so a run in flight is never killed by it. The
 day's allowance stops NEW work in `kipi-dispatch.sh`, where stopping is free. A
 refusal here would kill a run already in flight, which spends the credit that
 produced the partial work and throws the work away.
@@ -69,8 +72,8 @@ Usage:
   fleet_api_key.py probe               # the daily re-probe; exit 0 if the fleet may run
 
 Exit codes: the child's code on a run. 2 usage. 4 no key available (paused,
-nothing in the Keychain, or no key with a known credit). 5 every known key's
-cycle credit is gone.
+nothing in the Keychain, or no key with a known credit and reserve). 5 every
+known key is at its reserve floor.
 
 Env:
   KIPI_FLEET_KEYCHAIN_SERVICE_1/_2  Keychain service names
@@ -303,7 +306,12 @@ def _usable(slot, state, at=None, facts=None):
         return False
     if _mark_current(slot, state.get("exhausted", {}).get(str(slot)), at, facts):
         return False
-    left = spend.credit_left(slot, at, facts)
+    # ABOVE THE RESERVE, not above zero. `left > 0.0` ran each org to its last
+    # cent: org 66a0d86c read -$0.44 on 2026-11-19 and the Starwish runs sharing
+    # it died mid-job. Founder, same day: "I want the fleet to stop at $20 left
+    # in either account." Checked when a run STARTS, so a run already in flight
+    # is never killed; it may finish a little under the floor.
+    left = spend.spendable_left(slot, at, facts)
     return left is not None and left > 0.0
 
 
@@ -502,6 +510,16 @@ def note_unconfirmed(slots):
                      "key %s: auto-reload off is not confirmed, so the fleet does "
                      "not bill it (exit %d). Set auto_reload_off_confirmed_at in %s "
                      "once the founder confirms it in the Console"
+                     % (", ".join(str(s) for s in slots), EXIT_NO_KEY,
+                        spend.facts_path() or "the facts file"))
+
+
+def note_no_reserve(slots):
+    """One `no_reserve` event a budget day while a known key has no reserve floor.
+    Its own kind, so a `no_key` or `unconfirmed` row does not dedupe it away."""
+    spend.event_once("no_reserve",
+                     "key %s: reserve_usd is unset, so the fleet does not bill it "
+                     "(exit %d). Set reserve_usd in %s (founder ruling 2026-11-19)"
                      % (", ".join(str(s) for s in slots), EXIT_NO_KEY,
                         spend.facts_path() or "the facts file"))
 
@@ -772,20 +790,27 @@ def cmd_exec(argv, actor=None):
     if not spend.billable_slots(facts):
         # A KNOWN CREDIT IS NOT ENOUGH. With auto-reload on, or the credit not
         # yet claimed, the first run past the credit charges the founder's card.
-        note_unconfirmed(spend.unconfirmed_slots(facts))
-        sys.stderr.write("fleet_api_key: no key has auto-reload confirmed off "
-                         "(auto_reload_off_confirmed_at in %s); no run\n"
+        # And with no reserve floor the run could spend the founder's $20.
+        unconfirmed = spend.unconfirmed_slots(facts)
+        if unconfirmed:
+            note_unconfirmed(unconfirmed)
+        no_reserve = spend.no_reserve_slots(facts)
+        if no_reserve:
+            note_no_reserve(no_reserve)
+        sys.stderr.write("fleet_api_key: no key is billable (needs "
+                         "auto_reload_off_confirmed_at and reserve_usd in %s); no run\n"
                          % (spend.facts_path() or "(no facts file)"))
         return EXIT_NO_KEY
 
     # BILLABLE keys only. A key whose auto-reload is unconfirmed still has a
     # credit_left, and counting it let a spent fleet through this check to
     # refuse later with a "paused" message that named the wrong cause.
-    if all((spend.credit_left(s, None, facts) or 0.0) <= 0.0
+    # SPENDABLE, not credit_left: every key at its reserve floor is the ceiling.
+    if all((spend.spendable_left(s, None, facts) or 0.0) <= 0.0
            for s in spend.billable_slots(facts)):
-        sys.stderr.write("fleet_api_key: every known key's cycle credit is spent; "
-                         "no run. Nothing here buys credit.\n")
-        spend.event_once("pause", "every known key's cycle credit is spent")
+        sys.stderr.write("fleet_api_key: every known key is at its reserve floor "
+                         "(reserve_usd); no run. Nothing here buys credit.\n")
+        spend.event_once("pause", "every known key is at its reserve floor")
         return EXIT_CREDIT_GONE
 
     # The only consuming caller: this is the path that actually runs something,
@@ -910,14 +935,20 @@ def _main(argv):
         # the pacer stop on it (orchestrator, 2026-11-10: "probe must also
         # answer red for an unconfirmed key").
         unconfirmed = spend.unconfirmed_slots(facts)
+        no_reserve = spend.no_reserve_slots(facts)
         missing = missing_slots(facts)
-        if unconfirmed or missing:
+        if unconfirmed or no_reserve or missing:
             if unconfirmed:
                 note_unconfirmed(unconfirmed)
+            if no_reserve:
+                note_no_reserve(no_reserve)
             if missing:
                 note_missing_key(missing)
             why = ["%d (auto-reload off not confirmed)" % s for s in unconfirmed]
-            why += ["%d (no Keychain item)" % s for s in missing if s not in unconfirmed]
+            why += ["%d (reserve_usd unset)" % s for s in no_reserve
+                    if s not in unconfirmed]
+            why += ["%d (no Keychain item)" % s for s in missing
+                    if s not in unconfirmed and s not in no_reserve]
             print("no key %s" % ", ".join(why))
             return EXIT_NO_KEY
         slot = usable_slot()

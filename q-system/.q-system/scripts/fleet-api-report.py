@@ -72,8 +72,10 @@ DEFAULT_CHIEF_ROOT = os.path.join(os.path.expanduser("~"), "projects", "chief")
 #: is filed once a budget day by `fleet_api_key.note_missing_key`, so putting it
 #: here costs one message, not 96.
 #: `unconfirmed` too: a key whose auto-reload is not confirmed off runs nothing,
-#: which also reads as a quiet day unless it is said.
-STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key", "unconfirmed")
+#: which also reads as a quiet day unless it is said. `no_reserve` for the same
+#: reason: a key with no reserve floor set runs nothing (2026-11-19).
+STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key", "unconfirmed",
+                      "no_reserve")
 
 
 def receipt_path():
@@ -198,6 +200,7 @@ FOUNDER_SENTENCES = {
     "failover": "One key ran out of credit, so the fleet moved to the other key.",
     "no_key": "For part of the day the fleet had no key it could use, so it ran nothing then. Sana has it.",
     "unconfirmed": "A key is not used until its auto-reload is confirmed off. Sana has it.",
+    "no_reserve": "A key is not used until its reserve floor is set. Sana has it.",
 }
 
 
@@ -212,7 +215,9 @@ def founder_text(budget, credit, closed, closed_err, ready_total, per_project,
     lines = ["Fleet API credit, %s" % budget["day"]]
     lines.append("spent today: $%.2f of $%.2f" % (budget["spent_usd"], budget["allowance_usd"]))
     for slot in spend.SLOTS:
-        if credit["per_key_usd"].get(slot) is None or slot in (credit.get("unconfirmed_keys") or []):
+        if (credit["per_key_usd"].get(slot) is None
+                or slot in (credit.get("unconfirmed_keys") or [])
+                or slot in (credit.get("no_reserve_keys") or [])):
             lines.append("key %d: not in use yet. Sana is finishing its setup." % slot)
         else:
             lines.append(spend.describe_key(credit, slot))

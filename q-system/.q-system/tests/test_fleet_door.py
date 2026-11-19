@@ -75,7 +75,7 @@ def write_facts(path):
     row = {"monthly_credit_usd": 200, "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z",
            "current_cycle_expires_utc": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
     with open(path, "w") as fh:
-        json.dump({"keys": {"1": row, "2": dict(row)}}, fh)
+        json.dump({"reserve_usd": 0, "keys": {"1": row, "2": dict(row)}}, fh)
 
 
 #: A `security` that only records it was called. On PATH first in the case that

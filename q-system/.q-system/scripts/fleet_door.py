@@ -197,6 +197,10 @@ REFUSAL_PHRASES = (
     "no key has a known credit",
     "no key has auto-reload confirmed off",
     "cycle credit is spent",
+    # The reserve-floor wording (2026-11-19). The two above stay for a helper
+    # from an older checkout still running beside this one.
+    "no key is billable",
+    "is at its reserve floor",
     "paused (both credits read as exhausted)",
     "no key for slot",
     "both credits read as exhausted",

@@ -89,7 +89,9 @@ EXP_DEC26 = utc_of_local(2026, 12, 26, 7, 0, 0)
 #: EXP_NOV26 so the failover cases have somewhere to go, both confirmed so they
 #: are billable. Cases about an unknown, ended or unconfirmed key overwrite rows.
 CONFIRMED = "2026-11-10T21:00:00Z"
-FACTS = {"keys": {
+#: reserve_usd 0 ON PURPOSE: the arithmetic cases above predate the $20 floor
+#: and keep their numbers; TestTheReserveFloor sets the floor itself.
+FACTS = {"reserve_usd": 0, "keys": {
     "1": {"monthly_credit_usd": 100, "current_cycle_expires_utc": EXP_NOV26,
           "auto_reload_off_confirmed_at": CONFIRMED},
     "2": {"monthly_credit_usd": 200, "current_cycle_expires_utc": EXP_NOV26,
@@ -1183,6 +1185,123 @@ class TestTheDetectorDirectly(Base):
                          "a non-API stop reason is not an API refusal")
         self.assertFalse(keymod.declared_error(None))
         self.assertFalse(keymod.declared_error("not a dict"))
+
+
+class TestTheReserveFloor(Base):
+    """THE $20 FLOOR (founder, 2026-11-19, verbatim): "I don't know that I always
+    have $200. Maybe one day I'll have more. I want the fleet to stop at $20 left
+    in either account."
+
+    The scar: on 2026-11-19 org 66a0d86c read $200.44 spent of a $200 credit and
+    two Starwish dev runs sharing that org died mid-job with "Credit balance is
+    too low". The fleet spent each key to zero because `_usable` read `left > 0`.
+    These cases fail on that code: a key with $15 left was still run.
+    """
+
+    def _facts(self, reserve=20, key1=None, key2=None):
+        facts = json.loads(json.dumps(FACTS))
+        facts["reserve_usd"] = reserve
+        if key1:
+            facts["keys"]["1"].update(key1)
+        if key2:
+            facts["keys"]["2"].update(key2)
+        write_facts(self.facts, facts)
+        return facts
+
+    def test_a_key_with_15_left_is_not_started_on_the_next_key_is(self):
+        self._facts(reserve=20)
+        spend.record(1, 85.0, actor="worker")          # key 1: $100 - $85 = $15
+        rc = self.run_exec()
+        self.assertEqual(rc, 0)
+        self.assertEqual([c["slot"] for c in self.calls()], ["2"],
+                         "key 1 had $15 left, under the $20 floor, and still ran")
+
+    def test_both_keys_at_the_floor_start_nothing(self):
+        self._facts(reserve=20)
+        spend.record(1, 85.0, actor="worker")          # $15 left
+        spend.record(2, 181.0, actor="worker")         # $19 left
+        rc = self.run_exec()
+        self.assertEqual(rc, keymod.EXIT_CREDIT_GONE)
+        self.assertEqual(self.calls(), [], "a floored fleet started a run")
+        b = spend.budget()
+        self.assertTrue(b["exhausted"])
+        self.assertIn("reserve", b["reason"])
+
+    def test_negative_self_test_with_no_floor_the_same_key_runs(self):
+        """Proves the case above can pass for the right reason: the same ledger
+        with an explicit $0 reserve runs key 1, so the floor is what stopped it."""
+        self._facts(reserve=0)
+        spend.record(1, 85.0, actor="worker")
+        self.assertEqual(self.run_exec(), 0)
+        self.assertEqual([c["slot"] for c in self.calls()], ["1"])
+
+    def test_a_500_balance_floors_at_20_not_at_200(self):
+        """The floor is $20 LEFT of the org's balance, grant plus purchased, not
+        a fixed $200 ceiling. $450 grant + $50 purchased = $500."""
+        self._facts(reserve=20, key1={"monthly_credit_usd": 450,
+                                      "purchased_balance_usd_observed": 50})
+        spend.record(1, 300.0, actor="worker")         # $200 left: far above $20
+        self.assertEqual(self.run_exec(), 0)
+        spend.record(1, 175.0, actor="worker")         # $500 - $475.25 = $24.75
+        self.assertEqual(self.run_exec(), 0)
+        self.assertEqual([c["slot"] for c in self.calls()], ["1", "1"],
+                         "key 1 stopped above its floor")
+        spend.record(1, 5.0, actor="worker")           # now under $20
+        self.run_exec()
+        self.assertEqual(self.calls()[-1]["slot"], "2",
+                         "key 1 ran with under $20 of a $500 balance left")
+
+    def test_purchased_balance_counts_toward_what_is_left(self):
+        self._facts(reserve=20, key1={"purchased_balance_usd_observed": 13.34})
+        self.assertAlmostEqual(spend.credit_left(1), 113.34, places=6)
+        self.assertAlmostEqual(spend.spendable_left(1), 93.34, places=6)
+
+    def test_the_allowance_never_paces_the_reserve(self):
+        os.environ["KIPI_FLEET_NOW"] = NOW
+        self._facts(reserve=20)
+        b = spend.budget()
+        self.assertAlmostEqual(b["allowance_usd"], 80.0 / 17 + 180.0 / 17, places=4)
+        self.assertAlmostEqual(b["total_credit_left_usd"], 260.0, places=2)
+
+    def test_a_per_key_reserve_overrides_the_shared_one(self):
+        self._facts(reserve=20, key2={"reserve_usd": 50})
+        self.assertAlmostEqual(spend.reserve_usd(1), 20.0)
+        self.assertAlmostEqual(spend.reserve_usd(2), 50.0)
+
+    def test_the_env_override_wins(self):
+        self._facts(reserve=20)
+        os.environ["KIPI_FLEET_RESERVE_USD"] = "35"
+        self.assertAlmostEqual(spend.reserve_usd(1), 35.0)
+
+    def test_an_unset_reserve_runs_nothing_and_says_which_field(self):
+        """Unknown is not zero (the module docstring's rule for credit and cycle).
+        A reserve that silently read as $0 would be the exact bug above."""
+        facts = json.loads(json.dumps(FACTS))
+        facts.pop("reserve_usd", None)
+        write_facts(self.facts, facts)
+        self.assertIsNone(spend.reserve_usd(1))
+        self.assertEqual(spend.billable_slots(), ())
+        self.assertEqual(self.run_exec(), keymod.EXIT_NO_KEY)
+        self.assertEqual(self.calls(), [])
+        out = io.StringIO()
+        saved, sys.stdout = sys.stdout, out
+        try:
+            rc = keymod._main(["probe"])
+        finally:
+            sys.stdout = saved
+        self.assertEqual(rc, keymod.EXIT_NO_KEY)
+        self.assertTrue(out.getvalue().startswith("no key"), out.getvalue())
+        self.assertIn("reserve_usd", out.getvalue())
+
+    def test_a_negative_or_text_reserve_is_unset_not_zero(self):
+        for bad in (-5, "twenty", None, True):
+            self._facts(reserve=bad)
+            self.assertIsNone(spend.reserve_usd(1), "reserve %r was accepted" % (bad,))
+
+    def test_the_report_line_names_the_floor(self):
+        self._facts(reserve=20)
+        line = spend.describe_key(spend.credit(), 1)
+        self.assertIn("$20.00 reserve", line)
 
 
 if __name__ == "__main__":

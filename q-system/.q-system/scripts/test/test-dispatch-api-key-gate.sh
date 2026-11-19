@@ -134,7 +134,7 @@ if sys.argv[3] == "yes":
 k2 = {"monthly_credit_usd": None if sys.argv[2] == "null" else int(sys.argv[2]),
       "current_cycle_expires_utc": None if sys.argv[2] == "null" else EXP,
       "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z"}
-json.dump({"keys": {"1": k1, "2": k2}}, open(sys.argv[1], "w"))
+json.dump({"reserve_usd": 0, "keys": {"1": k1, "2": k2}}, open(sys.argv[1], "w"))
 FACTSPY
 }
 write_facts "$WORK/facts.json" 200 yes

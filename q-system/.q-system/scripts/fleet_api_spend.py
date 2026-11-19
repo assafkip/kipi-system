@@ -16,7 +16,10 @@ This module owns two questions and nothing else:
 
 WHERE THE CREDIT FACTS LIVE. `~/.config/kipi/fleet-api.json`, one row per key:
 `monthly_credit_usd`, `current_cycle_expires_utc` and
-`auto_reload_off_confirmed_at`, each with its source. No amount or date is
+`auto_reload_off_confirmed_at`, each with its source, plus `reserve_usd` (top
+level or per key: the floor each org keeps untouched, founder 2026-11-19) and
+`purchased_balance_usd_observed` (purchased credit, added to the balance). No
+amount or date is
 written in this file. The first build assumed $250 per key per calendar month;
 both halves were wrong (Help Center article 17154008, read 2026-11-10): the
 credit is $100 on Max and $200 on Ultra, and it refreshes per BILLING CYCLE and
@@ -70,6 +73,7 @@ Env:
                             (default ~/.config/kipi/fleet-api.json; under
                             KIPI_TEST=1 there is NO default, so a suite can
                             never read the live file)
+  KIPI_FLEET_RESERVE_USD    overrides reserve_usd for every key
   KIPI_DISPATCH_RESET_HOUR  budget-day boundary, local hour (default 7)
   KIPI_FLEET_NOW            epoch seconds; the test clock
 """
@@ -171,7 +175,8 @@ def key_facts():
     key UNKNOWN, and an unknown key is never run (see the module docstring).
     """
     out = dict((s, {"credit_usd": None, "expires_at": None, "expires_utc": None,
-                    "confirmed_at": None}) for s in SLOTS)
+                    "confirmed_at": None, "purchased_usd": 0.0,
+                    "reserve_usd": None}) for s in SLOTS)
     path = facts_path()
     if not path:
         _warn("KIPI_TEST=1 and KIPI_FLEET_API_FACTS is unset: every key's credit "
@@ -199,7 +204,39 @@ def key_facts():
         confirmed = row.get("auto_reload_off_confirmed_at")
         if isinstance(confirmed, str) and confirmed.strip():
             out[slot]["confirmed_at"] = confirmed.strip()
+        # Purchased (non-expiring) credit the org also holds. A missing or bad
+        # value is $0: under-counting the balance stops the fleet EARLY, which
+        # is the safe direction. See credit_left() for how this drifts.
+        out[slot]["purchased_usd"] = _number(
+            row.get("purchased_balance_usd_observed")) or 0.0
+        # A per-key reserve overrides the shared one; see reserve_usd().
+        if "reserve_usd" in row:
+            out[slot]["reserve_usd"] = _number(row.get("reserve_usd"))
+        else:
+            out[slot]["reserve_usd"] = _number(doc.get("reserve_usd"))
     return out
+
+
+def reserve_usd(slot, facts=None):
+    """Dollars the fleet must leave untouched in this key's org, or None.
+
+    Founder, 2026-11-19, verbatim: "I don't know that I always have $200. Maybe
+    one day I'll have more. I want the fleet to stop at $20 left in either
+    account." The amount lives in the facts file (`reserve_usd`, top level, or
+    per key), never here. KIPI_FLEET_RESERVE_USD overrides both.
+
+    UNSET IS NOT ZERO. A reserve that read as $0 when missing is the exact bug
+    the ruling fixed: org 66a0d86c ran to -$0.44 on 2026-11-19 and the two
+    Starwish runs sharing it died mid-job. So an unset or unreadable reserve
+    makes the key unbillable, and probe names the field.
+    """
+    env = os.environ.get("KIPI_FLEET_RESERVE_USD", "").strip()
+    if env:
+        try:
+            return _number(float(env))
+        except ValueError:
+            return None
+    return ((facts or key_facts()).get(slot) or {}).get("reserve_usd")
 
 
 def configured(slot, facts=None, at=None):
@@ -235,7 +272,10 @@ def billable(slot, facts=None, at=None):
     orchestrator one slot at a time. No timestamp, no run.
     """
     facts = facts or key_facts()
-    return configured(slot, facts, at) and bool((facts.get(slot) or {}).get("confirmed_at"))
+    return (configured(slot, facts, at)
+            and bool((facts.get(slot) or {}).get("confirmed_at"))
+            # And a known reserve floor (founder, 2026-11-19; see reserve_usd).
+            and reserve_usd(slot, facts) is not None)
 
 
 def billable_slots(facts=None, at=None):
@@ -247,8 +287,18 @@ def billable_slots(facts=None, at=None):
 def unconfirmed_slots(facts=None, at=None):
     """Keys with a known credit and cycle whose auto-reload is not confirmed off."""
     facts = facts or key_facts()
+    # Read the confirmation itself, not `not billable`: a key unbillable for a
+    # missing reserve would otherwise be reported with the wrong cause.
     return tuple(s for s in SLOTS
-                 if configured(s, facts, at) and not billable(s, facts, at))
+                 if configured(s, facts, at)
+                 and not (facts.get(s) or {}).get("confirmed_at"))
+
+
+def no_reserve_slots(facts=None, at=None):
+    """Keys with a known credit and cycle whose reserve floor is unset."""
+    facts = facts or key_facts()
+    return tuple(s for s in SLOTS
+                 if configured(s, facts, at) and reserve_usd(s, facts) is None)
 
 
 def reset_hour():
@@ -491,23 +541,65 @@ def unmetered_today(at=None):
                if row.get("day") == day and row.get("unmetered") is True)
 
 
+def balance_usd(slot, facts=None):
+    """The org's starting balance this cycle: grant plus purchased credit."""
+    row = (facts or key_facts()).get(slot) or {}
+    if row.get("credit_usd") is None:
+        return None
+    return row["credit_usd"] + (row.get("purchased_usd") or 0.0)
+
+
 def credit_left(slot, at=None, facts=None):
-    """What this key has left of its cycle's credit, never below zero. None when
-    the credit is unknown: an unknown is not a zero and not a number."""
+    """An ESTIMATE of this key's org balance, never below zero. None when the
+    credit is unknown: an unknown is not a zero and not a number.
+
+    WHAT IT READS: (monthly_credit_usd + purchased_balance_usd_observed) from
+    the facts file, minus what THIS ledger recorded for the key this cycle. It
+    is not Anthropic's balance, and it drifts from it four ways:
+      1. Spend outside the fleet in the same org is invisible here. Starwish
+         (Claudemy) dev runs share org 66a0d86c, which is how that org reached
+         -$0.44 on 2026-11-19 while this meter still showed credit.
+      2. Unmetered runs (a killed child, no cost envelope) add $0 here.
+      3. purchased_balance_usd_observed is a hand-read snapshot. It does not
+         expire with the cycle, and spend of it in an earlier cycle is not
+         subtracted after spent_cycle() resets.
+      4. A Console refund, grant or top-up shows up only when the file is
+         edited.
+    Drift 1 is why the reserve floor exists at all: the $20 is the margin for
+    what this meter cannot see. No balance read is known for a standard API
+    key (2026-11-18: none is used anywhere in this repo), and Anthropic's
+    usage and cost reports need an admin key the fleet does not hold and was
+    told not to add. The only live signal is a refusal, which
+    reads_as_exhausted() in fleet_api_key.py catches.
+    """
     facts = facts or key_facts()
     if not configured(slot, facts, at):
         return None
-    left = facts[slot]["credit_usd"] - spent_cycle(slot, at, facts)
+    left = balance_usd(slot, facts) - spent_cycle(slot, at, facts)
     return round(max(0.0, left), 6)
+
+
+def spendable_left(slot, at=None, facts=None):
+    """credit_left() minus the reserve floor, never below zero. None when either
+    is unknown. This, not credit_left(), is what decides whether a key runs."""
+    facts = facts or key_facts()
+    left = credit_left(slot, at, facts)
+    floor = reserve_usd(slot, facts)
+    if left is None or floor is None:
+        return None
+    return round(max(0.0, left - floor), 6)
 
 
 def credit(at=None):
     """Per-key credit, cycle and what is left. Unknown keys are listed, not zeroed."""
     facts = key_facts()
     per_key, per_credit, per_cycle = {}, {}, {}
+    per_reserve, per_spendable = {}, {}
     for slot in SLOTS:
         per_key[slot] = credit_left(slot, at, facts)
-        per_credit[slot] = facts[slot]["credit_usd"]
+        per_credit[slot] = balance_usd(slot, facts)
+        per_reserve[slot] = reserve_usd(slot, facts)
+        per_spendable[slot] = spendable_left(slot, at, facts)
         bounds = cycle(slot, at, facts)
         per_cycle[slot] = None if not bounds else {
             "start": bounds[0], "end": bounds[1],
@@ -517,8 +609,11 @@ def credit(at=None):
         "per_key_usd": per_key,
         "per_key_credit_usd": per_credit,
         "per_key_cycle": per_cycle,
+        "per_key_reserve_usd": per_reserve,
+        "per_key_spendable_usd": per_spendable,
         "unknown_keys": [s for s in SLOTS if not configured(s, facts, at)],
         "unconfirmed_keys": list(unconfirmed_slots(facts, at)),
+        "no_reserve_keys": list(no_reserve_slots(facts, at)),
         "per_key_expires_utc": dict((s, facts[s]["expires_utc"]) for s in SLOTS),
         "total_left_usd": round(sum(v for v in per_key.values() if v is not None), 6),
     }
@@ -541,7 +636,9 @@ def budget(at=None):
     known = billable_slots(facts, at)
     allowance = 0.0
     for slot in known:
-        base = max(0.0, facts[slot]["credit_usd"]
+        # Paced out of the balance ABOVE the reserve: pacing the reserve too
+        # would plan to spend money the founder ruled untouched (2026-11-19).
+        base = max(0.0, balance_usd(slot, facts) - reserve_usd(slot, facts)
                    - spent_cycle(slot, at, facts, before_today=True))
         allowance += base / days_left_in_cycle(slot, at, facts)
     allowance = round(allowance, 6)
@@ -551,13 +648,14 @@ def budget(at=None):
     # to the other key's share would stop that key early.
     spent = spent_today(at)
     spent_billable = spent_today(at, slots=known)
-    left = round(sum(credit_left(s, at, facts) for s in known), 6)
+    # What the fleet may still spend: above each key's reserve floor.
+    left = round(sum(spendable_left(s, at, facts) for s in known), 6)
     if not known:
         reason = ("no key is billable (each needs monthly_credit_usd, a future "
-                  "current_cycle_expires_utc and auto_reload_off_confirmed_at) in %s"
-                  % (facts_path() or "(no facts file)"))
+                  "current_cycle_expires_utc, auto_reload_off_confirmed_at and "
+                  "reserve_usd) in %s" % (facts_path() or "(no facts file)"))
     elif left <= 0.0:
-        reason = "every known key's cycle credit is spent"
+        reason = "every known key is at its reserve floor (cycle credit spent down to reserve_usd)"
     elif spent_billable >= allowance:
         reason = "today's allowance is spent"
     else:
@@ -643,11 +741,17 @@ def describe_key(state, slot):
         return ("key %d: NOT USED, billing cycle unknown. Set "
                 "current_cycle_expires_utc for key %d in %s (the Console Billing "
                 "page shows it)" % (slot, slot, where))
+    if slot in (state.get("no_reserve_keys") or []):
+        return ("key %d: NOT USED, its reserve floor is unset. Set reserve_usd (top "
+                "level or for key %d) in %s (founder ruling 2026-11-19)"
+                % (slot, slot, where))
     cyc = state["per_key_cycle"][slot]
-    return ("key %d: $%.2f left of $%.2f this cycle (ends %s, %d budget day%s left)"
+    reserve = (state.get("per_key_reserve_usd") or {}).get(slot) or 0.0
+    return ("key %d: $%.2f left of $%.2f this cycle (ends %s, %d budget day%s "
+            "left), stops at the $%.2f reserve"
             % (slot, left, state["per_key_credit_usd"][slot],
                state["per_key_expires_utc"][slot], cyc["days_left"],
-               "" if cyc["days_left"] == 1 else "s"))
+               "" if cyc["days_left"] == 1 else "s", reserve))
 
 
 def _main(argv):

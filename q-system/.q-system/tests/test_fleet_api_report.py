@@ -60,7 +60,8 @@ CONFIRMED = "2026-11-10T21:00:00Z"
 #: the local instant so the budget-day count holds in any zone (CI is UTC).
 EXP = dt.datetime(2026, 11, 26, 7, 0, 0).astimezone(dt.timezone.utc) \
     .strftime("%Y-%m-%dT%H:%M:%SZ")
-FACTS = {"keys": {
+#: A reserve floor is required since 2026-11-19 (fleet_api_spend.reserve_usd).
+FACTS = {"reserve_usd": 20, "keys": {
     "1": {"monthly_credit_usd": 100, "current_cycle_expires_utc": EXP,
           "auto_reload_off_confirmed_at": CONFIRMED},
     "2": {"monthly_credit_usd": 200, "current_cycle_expires_utc": EXP,

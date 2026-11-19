@@ -70,7 +70,7 @@ def stub(tmp_path, monkeypatch):
     end = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=20))
     row = {"monthly_credit_usd": 200, "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z",
            "current_cycle_expires_utc": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
-    (tmp_path / "fleet-api.json").write_text(json.dumps({"keys": {"1": row, "2": dict(row)}}))
+    (tmp_path / "fleet-api.json").write_text(json.dumps({"reserve_usd": 0, "keys": {"1": row, "2": dict(row)}}))
     monkeypatch.setenv("KIPI_FLEET_API_FACTS", str(tmp_path / "fleet-api.json"))
     for var, name in (("KIPI_FLEET_SPEND_LEDGER", "spend.jsonl"),
                       ("KIPI_FLEET_EVENTS", "events.jsonl"), ("KIPI_FLEET_STATE", "state.json")):
