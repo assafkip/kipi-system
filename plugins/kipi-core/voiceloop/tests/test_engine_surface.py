@@ -138,6 +138,7 @@ EXPECTED_MODULES = (
     "meaning_check",
     "model_gate",
     "opener_gate",
+    "part_runs",
     "placeholder_gate",
     "post_repair",
     "prompt_render",
