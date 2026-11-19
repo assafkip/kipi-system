@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test_voice_loop_naming.py",
+ "runner": "pytest"
+}
