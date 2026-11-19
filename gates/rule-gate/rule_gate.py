@@ -405,7 +405,13 @@ def check_section(head, body, id_owner, here):
         return "no 'Rule-ID:' line"
     rid = m.group(1)
     owner = id_owner.get(rid)
-    if owner and owner != here:
+    # AN IDENTICAL BODY IS THE SAME RULE, NOT A SECOND OWNER (ASK-5448). The skeleton syncs
+    # one rule file into every instance, and hot_set() walks up through nested repos
+    # (consulting/projects/4_points_consulting), so one session sees two byte-identical
+    # copies. Refusing them stripped both preambles on every tool call on 2026-11-18,
+    # while consulting's integrity tripwire put its copy back: two writers in a loop. A
+    # different body under the same id is still a second rule and is still refused.
+    if owner and owner[:2] != here and owner[2].strip() != body.strip():
         return f"{rid}: Rule-ID already belongs to {owner[0]} :: {owner[1][:50]}"
     e = ENF_RX.search(body)
     if not e:
@@ -587,7 +593,7 @@ def id_index(files, exclude=None):
         for head, body in sections(text):
             m = ID_RX.search(body)
             if m and m.group(1) not in idx:
-                idx[m.group(1)] = (os.path.realpath(f), head)
+                idx[m.group(1)] = (os.path.realpath(f), head, body)
     return idx
 
 

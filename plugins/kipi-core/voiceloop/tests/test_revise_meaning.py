@@ -161,9 +161,68 @@ def test_a_span_rewrite_rule_still_refuses_an_added_figure():
                 [{"rule": "marketer-ending", "detail": "x"}])
 
 
-def test_every_exempted_rule_name_is_a_rule_the_reviser_has_guidance_for():
-    for name in revise.SPAN_REWRITE_RULES | revise._NUMBER_RULES | revise.REWRITE_RULES:
+def test_every_strict_rule_name_is_a_rule_the_reviser_has_guidance_for():
+    # A literal set, so a rename of a RULE_GUIDANCE key makes this fail (round 3 review:
+    # the old set was DERIVED from the keys and could not fail on a rename).
+    assert revise.STRICT_RULES
+    for name in revise.STRICT_RULES:
         assert name in revise.RULE_GUIDANCE, name
+
+
+@pytest.mark.parametrize("rule,original,revised", [
+    # round 3 (consulting PR #616 review): rules the old name lists missed.
+    ("figure-in-post", "We shipped 1,990 fixes in 3 hours.",
+     "We shipped a large number of fixes."),
+    ("voice-style-hedge_count", "It might fail. It will retry.", "It fails. It will retry."),
+    ("voice-style-sentence_mean", "It will retry, and if it fails it will not stop.",
+     "It retries. It fails. It keeps going."),
+    ("some-rule-nobody-has-written-yet", "It may drop 3 rows.", "It drops rows."),
+])
+def test_a_rule_outside_the_strict_set_is_never_refused_for_a_removal(rule, original, revised):
+    calls = []
+    out = revise.revise(original, [{"rule": rule, "detail": "x"}],
+                        runner=lambda prompt: calls.append(prompt) or revised)
+    assert out == revised and len(calls) == 1
+
+
+def test_a_strict_rule_still_refuses_a_dropped_modal():
+    with pytest.raises(revise.MeaningRefused):
+        _revise("It might fail.", "It fails.", [{"rule": "banned-word", "detail": "x"}])
+
+
+def test_mixed_strict_and_lenient_rules_are_lenient():
+    out = _revise("It might fail.", "It fails.",
+                  [{"rule": "banned-word", "detail": "x"},
+                   {"rule": "voice-style-hedge_count", "detail": "x"}])
+    assert out == "It fails."
+
+
+def test_the_lane_catches_the_class_it_imports_not_one_read_off_the_injected_object():
+    # PR #616 review, major: production injects a SimpleNamespace (post_envelope.revise_port),
+    # which has no MeaningRefused attribute, so a getattr fallback caught nothing.
+    import ast
+    from voiceloop import gate_and_judge
+    assert gate_and_judge.MeaningRefused is meaning_check.MeaningRefused
+    assert revise.MeaningRefused is meaning_check.MeaningRefused
+    tree = ast.parse(open(gate_and_judge.__file__).read())
+    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+             and n.attr == "MeaningRefused" and isinstance(n.value, ast.Name)
+             and n.value.id == "revise"]
+    assert not reads, "gate_and_judge reads MeaningRefused off the injected revise"
+
+
+def test_the_retry_names_every_enforced_modal_and_sits_apart_from_the_post():
+    prompts = []
+
+    def runner(prompt):
+        prompts.append(prompt)
+        return "The cache must expire after a deploy."
+    with pytest.raises(revise.MeaningRefused):
+        revise.revise("The cache may expire after a deploy.", VIOLATIONS, runner=runner)
+    before, after = prompts[1].split("YOUR LAST ANSWER")
+    for word in meaning_check.MODALS:
+        assert word in after, word
+    assert "END OF POST" in before[-80:]
 
 
 def test_a_shortened_magnitude_is_the_same_figure():
@@ -192,12 +251,3 @@ def test_known_limit_the_compare_ignores_position():
     # Pinned, not endorsed: a moved token reads as intact. The docstring says so; this
     # test fails the day someone adds an ordered compare, so the docstring gets updated.
     assert meaning_check.changes("from 900 ms to 120 ms", "from 120 ms to 900 ms") == {}
-
-
-def test_an_old_injected_revise_without_the_new_class_does_not_mask_the_real_error():
-    import types
-    from voiceloop import gate_and_judge
-    old = types.ModuleType("revise")
-    assert gate_and_judge._meaning_refused(old) is not Exception
-    assert issubclass(gate_and_judge._meaning_refused(old), Exception)
-    assert gate_and_judge._meaning_refused(revise) is revise.MeaningRefused

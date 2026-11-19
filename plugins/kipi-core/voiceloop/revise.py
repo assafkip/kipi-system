@@ -201,20 +201,21 @@ RULE_GUIDANCE = {
     "slash-command": "name the command in prose without the leading slash.",
 }
 
-#: Rules whose own guidance orders a SPAN of prose replaced (ASK-5428 round 2, PR #843
-#: review, major). A paraphrase keeps the meaning and not the token multiset: "Rewrite the
-#: LAST LINE only" deletes a question that carries "can" and writes a verdict that may carry
-#: "never"; "trim connectives" removes an "if". The small-word compare refused those correct
-#: fixes after two writer-tier calls, and `decide` then discarded the candidate, the same
-#: starvation `REWRITE_RULES` documents for x-too-long. For these rules the negation, modal
-#: and condition compare is skipped and removals are allowed; an ADDED figure is still
-#: refused. The cost, stated: drift of a small word inside a rewritten span is not caught by
-#: this check for these rules; the style gates re-judge the result. Derived from
-#: RULE_GUIDANCE keys so a renamed rule fails `test_every_exempted_rule_name_...`.
-SPAN_REWRITE_RULES = frozenset(
-    name for name in RULE_GUIDANCE
-    if name in ("marketer-ending", "voice-echo", "voice-opener-echo", "source-shape")
-    or name.startswith(("voicefp-", "voice-style-")))
+#: The ONLY rules whose fix is a mechanical word swap, where every number, negation, modal
+#: and condition must survive exactly. Every OTHER rule (a span rewrite, a figure removal,
+#: a style repair, a rule nobody has written yet) is checked leniently: removals allowed,
+#: negation/modal/condition compare skipped, an ADDED figure still refused.
+#:
+#: why the list names the STRICT rules and not the exempt ones (ASK-5428 round 3, PR #616
+#: review): rounds 1 and 2 listed the exempt rules by name and each round missed some
+#: (`figure-in-post`, 8 of 13 `voice-style-*`). A name missing from an exempt list FAILS
+#: CLOSED: a correct repair is refused after two writer-tier calls and `decide` discards the
+#: candidate. A name missing from THIS list fails open for one rule. The cost, stated: small
+#: word drift inside a lenient rule's rewrite is not caught here; the downstream gates
+#: re-judge the result. A literal set, so a renamed RULE_GUIDANCE key fails
+#: `test_every_strict_rule_name_...` (a set derived from the keys could not fail).
+STRICT_RULES = frozenset({"banned-word", "banned-phrase", "emdash", "double-dash",
+                          "capitalization", "slash-command"})
 
 
 #: Who the post is attributed to inside the instruction, when the caller names nobody.
@@ -345,29 +346,15 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
 
 
 #: Rules whose fix changes numbers by design; the figure gate re-judges the result.
-#: Every name here is a key of RULE_GUIDANCE ("figure-in-post" was a guessed name that
-#: matched no producer, PR #843 review).
 _NUMBER_RULES = frozenset({"figure-unsourced", "stats-citation", "substance-number"})
 
 
-class MeaningRefused(Exception):
-    """A revision changed a number, negation, modal or condition. Never a silent pass.
-
-    An `Exception` on purpose: the decide ladder ("regenerator raised"), the critic
-    ("reviser raised") and the editor revise already turn an exception into a discard
-    whose reason carries `str(exc)`, so the changed tokens land in every trail without
-    a new reader. `gate_and_judge`'s style revise caught only `GateRefused` and gets its
-    own catch. `changes` is the dict from `meaning_check.changes`.
-    """
-
-    def __init__(self, changes):
-        self.changes = changes
-        super().__init__("revision changed meaning (%s)" % meaning_check.describe(changes))
+MeaningRefused = meaning_check.MeaningRefused
 
 
 def _meaning_changes(text, out, violations):
     rules = {v.get("rule") for v in violations if isinstance(v, dict)}
-    span = bool(rules & SPAN_REWRITE_RULES)
+    span = bool(rules - STRICT_RULES - REWRITE_RULES - _NUMBER_RULES - {None})
     return meaning_check.changes(
         text, out, skip_numbers=bool(rules & _NUMBER_RULES),
         allow_removals=bool(rules & REWRITE_RULES) or span, skip_small_words=span)
@@ -399,11 +386,12 @@ def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=No
             return out
         if attempt == 2:
             raise MeaningRefused(found)
-        prompt += ("\nYOUR LAST ANSWER CHANGED THE MEANING (%s). Numbers, units, "
-                   "negations (not, never, no), modals (may, might, must, should, will, "
-                   "can, could) and condition words (if, unless, only if, by default, "
-                   "except) must stay exactly as in the POST above, unless a check above "
-                   "names them. Redo it keeping them.\n" % meaning_check.describe(found))
+        prompt += ("\n---- END OF POST ----\nYOUR LAST ANSWER CHANGED THE MEANING (%s). "
+                   "Numbers, units, negations (not, never, no), modals (%s) and condition "
+                   "words (if, unless, only if, by default, except) must stay exactly as in "
+                   "the POST above, unless a check above names them. Redo it keeping them.\n"
+                   % (meaning_check.describe(found),
+                      ", ".join(sorted(meaning_check.MODALS))))
 
 
 def reviser(claude_bin=None, runner=None, model=None, author=None):

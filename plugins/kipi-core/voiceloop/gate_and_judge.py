@@ -50,22 +50,8 @@ from __future__ import annotations
 # the injected reviser raises; catching it needs the type, not the module.
 from . import content_key
 from .prompt_render import GateRefused
+from .meaning_check import MeaningRefused
 
-
-
-class _NeverRaised(Exception):
-    """Stands in for `revise.MeaningRefused` when an injected revise predates it."""
-
-
-def _meaning_refused(revise):
-    """The class to catch for a meaning refusal, from the INJECTED revise module.
-
-    why a getattr (PR #843 review, ASK-5428): `revise` arrives as an argument because
-    instances upgrade independently of this package. `except revise.MeaningRefused` is
-    evaluated for ANY exception that reaches it, so against an older copy a real error
-    (the ValueError for a missing claude_bin) was replaced by an AttributeError.
-    """
-    return getattr(revise, "MeaningRefused", _NeverRaised)
 
 
 def _accepts(fn, name):
@@ -363,7 +349,7 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
                                reason=f"style revision not run: {exc}")
             trail["style"] = style_stage
             return None
-        except _meaning_refused(revise) as exc:
+        except MeaningRefused as exc:
             # ASK-5428: the style revision changed a number, negation, modal or
             # condition. Same posture as "no-improvement" below: the revision is
             # discarded, the already-SHIPPABLE first-pass verdict stands, and the trail
