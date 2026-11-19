@@ -3,6 +3,11 @@
 
 Pairs with `.claude/rules/voice-loop-anywhere.md` (status DETECTED).
 
+NAMING (ASK-5398): this is an advisory linter. No exit counts it as the voice check, because
+it exits 0 on every path, NOT CHECKED included. The voice loop is the full path,
+`plugins/kipi-core/scripts/voice_full_gate.py` (`gate_draft --full`). A send is verified by
+that entry point, never by this file.
+
 WHY THIS EXISTS, AND WHY IT IS NOT `voice-check` (measured 2026-08-29):
 The voice engine has two halves. `voice-lint.py` owns banned vocabulary and
 phrasing; it is ALREADY wired PostToolUse and it already exits 2 on a blocking
