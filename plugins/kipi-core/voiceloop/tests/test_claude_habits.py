@@ -3,7 +3,7 @@
 
 Why this file: the phrases come from a friend's prompt-only skill, counted across
 4.5M words of Claude Code prose. They were measured at 0 hits across the founder's
-170-row exemplar corpus on 2026-11-18, so a block cannot silence him. The words he
+exemplar corpus on 2026-11-18 (164 tracked rows), so a block cannot silence him. The words he
 DOES write (`actually`, `rather than`, `the real`, `genuinely`, `bottom line`,
 `not just`) are deliberately absent from the rules, and
 `test_his_own_words_stay_unblocked` pins that: list gates that caught his real
@@ -55,8 +55,9 @@ HIS_OWN_WORDS = (
     "It genuinely surprised me.",
     "Bottom line, the number held.",
     "This is not just a tool.",
-    # Verbatim from his 2026-08-27 correction in voice/corrections.jsonl (ASK-5452).
-    "Incorporate it into the mechanism in a way that does not fundamentally change the mechanism.",
+    # Same shape as a sentence of his (ASK-5452), reworded: this file ships public, so no
+    # verbatim line of his private corrections file goes in it.
+    "Fold it into the plan in a way that does not fundamentally change the plan.",
 )
 
 
