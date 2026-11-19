@@ -6,9 +6,9 @@ truth. Evidence, measured 2026-11-18 on origin/main of each repo:
     so the skeleton is the only writer that is automatic;
   - every consulting commit that touches the engine is a "Carry ... from kipi main"
     (#552, #561, #570, #590), i.e. consulting follows;
-  - the public exporter (consulting/automation/export_voice_loop.py) READS consulting's
-    copy, so it is downstream of the skeleton, one hop late.
-So the exporter's source is a replica, and a replica that is ahead of the skeleton is
+  - there are two copies, not three: the public voice-loop mirror and its exporter were
+    retired (ASK-5442, ASK-5450; founder 2026-11-18: "We don't need the mirror").
+So consulting's copy is a replica, and a replica that is ahead of the skeleton is
 lost work at the next sync (the roll-back scar, 2026-09-06). Two things hold that line:
   - this test: the two copies, as committed on consulting's origin/main, are byte-identical,
     or it fails and names the files. It does NOT see consulting commits that are not

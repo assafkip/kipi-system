@@ -118,6 +118,7 @@ __pycache__/
 # Generated standalone plugin builds
 plugins/*/dist/
 /dist/
+plugins/*/*.egg-info/
 
 # Session artifacts (browser automation logs, daily update stamps)
 .playwright-mcp/

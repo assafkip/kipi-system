@@ -12,6 +12,10 @@ description = "The kipi voice engine (voiceloop), stdlib only."
 requires-python = ">=3.12"
 dependencies = []
 
+# EDITABLE INSTALLS ONLY (pip install -e). A wheel ships the .py files and none of
+# the data voiceloop reaches by relative path (requirements-authorship.txt, the
+# slack-notify.sh path in usage_breaker), the same scar as model_gate.py:95-99.
+# ASK-5450 review r1.
 # Explicit list: plugins/kipi-core also holds hooks/, scripts/, skills/, kipi-mcp/
 # and reddit_arctic/. Auto-discovery sees several top-level dirs in a flat layout
 # and aborts the build. voiceloop/tests ships nothing.

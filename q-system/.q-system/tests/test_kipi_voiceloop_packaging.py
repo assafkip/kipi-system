@@ -14,6 +14,7 @@ make the import succeed without the install (the negative test below proves it).
 from __future__ import annotations
 
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -30,12 +31,22 @@ def _run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
-@pytest.fixture(scope="module")
-def venv(tmp_path_factory):
-    d = tmp_path_factory.mktemp("venv")
-    r = _run([sys.executable, "-m", "venv", str(d / "v")])
+@pytest.fixture
+def venv(tmp_path):
+    # Function scope: one venv per test. A shared one made the negative control depend
+    # on test order (an install-first order, or --ff -x after one failed install,
+    # turned it red; review of PR 856, r1).
+    r = _run([sys.executable, "-m", "venv", str(tmp_path / "v")])
     assert r.returncode == 0, r.stderr
-    return d / "v" / "bin" / "python"
+    return tmp_path / "v" / "bin" / "python"
+
+
+def _pypi_reachable():
+    try:
+        socket.create_connection(("pypi.org", 443), timeout=3).close()
+        return True
+    except OSError:
+        return False
 
 
 def test_import_fails_without_the_install(venv, tmp_path):
@@ -46,6 +57,10 @@ def test_import_fails_without_the_install(venv, tmp_path):
 
 
 def test_editable_install_provides_voiceloop(venv, tmp_path):
+    # Build isolation fetches setuptools from the index. Offline is a skip WITH its
+    # reason, not a red on an unrelated change; CI always has the index.
+    if not _pypi_reachable():
+        pytest.skip("pypi.org unreachable: pip cannot fetch the build backend")
     # Whole plugin dir, copied: setuptools' egg-info stays out of the tracked
     # tree, and the sibling dirs (hooks/, scripts/, skills/) are present so a
     # packaging that relies on auto-discovery fails here as it would in chief.
@@ -68,3 +83,11 @@ def test_pyproject_shape():
     # so auto-discovery aborts on a flat layout with several top-level dirs.
     assert data["tool"]["setuptools"]["packages"] == ["voiceloop"]
     assert not data["project"].get("dependencies")
+
+
+def test_install_does_not_dirty_the_checkout(venv, tmp_path):
+    # The install runs on a copy, so assert the rule that keeps a real one clean:
+    # setuptools' egg-info dir is ignored (an unignored one is auto-committable).
+    r = _run(["git", "-C", str(ROOT), "check-ignore", "-q",
+              "plugins/kipi-core/kipi_voiceloop.egg-info/PKG-INFO"])
+    assert r.returncode == 0, "plugins/*/*.egg-info/ is not gitignored"
