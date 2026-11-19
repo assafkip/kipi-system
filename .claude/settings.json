@@ -167,6 +167,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "mcp__claude_ai_Gmail__(send_message|reply|forward)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "X=sh; L=\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-hook-run.$X\"; test -f \"$L\" || { echo \"$L missing: the voice gate cannot run. Restore it: kipi update\" >&2; exit 2; }; exec bash \"$L\" --timeout 640 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-send-check.py\"",
+            "timeout": 660
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task",
         "hooks": [
           {
