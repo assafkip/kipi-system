@@ -1304,6 +1304,52 @@ class TestTheReserveFloor(Base):
         self.assertIn("floor", kinds)
         self.assertNotIn("pause", kinds)
 
+    def _probe(self):
+        out = io.StringIO()
+        saved, sys.stdout = sys.stdout, out
+        try:
+            rc = keymod._main(["probe"])
+        finally:
+            sys.stdout = saved
+        return rc, out.getvalue()
+
+    def test_probe_answers_floor_not_paused(self):
+        """PR #862 round 2: a floored fleet answered `paused`, so the dispatcher
+        paged "re-probes tomorrow. Do: nothing" for a stop no re-probe clears."""
+        self._facts(reserve=20)
+        spend.record(1, 85.0, actor="worker")
+        spend.record(2, 181.0, actor="worker")
+        rc, out = self._probe()
+        self.assertEqual(rc, keymod.EXIT_CREDIT_GONE)
+        self.assertTrue(out.startswith("floor"), out)
+        self.assertIn("floor", [e["kind"] for e in spend.events()])
+
+    def test_probe_is_green_with_one_key_above_its_floor(self):
+        self._facts(reserve=20)
+        spend.record(1, 85.0, actor="worker")
+        rc, out = self._probe()
+        self.assertEqual((rc, out.strip()), (0, "key 2"))
+
+    def test_a_malformed_reserve_is_not_called_unset(self):
+        self._facts(reserve="twenty")
+        rc, out = self._probe()
+        self.assertEqual(rc, keymod.EXIT_NO_KEY)
+        self.assertIn("reserve_usd is not a non-negative number", out)
+        self.assertNotIn("unset", out)
+
+    def test_the_report_line_blames_the_env_when_the_env_is_bad(self):
+        self._facts(reserve=20)
+        os.environ["KIPI_FLEET_RESERVE_USD"] = "20usd"
+        line = spend.describe_key(spend.credit(), 1)
+        self.assertIn("KIPI_FLEET_RESERVE_USD", line)
+        self.assertNotIn(self.facts, line)
+
+    def test_an_uncounted_purchased_snapshot_is_named_in_the_report(self):
+        self._facts(reserve=20, key1={"purchased_balance_usd_observed": 50})
+        line = spend.describe_key(spend.credit(), 1)
+        self.assertIn("$50.00 purchased credit not counted", line)
+        self.assertIn("purchased_balance_observed_at", line)
+
     def test_a_bad_env_reserve_is_named_as_the_env_not_the_file(self):
         self._facts(reserve=20)
         os.environ["KIPI_FLEET_RESERVE_USD"] = "20usd"

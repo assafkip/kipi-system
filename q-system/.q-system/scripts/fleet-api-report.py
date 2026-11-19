@@ -202,7 +202,7 @@ FOUNDER_SENTENCES = {
     "unconfirmed": "A key is not used until its auto-reload is confirmed off. Sana has it.",
     "no_reserve": "A key is not used until its reserve floor is set. Sana has it.",
     "floor": ("Both keys are down to the amount you keep in each account, so the fleet "
-              "stopped starting work. It starts again when a key's credit renews."),
+              "stopped starting work. Sana has it."),
 }
 
 

@@ -69,7 +69,8 @@ reported, so the first real refusal is readable afterwards instead of lost.
 Usage:
   fleet_api_key.py exec [--actor NAME] -- <command> [args...]
   fleet_api_key.py status [--json]     # active slot, per-key credit, paused state
-  fleet_api_key.py probe               # the daily re-probe; exit 0 if the fleet may run
+  fleet_api_key.py probe               # the daily re-probe; exit 0 if the fleet may run,
+                                       # 5 and `floor` when every key is at its reserve
 
 Exit codes: the child's code on a run. 2 usage. 4 no key available (paused,
 nothing in the Keychain, or no key with a known credit and reserve). 5 every
@@ -527,7 +528,7 @@ def note_no_reserve(slots):
     spend.event_once("no_reserve",
                      "key %s: %s, so the fleet does not bill it (exit %d). Fix it "
                      "in %s (founder ruling 2026-11-19)"
-                     % (", ".join(str(s) for s in slots), spend.reserve_problem(),
+                     % (", ".join(str(s) for s in slots), spend.reserve_problem(slots[0]),
                         EXIT_NO_KEY, spend.facts_path() or "the facts file"))
 
 
@@ -954,12 +955,23 @@ def _main(argv):
             if missing:
                 note_missing_key(missing)
             why = ["%d (auto-reload off not confirmed)" % s for s in unconfirmed]
-            why += ["%d (%s)" % (s, spend.reserve_problem()) for s in no_reserve
+            why += ["%d (%s)" % (s, spend.reserve_problem(s, facts)) for s in no_reserve
                     if s not in unconfirmed]
             why += ["%d (no Keychain item)" % s for s in missing
                     if s not in unconfirmed and s not in no_reserve]
             print("no key %s" % ", ".join(why))
             return EXIT_NO_KEY
+        # THE FLOOR IS ITS OWN ANSWER, not `paused` (PR #862 review rounds 1
+        # and 2). A pause re-probes and clears by itself; a floor holds until a
+        # cycle renews or credit is added, so it gets its own exit, its own word
+        # and its own page in kipi-dispatch.sh. The event goes to the EVENTS
+        # ledger only, so probe stays a reader of the key state.
+        billable = spend.billable_slots(facts)
+        if billable and all((spend.spendable_left(s, None, facts) or 0.0) <= 0.0
+                            for s in billable):
+            spend.event_once("floor", "every known key is at its reserve floor")
+            print("floor: every known key is at its reserve floor (reserve_usd)")
+            return EXIT_CREDIT_GONE
         slot = usable_slot()
         if slot is None:
             print("paused")

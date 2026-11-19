@@ -7,11 +7,15 @@ WHY THIS SHAPE. Every cap needs a reading of tokens or money. So this test does 
 stop lines (there are hundreds and most are fine). It finds every line where the
 dispatcher, the worker, the door they launch claude through, and the libs they source
 touch a SPEND SOURCE, directly or through a shell variable that holds one. Each such
-site must match a declaration below, of one of three kinds:
+site must match a declaration below, of one of four kinds:
   record         writes a row and cannot stop the run
   environmental  no key has credit left, or the key door is broken: the money is gone,
                  not a ceiling we chose (ASK-4714 owns plan billing after that)
   debt           a stop on a spend reading that R1 forbids, with the ticket removing it
+  ruled-floor    the reserve each org keeps untouched, set by the founder AFTER R1.
+                 Founder, 2026-11-19, verbatim: "I want the fleet to stop at $20 left
+                 in either account." (ASK-5473). Not a pacing cap: it stops only at
+                 the floor, and the amount lives in the facts file.
 A new cap reads a spend source somewhere, lands outside every declaration or past a
 declaration's pinned count, and goes red. Debt only shrinks: a removed debt line leaves
 its declaration matching nothing, and a stale declaration is red too.
@@ -61,6 +65,7 @@ REMOVAL = "ASK-4761"   # the ticket that removes both debt stops
 DECLARED = (
     ("kipi-dispatch.sh", "SPEND_HELPER", "debt", 4),        # daily API-credit allowance (ASK-4311)
     ("kipi-dispatch.sh", "BUDGET_LINE", "debt", 2),
+    ("kipi-dispatch.sh", "api-keys-floor", "ruled-floor", 1),   # its page
     ("kipi-dispatch.sh", "KEY_", "environmental", 7),       # the key probe: credit gone or helper broken
     ("kipi-dispatch.sh", "fleet_api_key.py", "environmental", 1),
     (S + "linear-worker.sh", "BREAKER_", "debt", 5),        # plan usage breaker (ASK-2010)

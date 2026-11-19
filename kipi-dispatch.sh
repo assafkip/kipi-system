@@ -1042,7 +1042,7 @@ SPEND_HELPER="$REPO/q-system/.q-system/scripts/fleet_api_spend.py"
 KEY_HELPER="$REPO/q-system/.q-system/scripts/fleet_api_key.py"
 api_gate_page() {   # api_gate_page <marker> <text>: page one condition, clear the rest
   local k
-  for k in api-keys-missing api-keys-paused api-helper-broken api-budget; do
+  for k in api-keys-missing api-keys-paused api-keys-floor api-helper-broken api-budget; do
     [ "$k" = "$1" ] || page_clear "$k"
   done
   page_once "$1" "$2"
@@ -1066,7 +1066,7 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEN
       say "API KEYS: $KEY_LINE -- nothing can run until that is fixed"
       api_gate_page api-keys-missing "kipi dispatch: the fleet has no usable API key ($KEY_LINE), so no run starts. Every run would exit 4 with no spend row. Do: what the line names. A missing Keychain item: add service kipi-fleet-api-key-<slot>. An unknown credit or cycle: set monthly_credit_usd and current_cycle_expires_utc in ~/.config/kipi/fleet-api.json. Auto-reload not confirmed off: auto_reload_off_confirmed_at, set only once it is. The next tick starts on its own."
       exit 0 ;;
-    "4:paused")
+    "4:paused"|"5:floor"*)
       # PLAN-BILLING OVERRIDE (ASK-4714). The founder ruled 2026-11-12 that the
       # worker runs on the Claude plan while both credits are spent. A bare
       # KIPI_FLEET_API_KEYS=0 has no expiry and launchd never had it, so the ruling
@@ -1080,6 +1080,13 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEN
          && [[ "$(date -u +%Y-%m-%d)" < "$PB_UNTIL" ]]; then
         say "API KEYS: PLAN BILLING OVERRIDE: every key reads exhausted, so runs bill the PLAN, not the API credit, until $PB_UNTIL (file $PB_FILE); KIPI_FLEET_API_KEYS=0 for this tick's worker runs"
         export KIPI_FLEET_API_KEYS=0
+      elif [ "$KEY_RC" = "5" ]; then
+      # THE RESERVE FLOOR (ASK-5473, founder 2026-11-19: "I want the fleet to
+      # stop at $20 left in either account"). Not a pause: no re-probe clears
+      # it, so the page must not say "Do: nothing" (PR #862 review round 2).
+      say "API KEYS: every known key is at its reserve floor (reserve_usd); no new run starts until a key has credit above its reserve again"
+      api_gate_page api-keys-floor "kipi dispatch: every fleet API key is at its reserve floor (reserve_usd in ~/.config/kipi/fleet-api.json, founder ruling 2026-11-19), so no new run starts. A re-probe does not clear this. It clears when a key's billing cycle renews and current_cycle_expires_utc is updated, or when credit is added and the facts file says so. Do: run \`fleet_api_key.py status\` and update the facts file."
+      exit 0
       else
       say "API KEYS: every known key's credit read as exhausted; paused until the next budget day re-probes"
       api_gate_page api-keys-paused "kipi dispatch: every known API key's credit read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
@@ -1097,7 +1104,7 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEN
       api_gate_page api-budget "kipi dispatch: today's API-credit allowance is spent, so no new run starts. Not an error: the loop resumes by itself at ${RESET_HOUR}am with a fresh daily share of what is left in each key's billing cycle. Reading: $BUDGET_LINE"
       exit 0 ;;
     0)
-      for k in api-keys-missing api-keys-paused api-helper-broken api-budget; do page_clear "$k"; done ;;
+      for k in api-keys-missing api-keys-paused api-keys-floor api-helper-broken api-budget; do page_clear "$k"; done ;;
     *)
       say "API BUDGET: the spend helper crashed (budget rc=$BUDGET_RC, stderr '${KEY_ERR}'); stopping the tick"
       api_gate_page api-helper-broken "kipi dispatch: fleet_api_spend.py is broken (budget rc=$BUDGET_RC, last stderr line: ${KEY_ERR:-none}), so no run starts: the daily allowance cannot be read. This is NOT a spent credit. Do: run python3 $SPEND_HELPER budget in $REPO and fix what it prints."

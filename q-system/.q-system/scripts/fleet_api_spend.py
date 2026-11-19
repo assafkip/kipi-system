@@ -18,7 +18,8 @@ WHERE THE CREDIT FACTS LIVE. `~/.config/kipi/fleet-api.json`, one row per key:
 `monthly_credit_usd`, `current_cycle_expires_utc` and
 `auto_reload_off_confirmed_at`, each with its source, plus `reserve_usd` (top
 level or per key: the floor each org keeps untouched, founder 2026-11-19) and
-`purchased_balance_usd_observed` (purchased credit, added to the balance). No
+`purchased_balance_usd_observed` with `purchased_balance_observed_at` (purchased
+credit, added to the balance only when read inside the current cycle). No
 amount or date is
 written in this file. The first build assumed $250 per key per calendar month;
 both halves were wrong (Help Center article 17154008, read 2026-11-10): the
@@ -177,7 +178,7 @@ def key_facts():
     out = dict((s, {"credit_usd": None, "expires_at": None, "expires_utc": None,
                     "confirmed_at": None, "purchased_usd": 0.0,
                     "purchased_observed_at": None,
-                    "reserve_usd": None}) for s in SLOTS)
+                    "reserve_usd": None, "reserve_bad": False}) for s in SLOTS)
     path = facts_path()
     if not path:
         _warn("KIPI_TEST=1 and KIPI_FLEET_API_FACTS is unset: every key's credit "
@@ -213,10 +214,10 @@ def key_facts():
         out[slot]["purchased_observed_at"] = _utc_instant(
             row.get("purchased_balance_observed_at"))
         # A per-key reserve overrides the shared one; see reserve_usd().
-        if "reserve_usd" in row:
-            out[slot]["reserve_usd"] = _number(row.get("reserve_usd"))
-        else:
-            out[slot]["reserve_usd"] = _number(doc.get("reserve_usd"))
+        raw = row.get("reserve_usd") if "reserve_usd" in row else doc.get("reserve_usd")
+        out[slot]["reserve_usd"] = _number(raw)
+        # Present but not a number is a different fix from absent (PR #862 r2).
+        out[slot]["reserve_bad"] = raw is not None and out[slot]["reserve_usd"] is None
     return out
 
 
@@ -242,12 +243,14 @@ def reserve_usd(slot, facts=None):
     return ((facts or key_facts()).get(slot) or {}).get("reserve_usd")
 
 
-def reserve_problem():
+def reserve_problem(slot=None, facts=None):
     """Why the reserve is unusable, naming the source that is actually wrong.
-    A bad env override must not send the fixer to a facts file that is fine
-    (PR #862 review round 1, minor)."""
+    A bad env override must not send the fixer to a facts file that is fine,
+    and a malformed value is not an absent one (PR #862 review rounds 1, 2)."""
     if os.environ.get("KIPI_FLEET_RESERVE_USD", "").strip():
         return "KIPI_FLEET_RESERVE_USD is not a non-negative number"
+    if slot is not None and ((facts or key_facts()).get(slot) or {}).get("reserve_bad"):
+        return "reserve_usd is not a non-negative number"
     return "reserve_usd unset"
 
 
@@ -573,7 +576,7 @@ def purchased_usd(slot, at=None, facts=None):
     return row["purchased_usd"] if budget_day(seen) >= bounds[0] else 0.0
 
 
-def balance_usd(slot, facts=None, at=None):
+def balance_usd(slot, at=None, facts=None):
     """The org's starting balance this cycle: grant plus purchased credit."""
     facts = facts or key_facts()
     row = facts.get(slot) or {}
@@ -609,7 +612,7 @@ def credit_left(slot, at=None, facts=None):
     facts = facts or key_facts()
     if not configured(slot, facts, at):
         return None
-    left = balance_usd(slot, facts, at) - spent_cycle(slot, at, facts)
+    left = balance_usd(slot, at, facts) - spent_cycle(slot, at, facts)
     return round(max(0.0, left), 6)
 
 
@@ -628,12 +631,16 @@ def credit(at=None):
     """Per-key credit, cycle and what is left. Unknown keys are listed, not zeroed."""
     facts = key_facts()
     per_key, per_credit, per_cycle = {}, {}, {}
-    per_reserve, per_spendable = {}, {}
+    per_reserve, per_spendable, per_skipped = {}, {}, {}
     for slot in SLOTS:
         per_key[slot] = credit_left(slot, at, facts)
-        per_credit[slot] = balance_usd(slot, facts, at)
+        per_credit[slot] = balance_usd(slot, at, facts)
         per_reserve[slot] = reserve_usd(slot, facts)
         per_spendable[slot] = spendable_left(slot, at, facts)
+        # Purchased credit on file that this cycle does not count (PR #862 r2:
+        # a $0 that nothing named read as a funded org refusing every run).
+        on_file = facts[slot].get("purchased_usd") or 0.0
+        per_skipped[slot] = on_file if on_file and not purchased_usd(slot, at, facts) else 0.0
         bounds = cycle(slot, at, facts)
         per_cycle[slot] = None if not bounds else {
             "start": bounds[0], "end": bounds[1],
@@ -645,6 +652,7 @@ def credit(at=None):
         "per_key_cycle": per_cycle,
         "per_key_reserve_usd": per_reserve,
         "per_key_spendable_usd": per_spendable,
+        "per_key_purchased_skipped_usd": per_skipped,
         "unknown_keys": [s for s in SLOTS if not configured(s, facts, at)],
         "unconfirmed_keys": list(unconfirmed_slots(facts, at)),
         "no_reserve_keys": list(no_reserve_slots(facts, at)),
@@ -672,7 +680,7 @@ def budget(at=None):
     for slot in known:
         # Paced out of the balance ABOVE the reserve: pacing the reserve too
         # would plan to spend money the founder ruled untouched (2026-11-19).
-        base = max(0.0, balance_usd(slot, facts, at) - reserve_usd(slot, facts)
+        base = max(0.0, balance_usd(slot, at, facts) - reserve_usd(slot, facts)
                    - spent_cycle(slot, at, facts, before_today=True))
         allowance += base / days_left_in_cycle(slot, at, facts)
     allowance = round(allowance, 6)
@@ -780,16 +788,25 @@ def describe_key(state, slot):
                 "current_cycle_expires_utc for key %d in %s (the Console Billing "
                 "page shows it)" % (slot, slot, where))
     if slot in (state.get("no_reserve_keys") or []):
-        return ("key %d: NOT USED, its reserve floor is unset. Set reserve_usd (top "
-                "level or for key %d) in %s (founder ruling 2026-11-19)"
-                % (slot, slot, where))
+        problem = reserve_problem(slot)
+        if problem.startswith("KIPI_FLEET_RESERVE_USD"):
+            return ("key %d: NOT USED, %s. Fix or unset it in the job's environment "
+                    "(founder ruling 2026-11-19)" % (slot, problem))
+        return ("key %d: NOT USED, %s. Set reserve_usd (top level or for key %d) "
+                "in %s (founder ruling 2026-11-19)" % (slot, problem, slot, where))
     cyc = state["per_key_cycle"][slot]
     reserve = (state.get("per_key_reserve_usd") or {}).get(slot) or 0.0
-    return ("key %d: $%.2f left of $%.2f this cycle (ends %s, %d budget day%s "
+    line = ("key %d: $%.2f left of $%.2f this cycle (ends %s, %d budget day%s "
             "left), stops at the $%.2f reserve"
             % (slot, left, state["per_key_credit_usd"][slot],
                state["per_key_expires_utc"][slot], cyc["days_left"],
                "" if cyc["days_left"] == 1 else "s", reserve))
+    skipped = (state.get("per_key_purchased_skipped_usd") or {}).get(slot) or 0.0
+    if skipped:
+        line += ("; $%.2f purchased credit not counted: set "
+                 "purchased_balance_observed_at for key %d in %s when it is read "
+                 "this cycle" % (skipped, slot, where))
+    return line
 
 
 def _main(argv):

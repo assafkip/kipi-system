@@ -32,7 +32,8 @@
 #   7. a missing helper FILE (a checkout before the door) lets the tick go on;
 #   8. a present but CRASHING helper stops the tick under its own page;
 #   9. a spent day pages the budget; 10. an unconfirmed key and 11. no known
-#      credit are red; 12. an unknown key 2 alone does not stop key 1.
+#      credit are red; 12. an unknown key 2 alone does not stop key 1;
+#  14. every key at its reserve floor pages api-keys-floor, never the pause.
 #
 # The gate BLOCK is lifted out of kipi-dispatch.sh by its own anchors, the way
 # test-dispatch-disk-floor.sh lifts the reviewer's functions, so the case follows
@@ -409,6 +410,36 @@ marker "$FLP" api-keys-paused || bad "case 13e: precondition, the pause marker w
 GATE_PAGEDIR="$FLP" pb_case pbflip2 "2999-01-01"
 ! marker "$FLP" api-keys-paused && ok "case 13e: an active override clears the stale pause marker" \
   || bad "case 13e: stale api-keys-paused marker survived the override"
+
+# --- 14: every key at its reserve floor (ASK-5473, PR #862 review round 2) ---
+# Not a pause: the floor holds until a cycle renews or credit is added, so it
+# must page its own marker and never the "Do: nothing" pause page.
+python3 - "$WORK/floor.json" <<'FLOORPY'
+import json, sys
+EXP = "2026-11-26T15:00:00Z"
+row = {"monthly_credit_usd": 100, "current_cycle_expires_utc": EXP,
+       "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z"}
+json.dump({"reserve_usd": 100000, "keys": {"1": row, "2": dict(row)}},
+          open(sys.argv[1], "w"))
+FLOORPY
+GATE_FACTS="$WORK/floor.json" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 \
+  KIPI_FLEET_PLAN_BILLING_FILE="$WORK/no-such-pb-file" \
+  KIPI_FLEET_NOW="$NOW12" run_gate floor
+if ! through floor && marker "$WORK/floor-pages" api-keys-floor \
+   && ! marker "$WORK/floor-pages" api-keys-paused \
+   && ! marker "$WORK/floor-pages" api-helper-broken; then
+  ok "case 14: every key at its reserve floor pages api-keys-floor, not the pause"
+else
+  bad "case 14: a floored fleet pages the floor" \
+      "markers=$(ls "$WORK/floor-pages" 2>/dev/null | tr '\n' ' ') log=$(cat "$WORK/floor-pages/dispatch.log" 2>/dev/null)"
+fi
+FLOOR_PAGE="$(grep 'reserve floor' "$WORK/pages.txt" 2>/dev/null)"
+if [ -n "$FLOOR_PAGE" ] && ! printf '%s' "$FLOOR_PAGE" | grep -q 'Do: nothing' \
+   && printf '%s' "$FLOOR_PAGE" | grep -q 'current_cycle_expires_utc'; then
+  ok "case 14b: the floor page names what clears it"
+else
+  bad "case 14b: the floor page is missing or tells the reader to do nothing" "$FLOOR_PAGE"
+fi
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
