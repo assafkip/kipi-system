@@ -21,7 +21,7 @@ Four categories, each a multiset compare (count of each token before vs after):
 - numbers: (value, unit). "3 hours" and "three hours" are the same figure; "3" and "30",
   "hours" and "days" are not. A bare number carries unit "" so "3" -> "30" still flags.
 - negations: not / never / no / n't. "does not" and "doesn't" are the same token.
-- modals: may might must should will can could. "won't" is will + not, "cannot" is can + not.
+- modals: may might must should will can could would shall ought. "won't" is will + not, "cannot" is can + not.
 - conditions: if, unless, except, "by default", and "only" when it gates a clause ("only if").
   A bare "only" ("the only option") is a quantifier, not a condition, and counting it would
   refuse every reword of "the only" to "the sole".
@@ -178,7 +178,7 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     expected. An ADDED token never is. A token dropped from a sentence the revision KEPT
     (a cut that deletes the "not" of a retained line) is a removal and is allowed here:
     removals are indistinguishable from the cut itself at multiset level.
-    `skip_small_words`: the revision was asked to rewrite a span (revise.SPAN_REWRITE_RULES),
+    `skip_small_words`: the revision was asked to rewrite a span (every rule outside revise.STRICT_RULES),
     so negation/modal/condition drift inside it is not judged here.
 
     Limit, pinned by test_known_limit_the_compare_ignores_position: each compare is a
@@ -206,3 +206,23 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
 def describe(found):
     """One line for a trail: 'modals: -may +must; numbers: -3 hour +30 hour'."""
     return "; ".join("%s: %s" % (name, " ".join(rows)) for name, rows in found.items())
+
+
+class MeaningRefused(Exception):
+    """A revision changed a number, negation, modal or condition. Never a silent pass.
+
+    Defined HERE, not in `revise`, and imported by type everywhere (PR #616 review, major):
+    `gate_and_judge` receives `revise` as an injected argument, and production injects a
+    SimpleNamespace (`post_envelope.revise_port`) with no such attribute, so catching it
+    through the argument caught nothing and the refusal escaped the style lane. This is
+    the same reason `GateRefused` is imported as a type. `revise.MeaningRefused` stays as
+    an alias to this one class.
+
+    An `Exception` on purpose: the decide ladder ("regenerator raised"), the critic
+    ("reviser raised") and the editor revise already turn an exception into a discard
+    whose reason carries `str(exc)`. `changes` is the dict from `changes()`.
+    """
+
+    def __init__(self, changes):
+        self.changes = changes
+        super().__init__("revision changed meaning (%s)" % describe(changes))
