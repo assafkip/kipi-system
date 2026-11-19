@@ -267,3 +267,46 @@ def test_a_number_rule_may_delete_a_figure_with_the_sentence_that_carried_it():
 def test_the_fail_closed_sentinel_does_not_switch_the_check_off():
     with pytest.raises(revise.MeaningRefused):
         _revise("It might fail.", "It fails.", [{"rule": "voice-lint-error", "detail": "x"}])
+
+
+# ---- follow-up to #854 (founder ruling 2026-11-18): a number rule deletes the figure, not
+# ---- the polarity that sat beside it ------------------------------------------------
+
+FIGURE = [{"rule": "figure-unsourced", "detail": "42"}]
+
+
+@pytest.mark.parametrize("original,revised", [
+    ("It does not drop 42 rows.", "It drops rows."),
+    ("It might drop 42 rows. The job ends.", "It drops rows. The job ends."),
+    ("It retries only if 42 rows are queued.", "It retries when rows are queued."),
+    ("It drops 42 rows unless the cache is warm.", "It drops rows."),
+])
+def test_a_number_rule_that_deletes_a_polarity_token_beside_its_figure_is_refused(
+        original, revised):
+    with pytest.raises(revise.MeaningRefused):
+        _revise(original, revised, FIGURE)
+
+
+@pytest.mark.parametrize("original,revised", [
+    ("It might drop 42 rows. The job ends.", "The job ends."),
+    ("It does not drop 42 rows. The job ends.", "The job ends."),
+    ("It drops 42 rows. The job ends.", "It drops rows. The job ends."),
+    ("It might drop 42 rows.", "It might drop rows."),
+])
+def test_a_number_rule_may_delete_the_figure_or_the_whole_sentence_that_held_it(
+        original, revised):
+    assert _revise(original, revised, FIGURE) == revised
+
+
+def test_substance_number_is_a_retired_rule_and_is_not_a_number_rule():
+    # Retired gate (q-consult/config/constraint-ledger.json: "a gate already retired");
+    # no producer emits it, so a stale name must not control skip_numbers.
+    assert "substance-number" not in revise._NUMBER_RULES
+
+
+def test_unit_removal_needs_the_sentence_to_go_whole():
+    found = meaning_check.changes("It might drop 42 rows. The job ends.",
+                                  "It drops rows. The job ends.", unit_removals=True, skip_numbers=True)
+    assert found == {"modals": ["-might"]}
+    assert meaning_check.changes("It might drop 42 rows. The job ends.", "The job ends.",
+                                 unit_removals=True, skip_numbers=True) == {}

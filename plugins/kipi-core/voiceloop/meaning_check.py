@@ -31,6 +31,7 @@ meaning-bearing words are intact. "-x" was in the original and is gone, "+x" is 
 """
 from __future__ import annotations
 
+import difflib
 import re
 from collections import Counter
 
@@ -157,6 +158,19 @@ def _small_words(text):
     return neg, mod, +cond
 
 
+def _sentences(text):
+    return [x for x in re.split(r"(?<=[.!?])\s+|\n+", text or "") if x.strip()]
+
+
+_FIGURE_TEXT = re.compile(r"[$]?\d[\d,.]*\s*(?:%|[kmb]\b)?", re.I)
+
+
+def _norm_sentence(sentence):
+    # Figures are blanked so "It might drop 42 rows." and "It might drop rows." are the SAME
+    # sentence: a number rule ordered the figure out, and that edit is not a removal.
+    return " ".join(_FIGURE_TEXT.sub(" ", sentence.lower()).split())
+
+
 def _diff(before, after, render, allow_removals):
     out = []
     for key in sorted(set(before) | set(after), key=str):
@@ -169,7 +183,7 @@ def _diff(before, after, render, allow_removals):
 
 
 def changes(original, revised, skip_numbers=False, allow_removals=False,
-            skip_small_words=False):
+            skip_small_words=False, unit_removals=False):
     """Meaning-bearing tokens that differ between `original` and `revised`.
 
     `skip_numbers`: the revision was asked to fix a figure rule, which changes numbers by
@@ -180,6 +194,11 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     removals are indistinguishable from the cut itself at multiset level.
     `skip_small_words`: the revision was asked to rewrite a span (every rule outside revise.STRICT_RULES),
     so negation/modal/condition drift inside it is not judged here.
+
+    `unit_removals`: a small word may leave ONLY with a sentence that left whole. A number
+    rule orders a figure deleted; the sentence that held it may go with it, but "does not
+    drop 42 rows" -> "drops rows" deleted a polarity token beside the figure and is refused
+    (PR #854 review, founder ruling 2026-11-18).
 
     Limit, pinned by test_known_limit_the_compare_ignores_position: each compare is a
     multiset, so a token MOVED to another clause ("A is not B, C is D" -> "A is B, C is not
@@ -195,6 +214,31 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
         return out
     n0, m0, c0 = _small_words(original)
     n1, m1, c1 = _small_words(revised)
+    if unit_removals and not allow_removals:
+        # Tokens of every original sentence that is absent, whole, from the revision are
+        # expected to be gone; every other loss still counts.
+        kept = Counter(_norm_sentence(x) for x in _sentences(revised))
+        unmatched = []
+        for sentence in _sentences(original):
+            key = _norm_sentence(sentence)
+            if kept[key] > 0:
+                kept[key] -= 1
+            else:
+                unmatched.append(sentence)
+        # An unmatched revised sentence is an EDIT of the unmatched original sentence most
+        # like it (its tokens are compared normally); only an original sentence left with no
+        # revised partner was removed whole.
+        for key, count in kept.items():
+            for _ in range(count):
+                if not unmatched:
+                    break
+                best = max(unmatched, key=lambda x: difflib.SequenceMatcher(
+                    None, _norm_sentence(x), key).ratio())
+                unmatched.remove(best)
+        for sentence in unmatched:
+            for before, gone in zip((n0, m0, c0), _small_words(sentence)):
+                before.subtract(gone)
+        n0, m0, c0 = +n0, +m0, +c0
     for name, before, after in (("negations", n0, n1), ("modals", m0, m1),
                                 ("conditions", c0, c1)):
         rows = _diff(before, after, str, allow_removals)

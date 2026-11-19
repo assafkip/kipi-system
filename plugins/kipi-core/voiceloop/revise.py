@@ -352,7 +352,9 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
 
 
 #: Rules whose fix changes numbers by design; the figure gate re-judges the result.
-_NUMBER_RULES = frozenset({"figure-unsourced", "stats-citation", "substance-number"})
+#: "substance-number" was named here until the follow-up to #854: a retired gate (q-consult/
+#: config/constraint-ledger.json) that no producer emits.
+_NUMBER_RULES = frozenset({"figure-unsourced", "stats-citation"})
 
 
 MeaningRefused = meaning_check.MeaningRefused
@@ -364,7 +366,8 @@ def _meaning_changes(text, out, violations):
                 - _FAIL_CLOSED_RULES - {None})
     return meaning_check.changes(
         text, out, skip_numbers=bool(rules & _NUMBER_RULES),
-        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES)) or span, skip_small_words=span)
+        allow_removals=bool(rules & REWRITE_RULES) or span, skip_small_words=span,
+        unit_removals=bool(rules & _NUMBER_RULES))
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
