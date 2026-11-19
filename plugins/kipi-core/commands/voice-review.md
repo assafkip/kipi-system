@@ -1,5 +1,5 @@
 ---
-description: Run the full voice review on one draft by hand (bands, shapes, echo, gate roster, channel rules).
+description: REVIEW one draft (it does not write one): run the full voice review on one draft by hand (bands, shapes, echo, gate roster, channel rules).
 argument-hint: <file> [--channel linkedin|x|threads|substack|medium|email|dm|comment]
 allowed-tools: Bash
 ---
@@ -13,7 +13,7 @@ the hook never disagree. A path with no channel in it gets the lighter `score`
 unless you pass `--channel`. An unknown channel is refused, not guessed.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/voice-loop.py" $ARGUMENTS
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/voice-review.py" $ARGUMENTS
 ```
 
 Report its stdout verbatim: the first line says which engine ran, then the

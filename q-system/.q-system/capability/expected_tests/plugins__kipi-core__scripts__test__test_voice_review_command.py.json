@@ -1,0 +1,4 @@
+{
+ "path": "plugins/kipi-core/scripts/test/test_voice_review_command.py",
+ "runner": "pytest"
+}
