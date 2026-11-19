@@ -4,6 +4,11 @@ voice-stop-gate.py - Final voice check on assistant chat output.
 
 Stop hook for Claude Code.
 
+NAMING (ASK-5398): the word lists this gate runs (voice-lint, voice-substance-lint) are
+advisory linters. No exit counts them as the voice check. The voice loop is the full path,
+`plugins/kipi-core/scripts/voice_full_gate.py` (`gate_draft --full`); a send is verified
+there (voice-send-check.py), not by a chat-turn lint.
+
 The voice-lint PostToolUse hook only fires on file writes. Most voice
 failures happen in chat output — drafts I produce for the founder to
 copy-paste into X, LinkedIn, email, DMs. None of those reach a file.

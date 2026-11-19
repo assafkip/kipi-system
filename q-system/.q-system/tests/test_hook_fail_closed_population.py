@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ast
 import json
+import pathlib
 import os
 import re
 import shutil
@@ -79,6 +80,10 @@ SECURITY = {
 # ("lints stay as they are"): a lint failing open costs one bad file landing.
 # Moving a name from here to SECURITY is how the tail gets picked up.
 NOT_SECURITY = {
+    # voice-send-check.py (ASK-4969) is not classified by the in-script helper. It fails
+    # closed one layer out: voice-hook-run.sh turns a crash, a timeout and a missing file
+    # into exit 2. That is pinned by test_voice_hook_run.py and test_voice_send_check.py.
+    "voice-send-check.py",
     "token-guard.py", "read-first-gate.py", "agent-brief-one-job-guard.py", "miyo-research-gate.py", "design-chain-gate.py",
     "design-engine-door.py", "enforced-claim-lint.py", "voice-lint.py",
     "voice-substance-lint.py", "voiceloop-band-lint.py", "memory-confidence-validator.py",
@@ -448,9 +453,13 @@ def test_voice_census_reads_every_entry():
 
 
 def test_voice_template_and_skeleton_agree():
+    # Compared by (event, gate), not by command text. ASK-4969 moved the TEMPLATE's voice
+    # hooks onto voice-hook-run.sh. .claude/settings.json is the skeleton's own copy, and the
+    # sanctioned path into it (apply-claude-changes) is additive-only: it cannot rewrite a
+    # hook command, by design. Both files must wire the same gates on the same events.
     by_file = {}
-    for f, e, _g, c in VOICE_ENTRIES:
-        by_file.setdefault(f, set()).add((e, c))
+    for f, e, g, _c in VOICE_ENTRIES:
+        by_file.setdefault(f, set()).add((e, g))
     template, skeleton = (by_file[s.name] for s in SETTINGS_FILES)
     assert template == skeleton, sorted(template ^ skeleton)
 
@@ -462,8 +471,12 @@ def _run_voice(command, tree, body, stdin="{}"):
     gate = next(g for g in VOICE_GATES if "scripts/" + g in command)
     if body is not None:
         (scripts / gate).write_text(body)
+    # The launcher is shipped beside the gates (ASK-4969); stage the real files.
+    for helper in ("voice-hook-run.sh", "voice_hook_run.py"):
+        shutil.copy(pathlib.Path(__file__).resolve().parents[1] / "scripts" / helper, scripts / helper)
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["CLAUDE_PROJECT_DIR"] = str(tree)
+    env["KIPI_VOICE_HOOK_LOG"] = str(tree / "voice-hook-timing.jsonl")
     return gate, subprocess.run(["/bin/sh", "-c", command], input=stdin, env=env,
                                 capture_output=True, text=True, timeout=60)
 

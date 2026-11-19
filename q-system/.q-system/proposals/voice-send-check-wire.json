@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "slug": "voice-send-check-wire",
+ "reason": "ASK-4969 part 3: wire the send-time voice check in the skeleton's own settings, the paired change to settings-template.json. kipi-update aborts while a template hook is missing here. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/voice-send-check-wire.json --root <tree>",
+ "requires": {
+  "template_pairs": [
+   "voice-send-check.py"
+  ]
+ },
+ "edits": [
+  {
+   "file": ".claude/settings.json",
+   "op": "insert_after",
+   "anchor": "\"PreToolUse\": [\n",
+   "insert": "      {\n        \"matcher\": \"mcp__claude_ai_Gmail__(send_message|reply|forward)\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"X=sh; L=\\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-hook-run.$X\\\"; test -f \\\"$L\\\" || { echo \\\"$L missing: the voice gate cannot run. Restore it: kipi update\\\" >&2; exit 2; }; exec bash \\\"$L\\\" --timeout 640 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-send-check.py\\\"\",\n            \"timeout\": 660\n          }\n        ]\n      },\n",
+   "reason": "The skeleton's own runtime must carry every template hook, or it runs dead there while the fleet has it."
+  }
+ ]
+}

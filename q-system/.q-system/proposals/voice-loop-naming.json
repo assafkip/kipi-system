@@ -1,0 +1,21 @@
+{
+ "schema_version": 1,
+ "slug": "voice-loop-naming",
+ "reason": "ASK-5398 (part of ASK-4969): band-lint and the word lists are advisory linters, not the voice loop. Enforcer first: q-system/.q-system/scripts/test/test_voice_loop_naming.py carries the Rule-ID. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/voice-loop-naming.json --root <tree>",
+ "edits": [
+  {
+   "file": ".claude/rules/voice-loop-anywhere.md",
+   "op": "replace",
+   "anchor": "# Voice Loop Anywhere: the style half of the voice engine reaches written drafts\n",
+   "insert": "# Band lint anywhere: an advisory linter for the style half of the voice engine\n\nRule-ID: RULE-2026-11-18-VOICELOOP-NAMING\nEnforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py\n\n## Naming (ASK-5398)\n\n`voiceloop-band-lint.py` and the word lists in `voice-lint.py`, `voice-substance-lint.py` and `voice-stop-gate.py` are advisory linters. No exit counts them as the voice check: band-lint exits 0 on every path, NOT CHECKED included, and a word list sees vocabulary only. The voice loop is the full path, `plugins/kipi-core/scripts/voice_full_gate.py` (`gate_draft --full`). A send is verified by that entry point through `voice-send-check.py`.\n",
+   "reason": "Calling a lint the voice loop is how a half-run check read as a full one (ASK-4637 census, causes A to E). Founder ruling RULE-2026-11-14-A: one voice loop, the full path."
+  },
+  {
+   "file": ".claude/rules/voice-loop-anywhere.md",
+   "op": "replace",
+   "anchor": "    \"clause\": \"Voice Loop Anywhere: the style half of the voice engine reaches written drafts\",\n",
+   "insert": "    \"clause\": \"Band lint anywhere: an advisory linter for the style half of the voice engine\",\n",
+   "reason": "The clause name follows the heading it names."
+  }
+ ]
+}

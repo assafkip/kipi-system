@@ -4,7 +4,14 @@ paths:
   - "**/*.md"
 ---
 
-# Voice Loop Anywhere: the style half of the voice engine reaches written drafts
+# Band lint anywhere: an advisory linter for the style half of the voice engine
+
+Rule-ID: RULE-2026-11-18-VOICELOOP-NAMING
+Enforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py
+
+## Naming (ASK-5398)
+
+`voiceloop-band-lint.py` and the word lists in `voice-lint.py`, `voice-substance-lint.py` and `voice-stop-gate.py` are advisory linters. No exit counts them as the voice check: band-lint exits 0 on every path, NOT CHECKED included, and a word list sees vocabulary only. The voice loop is the full path, `plugins/kipi-core/scripts/voice_full_gate.py` (`gate_draft --full`). A send is verified by that entry point through `voice-send-check.py`.
 
 The voice engine is two halves. `voice-lint.py` owns banned vocabulary and
 phrasing. `voiceloop` owns what vocabulary lists cannot see: measured style
@@ -68,7 +75,7 @@ Bypass one file deliberately with `<!-- voiceloop-band-lint-skip -->`.
 ```json
 [
   {
-    "clause": "Voice Loop Anywhere: the style half of the voice engine reaches written drafts",
+    "clause": "Band lint anywhere: an advisory linter for the style half of the voice engine",
     "status": "DETECTED",
     "exec": "q-system/.q-system/scripts/voiceloop-band-lint.py",
     "config": ".claude/settings.json",
