@@ -181,7 +181,7 @@ def test_no_voice_hook_uses_a_bare_python3():
 def test_every_voice_hook_goes_through_the_launcher_with_a_shorter_bound():
     for event, h in _voice_hooks():
         cmd = h["command"]
-        assert "voice-hook-run.sh" in cmd, (event, cmd[:90])
+        assert "voice-hook-run." in cmd, (event, cmd[:90])
         inner = float(re.search(r"--timeout\s+(\d+(?:\.\d+)?)", cmd).group(1))
         harness = h.get("timeout")
         assert harness is not None, ("no harness timeout set", cmd[:90])
@@ -191,7 +191,7 @@ def test_every_voice_hook_goes_through_the_launcher_with_a_shorter_bound():
 def test_a_missing_launcher_still_exits_2_in_the_hook_command():
     """The hook command is the only thing that runs when the launcher file is gone."""
     for event, h in _voice_hooks():
-        if "voice-hook-run.sh" not in h["command"]:
+        if "voice-hook-run." not in h["command"]:
             continue
         env = dict(os.environ, CLAUDE_PROJECT_DIR="/nonexistent-instance")
         r = subprocess.run(["bash", "-c", h["command"]], input=GOOD_PAYLOAD, env=env,

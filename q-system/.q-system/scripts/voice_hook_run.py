@@ -65,23 +65,28 @@ def main(argv: list[str]) -> int:
         return 2
     script, args = rest[0], rest[1:]
     payload = sys.stdin.read()
-    active = bool(re.search(r'"stop_hook_active"\s*:\s*true', payload))
+    try:
+        parsed = json.loads(payload)
+    except ValueError:
+        parsed = None
+    # why the parsed value first: a message that QUOTES "stop_hook_active": true is escaped
+    # JSON, not the field. The regex is only for a payload that does not parse at all.
+    if isinstance(parsed, dict):
+        active = parsed.get("stop_hook_active") is True
+    else:
+        active = bool(re.search(r'"stop_hook_active"\s*:\s*true', payload))
     fault_rc = 0 if (stop_hook and active) else 2
-    name = Path(script).name
 
     def fault(msg: str, seconds: float = 0.0) -> int:
-        print("voice-hook-run: %s: %s. The gate cannot run." % (name, msg), file=sys.stderr)
+        tail = msg.split("|")[1] if "|" in msg else ""
+        print("%s %s: the gate cannot run%s" % (script, msg.split("|")[0], tail), file=sys.stderr)
         _log(script, fault_rc, seconds, msg)
         return fault_rc
 
     if not Path(script).is_file():
-        return fault("%s missing. Restore it from the skeleton" % script)
-    try:
-        ok = isinstance(json.loads(payload), dict)
-    except ValueError:
-        ok = False
-    if not ok:
-        return fault("hook payload did not parse as a JSON object")
+        return fault("missing|. Restore it: kipi " + "update")
+    if not isinstance(parsed, dict):
+        return fault("got a hook payload that did not parse as a JSON object")
     t0 = time.time()
     interp = os.environ.get("KIPI_VOICE_PYTHON") or sys.executable
     cmd = [interp, script, *args] if script.endswith(".py") else [script, *args]
