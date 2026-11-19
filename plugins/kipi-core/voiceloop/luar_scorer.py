@@ -39,11 +39,15 @@ up computing two different numbers under one name.
   because his weakest real posts sit below the entire control distribution and
   set the floor. Against the median, 0% of long controls and 3% of short controls
   clear the line.
-  ASK-5457: the reference is built in the DRAFT's shape. Each exemplar is read in
-  windows against the others, and the reference is the median over exemplars of
-  its lowest window (`authorship_reference`, pairs with `authorship`) and of its
-  median window (`authorship_reference_median`, pairs with `authorship_median`).
-  Before, it was a first-512-tokens statistic, compared with a whole-text one.
+  ASK-5457: the reference is built in the DRAFT's shape, window count included.
+  A lowest-of-k falls as k rises, so for a draft of k windows only exemplars
+  holding at least k windows count; each is read over its first k windows
+  against the others. The reference is the median over them of the lowest
+  window (`authorship_reference`, pairs with `authorship`) and of the median
+  window (`authorship_reference_median`, pairs with `authorship_median`). Under
+  MIN_REFERENCE_ROWS such exemplars it is null, like a thin band. At k=1 it is
+  the first-window reference of before.
+
 - **Band by the draft's OWN word count**, at the cuts the experiment used: short
   under 60, mid 60 to 150, long over 150. Banding is per length band only --
   pooled AUC (0.664) is worse than either band alone because cosine scale rises
@@ -335,10 +339,11 @@ def windowed_reply(text, offsets, encode, documents, count_tokens,
                      else start + (end - start) * cap // held))
     documents = list(documents)
     # (document index, piece) for every window of every multi-window document.
-    extra = []
+    extra, doc_tokens = [], []
     if offsets_of is not None:
         for i, doc in enumerate(documents):
             doc_offsets = [tuple(o) for o in offsets_of(doc)]
+            doc_tokens.append(len(doc_offsets))
             doc_plan = plan_windows(len(doc_offsets), WINDOW_TOKENS)
             if len(doc_plan) > 1:
                 extra += [(i, doc[doc_offsets[a][0]:doc_offsets[b - 1][1]])
@@ -355,6 +360,10 @@ def windowed_reply(text, offsets, encode, documents, count_tokens,
             by_doc.setdefault(i, []).append(vec)
         reply["document_windows"] = [by_doc.get(i, [doc_vectors[i]])
                                      for i in range(len(documents))]
+        # The parent re-plans each document's windows from these, the way it
+        # re-plans the draft's, so a child cannot ship a head-only list under
+        # the windowed label (PR #857 review, Codex P2).
+        reply["document_tokens"] = doc_tokens
     return reply
 
 
@@ -485,26 +494,34 @@ def leave_one_out_median(vectors):
     return statistics.median(scores)
 
 
-def leave_one_out_window_medians(vectors, windows):
+def leave_one_out_window_medians(vectors, windows, k):
     """The reference in the DRAFT's shape: (median of lowest, median of median).
 
-    For each exemplar, score every one of ITS windows against the region of the
-    OTHER exemplars, then take that exemplar's lowest window and median window,
-    the two statistics `score` reports for a draft. The reference is the median,
-    over exemplars, of each. ASK-5457: it was the median of first-512-token
-    cosines, so a draft read whole was compared with a reference read in part and
-    the floor compared unlike things. None pair when the band is too thin.
+    For each exemplar, score its first `k` windows against the region of ALL the
+    OTHER exemplars, then take that exemplar's lowest and median window, the two
+    statistics `score` reports for a draft. The reference is the median, over
+    exemplars, of each.
+
+    `k` is the draft's own window count, and that is the point (PR #857 review,
+    MAJOR). A lowest-of-k falls as k rises, so a reference taking each exemplar's
+    lowest over however many windows IT has was incommensurable with a draft of a
+    different length in both directions: 1.0 against a 4-window draft near 0.0,
+    0.00002 against a 1-window draft that cleared it by default. Only exemplars
+    holding at least `k` windows can speak for a k-window draft; fewer than
+    MIN_REFERENCE_ROWS of them and there is no trusted reference, the same honest
+    null a thin band gets. At k=1 this is the first-window statistic, i.e. the
+    pre-ASK-5358 reference exactly. Returns (low, median, eligible_n).
     """
-    if len(vectors) < MIN_REFERENCE_ROWS:
-        return None, None
+    eligible = [i for i, wins in enumerate(windows) if len(wins) >= k]
+    if len(vectors) < MIN_REFERENCE_ROWS or len(eligible) < MIN_REFERENCE_ROWS:
+        return None, None, len(eligible)
     lows, mids = [], []
-    for i, wins in enumerate(windows):
-        others = vectors[:i] + vectors[i + 1:]
-        region = region_vector(others)
-        scores = [cosine(w, region) for w in wins]
+    for i in eligible:
+        region = region_vector(vectors[:i] + vectors[i + 1:])
+        scores = [cosine(w, region) for w in windows[i][:k]]
         lows.append(min(scores))
         mids.append(statistics.median(scores))
-    return statistics.median(lows), statistics.median(mids)
+    return statistics.median(lows), statistics.median(mids), len(eligible)
 
 
 # -------------------------------------------------------------- the record ----
@@ -585,10 +602,17 @@ def score(text, exemplars, backend=None):
         # document) leaves the reference in the old shape, and the record says so.
         doc_windows = reply.get("document_windows")
         if doc_windows is not None:
-            if (not isinstance(doc_windows, list)
-                    or len(doc_windows) != len(distinct)
-                    or any(not isinstance(w, list) or not w
-                           for w in doc_windows)):
+            try:
+                doc_tokens = [int(n) for n in reply["document_tokens"]]
+                ok_docs = (isinstance(doc_windows, list)
+                           and len(doc_windows) == len(distinct) == len(doc_tokens)
+                           and all(isinstance(w, list)
+                                   and len(w) == len(plan_windows(n, WINDOW_TOKENS))
+                                   for w, n in zip(doc_windows, doc_tokens)))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ScorerUnavailable(
+                    f"malformed exemplar windows: {exc}") from exc
+            if not ok_docs:
                 raise ScorerUnavailable("malformed exemplar windows")
             windows_by_text = dict(zip(
                 distinct, [[_unit(v) for v in w] for w in doc_windows]))
@@ -615,13 +639,15 @@ def score(text, exemplars, backend=None):
     # draft's own row is safe to leave in.
     band_vecs = [by_text[t] for t in banded_texts]
     ref_shape = TOKENIZATION_WINDOWED if windows_by_text is not None else TOKENIZATION
+    ref_n = len(banded_texts)
     if band not in BANDED:
         reference = reference_median = None
     elif windows_by_text is not None:
         # The reference in the draft's own shape: lowest window and median
         # window per exemplar, each against the others (ASK-5457).
-        reference, reference_median = leave_one_out_window_medians(
-            band_vecs, [windows_by_text[t] for t in banded_texts])
+        reference, reference_median, ref_n = leave_one_out_window_medians(
+            band_vecs, [windows_by_text[t] for t in banded_texts],
+            len(window_vecs))
     else:
         reference = reference_median = leave_one_out_median(band_vecs)
     return {
@@ -660,6 +686,5 @@ def score(text, exemplars, backend=None):
         # the field lie by exactly `held_out`. `region_n + held_out` is the
         # relation, and a reader who cannot tell the two counts apart cannot read
         # either number.
-        "authorship_reference_n": (len(banded_texts)
-                                   if reference is not None else 0),
+        "authorship_reference_n": ref_n if reference is not None else 0,
     }

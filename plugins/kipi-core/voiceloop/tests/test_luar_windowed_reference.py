@@ -30,14 +30,17 @@ def _drifting(tag, head=300, tail=600):
             + " ".join(f"f{tag}x{i}" for i in range(tail)))
 
 
-DRIFTERS = [{"text": _drifting(f"x{k}n")} for k in range(4)]
-SHORTS = [{"text": _essay(220, tag=f"x{k}n")} for k in range(4)]
+# Distinct heads (200..260 of his words in the first 256) give each exemplar its
+# OWN direction. With identical vectors the region cannot tell which rows compose
+# it, and removing leave-one-out left the suite green (PR #857 review, minor 1).
+DRIFTERS = [{"text": _drifting(f"x{k}n", head=200 + 20 * k)} for k in range(4)]
+SHORTS = [{"text": _essay(220 + 10 * k, tag=f"x{k}n")} for k in range(4)]
 
 
 class WindowedReference(unittest.TestCase):
 
     def test_reference_and_draft_are_the_same_statistic(self):
-        rec = s.score(_drifting("dr"), DRIFTERS, backend=TruncatingFake())
+        rec = s.score(_drifting("dr", head=230), DRIFTERS, backend=TruncatingFake())
         self.assertEqual(rec["authorship_band"], "long")
         # A draft shaped like every exemplar must land at the reference, not far
         # under it. The head-only reference sat near 1.0 against a draft near 0.
@@ -82,6 +85,49 @@ class WindowedReference(unittest.TestCase):
                 return reply
 
         for fake in (Short(), Empty()):
+            with self.assertRaises(s.ScorerUnavailable):
+                s.score(_drifting("dr"), DRIFTERS, backend=fake)
+
+    def test_a_long_draft_has_no_reference_from_single_window_exemplars(self):
+        # PR #857 review MAJOR, case A: draft 4 windows, exemplars 1 window each.
+        # The reference used to equal the head-only 1.0 under the windowed label.
+        rec = s.score(_drifting("dr"), SHORTS, backend=TruncatingFake())
+        self.assertGreater(rec["authorship_windows"], 1)
+        self.assertIsNone(rec["authorship_reference"])
+        self.assertIsNone(rec["authorship_reference_median"])
+        self.assertEqual(rec["authorship_reference_n"], 0)
+
+    def test_a_short_draft_is_not_held_to_a_lowest_of_four(self):
+        # Case B: draft 1 window, exemplars 4 windows each. The reference used to
+        # collapse to ~0 and every draft cleared it. At k=1 it is the first-window
+        # statistic of each exemplar, i.e. the old reference.
+        rec = s.score(_essay(200, tag="dr"), DRIFTERS, backend=TruncatingFake())
+        self.assertEqual(rec["authorship_windows"], 1)
+        # a long-band exemplar set read at k=1: compare with the old statistic
+        long_ex = [{"text": r["text"]} for r in DRIFTERS]
+        region = s.embed([r["text"] for r in long_ex], TruncatingFake())
+        old = None
+        if rec["authorship_band"] == "long":
+            old = s.leave_one_out_median(region)
+            # window 0 holds 504 of the 510 tokens the old read held, so equal
+            # up to those few tokens, not to the last digit
+            self.assertAlmostEqual(rec["authorship_reference"], old, delta=0.01)
+        self.assertGreater(rec["authorship_reference"] or 1.0, 0.5)
+
+    def test_head_only_exemplar_windows_are_refused(self):
+        class HeadOnly(TruncatingFake):
+            def encode_windowed(self, text, documents):
+                reply = super().encode_windowed(text, documents)
+                reply["document_windows"] = [w[:1] for w in reply["document_windows"]]
+                return reply
+
+        class NoTokens(TruncatingFake):
+            def encode_windowed(self, text, documents):
+                reply = super().encode_windowed(text, documents)
+                del reply["document_tokens"]
+                return reply
+
+        for fake in (HeadOnly(), NoTokens()):
             with self.assertRaises(s.ScorerUnavailable):
                 s.score(_drifting("dr"), DRIFTERS, backend=fake)
 
