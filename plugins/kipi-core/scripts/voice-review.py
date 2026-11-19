@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""/voice-loop: run the voice engine on one draft by hand (ASK-2226).
+"""/voice-review (was /voice-loop, renamed ASK-5359; it reviews, it never writes): run the voice engine on one draft by hand (ASK-2226).
 
-usage: voice-loop.py <file> [--channel c]
+usage: voice-review.py <file> [--channel c]
 
 The draft-write hook `voiceloop-band-lint.py` already decides which engine a path
 gets: `review --channel c` when the path names a channel, `score` otherwise
@@ -27,7 +27,7 @@ DEFAULT_CORPUS = "~/projects/consulting/q-consult/voice"
 
 
 def _refuse(message):
-    print(f"voice-loop NOT RUN: {message}", file=sys.stderr)
+    print(f"voice-review NOT RUN: {message}", file=sys.stderr)
     sys.exit(2)
 
 
@@ -58,7 +58,7 @@ def _build_command(hook, file_path, channel):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="voice-loop")
+    parser = argparse.ArgumentParser(prog="voice-review")
     parser.add_argument("file")
     parser.add_argument("--channel")
     args = parser.parse_args()
@@ -95,14 +95,14 @@ def _exit_code(hook, result):
         return 0
     lines = [l.strip() for l in (result.stdout or "").splitlines() if l.strip()]
     if not any(hook.TALLY_RE.search(l) for l in lines):
-        print("voice-loop NOT CHECKED: the ENGINE did not finish (no tally line), so "
+        print("voice-review NOT CHECKED: the ENGINE did not finish (no tally line), so "
               "nothing about the draft was judged. Look at voiceloop itself.", file=sys.stderr)
         return 2
     fingerprint = [l for l in lines if l.startswith("fingerprint:")]
     real = [l for l in lines if l not in fingerprint and not l.startswith("NOT CHECKED:")
             and not hook.TALLY_RE.match(l)]
     if fingerprint:
-        print("voice-loop NOT CHECKED: the corpus has no fingerprint, so style bands were "
+        print("voice-review NOT CHECKED: the corpus has no fingerprint, so style bands were "
               "not computed. Run `voiceloop fingerprint` in the corpus directory.", file=sys.stderr)
     return 1 if real else 2
 

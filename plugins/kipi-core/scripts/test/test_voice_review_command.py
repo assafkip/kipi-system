@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pins `/voice-loop` (ASK-2226): the hand-run door to the same review the hook runs.
+"""Pins `/voice-review` (ASK-2226, renamed from voice-loop in ASK-5359): the hand-run door to the same review the hook runs.
 
 TEST ISOLATION (fable-discipline): a stub `voiceloop` on a sealed PATH and a temp
 corpus. Nothing here reads the founder's corpus or runs the real engine. The hook
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[4]
-SCRIPT = REPO / "plugins" / "kipi-core" / "scripts" / "voice-loop.py"
+SCRIPT = REPO / "plugins" / "kipi-core" / "scripts" / "voice-review.py"
 
 
 def _run(tmp_path, rel_path, *extra, rc=0, stdout="0 finding(s) against 5 exemplar(s)",
@@ -128,3 +128,16 @@ def test_an_instance_without_the_hook_says_so(tmp_path):
     assert r.returncode == 2
     assert argv == []
     assert "voiceloop-band-lint.py" in r.stderr
+
+
+def test_the_old_voice_loop_name_is_gone():
+    """ASK-5359: the command REVIEWS a draft, it never writes one. Under the name
+    `voice-loop` a session read it as the route that produces his voice, and the
+    RCA (rca-voice-loop-is-not-the-only-route-2026-11-16) counted that reading as
+    one of the ways hand-typed text reached an exit. Both old files must be absent
+    and the command file must carry the new name."""
+    plug = REPO / "plugins" / "kipi-core"
+    assert not (plug / "scripts" / "voice-loop.py").exists()
+    assert not (plug / "commands" / "voice-loop.md").exists()
+    cmd = (plug / "commands" / "voice-review.md").read_text()
+    assert "voice-review.py" in cmd and "voice-loop.py" not in cmd
