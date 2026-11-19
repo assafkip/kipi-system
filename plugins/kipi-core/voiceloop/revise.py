@@ -352,8 +352,9 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
 
 
 #: Rules whose fix changes numbers by design; the figure gate re-judges the result.
-#: "substance-number" was named here until the follow-up to #854: a retired gate (q-consult/
-#: config/constraint-ledger.json) that no producer emits.
+#: "substance-number" was named here until the follow-up to #854: a retired gate (the
+#: consulting constraint ledger marks it retired) that no producer emits. If it is ever
+#: re-emitted it falls on the lenient path and a bind that adds a figure is refused.
 _NUMBER_RULES = frozenset({"figure-unsourced", "stats-citation"})
 
 

@@ -299,14 +299,33 @@ def test_a_number_rule_may_delete_the_figure_or_the_whole_sentence_that_held_it(
 
 
 def test_substance_number_is_a_retired_rule_and_is_not_a_number_rule():
-    # Retired gate (q-consult/config/constraint-ledger.json: "a gate already retired");
+    # Retired gate (the consulting constraint ledger: "a gate already retired");
     # no producer emits it, so a stale name must not control skip_numbers.
     assert "substance-number" not in revise._NUMBER_RULES
 
 
 def test_unit_removal_needs_the_sentence_to_go_whole():
     found = meaning_check.changes("It might drop 42 rows. The job ends.",
-                                  "It drops rows. The job ends.", unit_removals=True, skip_numbers=True)
+                                  "It drops rows. The job ends.", unit_removals=True,
+                                  skip_numbers=True)
     assert found == {"modals": ["-might"]}
+    # the same cut with unit_removals OFF refuses it: the flag is what forgives it
+    assert meaning_check.changes("It might drop 42 rows. The job ends.", "The job ends.",
+                                 skip_numbers=True) == {"modals": ["-might"]}
     assert meaning_check.changes("It might drop 42 rows. The job ends.", "The job ends.",
                                  unit_removals=True, skip_numbers=True) == {}
+
+
+def test_a_merged_or_wrapped_sentence_keeps_its_negation_counted():
+    # PR #861 review, major: greedy pairing forgave the negation of a merged sentence.
+    assert meaning_check.changes(
+        "It does not retry the failed job. The queue drains.",
+        "It retries the failed job and the queue drains.", unit_removals=True,
+        skip_numbers=True) == {"negations": ["-not"]}
+
+
+def test_only_does_not_read_the_next_sentence():
+    # PR #861 review, minor: "only." + "If ..." counted a condition no sentence owns.
+    assert meaning_check.changes("It runs only. If it fails it stops.",
+                                 "It runs only.", unit_removals=True,
+                                 skip_numbers=True) == {}

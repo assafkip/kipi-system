@@ -31,7 +31,6 @@ meaning-bearing words are intact. "-x" was in the original and is gone, "+x" is 
 """
 from __future__ import annotations
 
-import difflib
 import re
 from collections import Counter
 
@@ -127,7 +126,21 @@ def _figures(text):
 
 
 def _small_words(text):
-    """Counters for negations, modals and conditions."""
+    """Counters for negations, modals and conditions, summed per sentence.
+
+    Per sentence so the "only" lookahead cannot read the next sentence's "if" (PR #861
+    review): the whole-text and the removed-sentence counts must agree on a boundary.
+    """
+    neg, mod, cond = Counter(), Counter(), Counter()
+    for sentence in _sentences(text) or [text or ""]:
+        n, m, c = _small_words_in(sentence)
+        neg.update(n)
+        mod.update(m)
+        cond.update(c)
+    return neg, mod, +cond
+
+
+def _small_words_in(text):
     words = _words(text)
     neg, mod, cond = Counter(), Counter(), Counter()
     for index, word in enumerate(words):
@@ -169,6 +182,18 @@ def _norm_sentence(sentence):
     # Figures are blanked so "It might drop 42 rows." and "It might drop rows." are the SAME
     # sentence: a number rule ordered the figure out, and that edit is not a removal.
     return " ".join(_FIGURE_TEXT.sub(" ", sentence.lower()).split())
+
+
+def _content_words(text):
+    return [w for w in _words(_FIGURE_TEXT.sub(" ", text or ""))
+            if len(w) > 3 and w not in MODALS and w not in NEGATIONS and w not in CONDITIONS]
+
+
+def _gone(words, revised_words):
+    """True when fewer than a third of `words` survive in the revision."""
+    if not words:
+        return True
+    return sum(1 for w in words if w in revised_words) / len(words) < 1 / 3
 
 
 def _diff(before, after, render, allow_removals):
@@ -225,16 +250,13 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
                 kept[key] -= 1
             else:
                 unmatched.append(sentence)
-        # An unmatched revised sentence is an EDIT of the unmatched original sentence most
-        # like it (its tokens are compared normally); only an original sentence left with no
-        # revised partner was removed whole.
-        for key, count in kept.items():
-            for _ in range(count):
-                if not unmatched:
-                    break
-                best = max(unmatched, key=lambda x: difflib.SequenceMatcher(
-                    None, _norm_sentence(x), key).ratio())
-                unmatched.remove(best)
+        # An unmatched original sentence counts as removed WHOLE only when its content words
+        # are gone from the revision. A sentence that was merged into another, split, or
+        # hard-wrapped still has its words in the revised text, so its small words keep
+        # counting (PR #861 review: greedy pairing forgave a merged sentence's negation).
+        revised_words = set(_content_words(revised))
+        unmatched = [x for x in unmatched
+                     if _gone(_content_words(x), revised_words)]
         for sentence in unmatched:
             for before, gone in zip((n0, m0, c0), _small_words(sentence)):
                 before.subtract(gone)
