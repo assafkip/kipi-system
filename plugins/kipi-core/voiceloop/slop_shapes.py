@@ -102,7 +102,8 @@ SHAPES = (
     ),
     # ASK-5427, 2026-11-18, founder: "Do 1+2". Seven habits from the unslop skill's
     # "Claude's own measured habits" list (counted over 4.5M words of Claude Code
-    # prose). Each hits 0 of 170 rows in `voice/exemplars.jsonl`, measured the same day,
+    # prose). Each hit 0 rows of `voice/exemplars.jsonl` (164 tracked rows; 170 in the founder's live copy),
+    # measured the same day,
     # and the sweep test on the instance side re-runs that on exemplars, organic posts
     # and writing examples. Deliberately NOT here: actually (28 hits in his corpus),
     # rather than (30), the real, genuinely, bottom line, not just. Blocking those
@@ -110,7 +111,7 @@ SHAPES = (
     # keeping` and a plain `drives the car` stay legal because those patterns need the
     # habit's own second word. The bare-word rules (load-bearing, cleanly,
     # fundamentally) have no literal carve-out: the ticket chose to block the word,
-    # since he writes none of them (0 of 201 rows). Review round 1 (PR 842) measured
+    # since he writes none of them (0 hits across exemplars, organic posts and writing examples). Review round 1 (PR 842) measured
     # the cost: 'applied cleanly' and a literal load-bearing wall are blocked too, and
     # the cold-outreach template's 'worth flagging' line trips the preamble rule.
     # slop-worth-preamble also overlaps voice-lint BANNED_PHRASES on 'it is worth
@@ -128,8 +129,11 @@ SHAPES = (
         "code 0, leaves no lock file) instead of grading it.",
     ),
     (
+        # ASK-5452: narrowed from the bare word. His own correction in voice/corrections.jsonl
+        # says 'does not fundamentally change the mechanism'; the habit is the 'fundamentally
+        # different' judgment, so only that collocation is blocked.
         "slop-fundamentally",
-        re.compile(r"(?i)\bfundamentally\b"),
+        re.compile(r"(?i)\bfundamentally\s+(?:different|distinct|flawed|broken|wrong|incompatible)\b"),
         "the specific difference. Name what differs, or drop the intensifier.",
     ),
     (

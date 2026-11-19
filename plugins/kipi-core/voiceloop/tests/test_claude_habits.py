@@ -55,6 +55,8 @@ HIS_OWN_WORDS = (
     "It genuinely surprised me.",
     "Bottom line, the number held.",
     "This is not just a tool.",
+    # Verbatim from his 2026-08-27 correction in voice/corrections.jsonl (ASK-5452).
+    "Incorporate it into the mechanism in a way that does not fundamentally change the mechanism.",
 )
 
 
