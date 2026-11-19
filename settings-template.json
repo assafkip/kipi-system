@@ -263,7 +263,7 @@
         ]
       },
       {
-        "matcher": "mcp__claude_ai_Gmail__.*",
+        "matcher": "mcp__[A-Za-z0-9_]*[Gg]mail[A-Za-z0-9_]*__(.*_)?(send|reply|forward)(_.*)?",
         "hooks": [
           {
             "type": "command",

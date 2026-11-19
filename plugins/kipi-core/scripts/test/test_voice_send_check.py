@@ -217,21 +217,29 @@ def test_hook_ignores_a_tool_that_does_not_send(tmp_path):
 
 # ---- PR #859 round 1: unclassified tools, override, log, TTL ---------------------------
 
-def test_an_unclassified_gmail_tool_is_refused_not_passed(tmp_path):
-    root = _stub_engine(tmp_path / "e", _result())
-    r = _fire(tmp_path, root, {"body": "x"}, tool="mcp__claude_ai_Gmail__send_message_v2")
-    assert r.returncode == 2 and "not classified" in r.stderr, (r.returncode, r.stderr)
-
-
-def test_every_known_non_sending_gmail_tool_passes(tmp_path):
+def test_a_renamed_sender_is_refused_by_the_verb_pattern(tmp_path):
     root = _stub_engine(tmp_path / "e", _result(hard=["x"]))
-    for i, tool in enumerate(sorted(vsc.NON_SENDING_GMAIL)[:3]):
+    for i, tool in enumerate(["mcp__claude_ai_Gmail__gmail_send_message",
+                              "mcp__other_gmail__reply_all"]):
+        r = _fire(tmp_path / str(i), root, {"subject": "s", "body": "A note."}, tool=tool)
+        assert r.returncode == 2, tool
+
+
+def test_reads_are_never_touched_including_the_one_preflight_calls(tmp_path):
+    """PR #859 round 2: the round-1 name allowlist refused gmail_search_messages."""
+    root = _stub_engine(tmp_path / "e", _result(hard=["x"]))
+    reads = ["mcp__claude_ai_Gmail__gmail_search_messages", "mcp__claude_ai_Gmail__search_threads",
+             "mcp__claude_ai_Gmail__get_thread", "mcp__claude_ai_Gmail__list_forwarding_addresses",
+             "mcp__claude_ai_Gmail__create_draft", "mcp__claude_ai_Gmail__label_thread"]
+    for i, tool in enumerate(reads):
         assert _fire(tmp_path / str(i), root, {"q": "x"}, tool=tool).returncode == 0, tool
+        assert not re.fullmatch(vsc.SENDER_MATCHER, tool), tool
 
 
-def test_the_matcher_reaches_every_gmail_tool_name():
+def test_the_template_matcher_is_the_modules_matcher_and_reaches_the_senders():
     matcher, _ = _send_hook_command()
-    for tool in list(vsc.SEND_TOOLS) + sorted(vsc.NON_SENDING_GMAIL) + [vsc.GMAIL_PREFIX + "brand_new"]:
+    assert matcher == vsc.SENDER_MATCHER
+    for tool in list(vsc.SEND_TOOLS) + ["mcp__claude_ai_Gmail__gmail_send_message"]:
         assert re.fullmatch(matcher, tool), tool
 
 

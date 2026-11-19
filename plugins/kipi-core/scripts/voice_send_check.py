@@ -57,18 +57,14 @@ SEND_TOOLS = {
     "mcp__claude_ai_Gmail__reply": "client-email",
     "mcp__claude_ai_Gmail__forward": "client-email",
 }
-# Gmail tools that cannot transmit text. Anything under the Gmail prefix that is in neither
-# SEND_TOOLS nor this set is REFUSED by name: a renamed or new sender must not fail open (PR #859
-# round 1). The names are the connector's own tool list as listed in a live session.
-GMAIL_PREFIX = "mcp__claude_ai_Gmail__"
-NON_SENDING_GMAIL = frozenset(GMAIL_PREFIX + n for n in (
-    "apply_sensitive_message_label", "apply_sensitive_thread_label", "create_draft",
-    "create_label", "delete_draft", "delete_label", "download_gmail_attachment", "get_draft",
-    "get_message", "get_thread", "label_message", "label_thread", "list_drafts", "list_labels",
-    "mark_message_spam", "mark_thread_spam", "search_threads", "trash_message", "trash_thread",
-    "unlabel_message", "unlabel_thread", "unmark_message_spam", "unmark_thread_spam",
-    "untrash_message", "untrash_thread", "update_draft", "update_label",
-    "update_message_labels"))
+# A sender is any Gmail-connector tool whose name has the token send, reply or forward. By
+# token, not substring: list_forwarding_addresses is not a sender. why a verb pattern and not
+# a name list (PR #859 round 2): a name allowlist refused mcp__claude_ai_Gmail__gmail_search_messages,
+# a read the fleet's preflight calls, and a second connector spells its senders differently.
+# Limit, stated: a sender renamed to a verb outside this set is not seen. SEND_TOOLS above
+# names the three known ones exactly; the pattern widens it to renamed or second-connector ones.
+SENDER_MATCHER = r"mcp__[A-Za-z0-9_]*[Gg]mail[A-Za-z0-9_]*__(.*_)?(send|reply|forward)(_.*)?"
+_SENDER_RE = re.compile(SENDER_MATCHER)
 MODE_ENV = "KIPI_VOICE_SEND_MODE"   # "report": log the verdict and let the send through
 LOG_ENV = "KIPI_VOICE_SEND_LOG"
 RECEIPT_TTL_S = 24 * 3600
@@ -166,14 +162,8 @@ def _hook(payload_text: str) -> int:
     except (ValueError, KeyError, TypeError):
         print("voice_send_check: hook payload unreadable: the send gate cannot run", file=sys.stderr)
         return voice_full_gate.EXIT_REFUSE
-    surface = SEND_TOOLS.get(tool)
+    surface = SEND_TOOLS.get(tool) or ("client-email" if _SENDER_RE.fullmatch(tool) else None)
     if surface is None:
-        if tool.startswith(GMAIL_PREFIX) and tool not in NON_SENDING_GMAIL:
-            _log({"tool": tool, "decision": "refuse-unclassified"})
-            print("voice_send_check: REFUSE: %s is a Gmail tool this gate has not classified as "
-                  "sending or not sending. Add it to SEND_TOOLS or NON_SENDING_GMAIL in "
-                  "voice_send_check.py." % tool, file=sys.stderr)
-            return voice_full_gate.EXIT_REFUSE
         return voice_full_gate.EXIT_PASS  # not a sender: nothing leaves
     text = text_that_leaves(tool, payload.get("tool_input") or {})
     if text is None:
