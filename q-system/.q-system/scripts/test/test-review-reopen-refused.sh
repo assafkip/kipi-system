@@ -60,7 +60,7 @@ cat > "$STUB/gh" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$GH_LOG"
 case "\$*" in
-  *"pr view"*"--json body"*) cat "$WORK/body-\$3" 2>/dev/null ;;
+  *"pr view"*"--json body"*) [ -e "$WORK/body-fails-\$3" ] && exit 1; cat "$WORK/body-\$3" 2>/dev/null ;;
   *"pr view"*"headRefName"*) cat "$WORK/meta-\$3" 2>/dev/null ;;
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "a PR title" ;;
   *"pr diff"*)              echo "diff --git a/FILE.txt b/FILE.txt" ;;
@@ -172,9 +172,10 @@ ok "Ladder-successor line one: reviewed with an empty ladder state"
 # A hand-made body with no tag is refused, and the refusal names the override.
 printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-7"
 printf 'Just reopening this.\n' > "$WORK/body-7"
-before="$(calls)"
+before="$(calls)"; : > "$GH_LOG"
 PRNUM=7 run_reviewer "$WORK/p7.out" --post
 [ "$(calls)" = "$before" ] || fail "an untagged hand-made reopen reached the model"
+cp "$GH_LOG" "$WORK/gh-p7.txt"
 grep -q 'delete .*round-cap' "$WORK/p7.out" || fail "refusal does not name the marker override"
 ok "untagged reopen refused; refusal names the override"
 
@@ -193,6 +194,33 @@ before="$(calls)"
 PRNUM=9 run_reviewer "$WORK/p9.out" --post
 [ "$(calls)" = "$((before + 1))" ] || fail "a legacy Resumes #1 successor was refused"
 ok "legacy Resumes #N on line one: reviewed"
+
+# The legacy glob must match the capped PR's number: "Resumes #11." does not excuse PR 1.
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-11"
+printf 'Resumes #11. rest of body\n' > "$WORK/body-11"
+before="$(calls)"
+PRNUM=11 run_reviewer "$WORK/p11.out" --post
+[ "$(calls)" = "$before" ] || fail "Resumes #11 excused a reopen of capped PR #1"
+ok "legacy Resumes #N must name the capped PR: #11 does not excuse #1"
+
+# The 140-char commit status keeps the override instruction (p7 was a --post refusal).
+desc="$(grep 'description=' "$WORK/gh-p7.txt" | head -1 | sed 's/.*description=//')"
+[ -n "$desc" ] || fail "no pending status was posted on the refusal"
+[ "${#desc}" -le 140 ] || fail "status description is ${#desc} chars, over 140"
+case "$desc" in *"delete .round-cap"*) ;; *) fail "truncation dropped the override text: $desc" ;; esac
+ok "status description is at most 140 chars and keeps the override"
+
+# UNKNOWN IS NOT NO PROOF (PR #866 round 3). A failed body read must not refuse the
+# ladder's own successor or write the cap marker; it warns and the PR is reviewed.
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-10"
+: > "$WORK/body-fails-10"
+before="$(calls)"
+PRNUM=10 run_reviewer "$WORK/p10.out" --post
+[ "$(calls)" = "$((before + 1))" ] || fail "a failed body read refused the PR:
+$(tail -20 "$WORK/p10.out")"
+[ -z "$(find "$WORK/home" -name '.round-cap-*-pr-10')" ] || fail "a failed body read wrote a cap marker"
+grep -q 'WARN: could not read the body of PR #10' "$WORK/p10.out" || fail "failed body read did not warn"
+ok "failed body read is unknown: reviewed, no marker, warned"
 
 # Producer pin: the tag the reviewer reads is the one cap-ladder.py writes, whatever
 # the caller (climb or release) passes as body.

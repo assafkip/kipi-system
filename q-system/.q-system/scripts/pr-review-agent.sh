@@ -497,14 +497,25 @@ if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
       # cap-ladder.py open_from_branch puts "Ladder-successor:" on line one of every
       # successor body, and ONLY line one counts (a mention on line 3 is a hand-made
       # reopen). "Resumes #N" on line one stays accepted for successors already open.
-      _bline="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json body -q .body 2>/dev/null | head -1)"
-      case "$_bline" in "Ladder-successor: opened by cap-ladder.py"*|"Resumes #"[0-9]*) continue ;; esac
+      # A FAILED body read is UNKNOWN, never "no proof" (PR #866 round 3): refusing on
+      # a network blip marked the ladder's own successor capped and cost a rung. Same
+      # standard as READ_OK below: unknown means hands off, so warn and do not refuse.
+      if ! _bfull="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json body -q .body 2>/dev/null)"; then
+        echo "  WARN: could not read the body of PR #$PR; reopen check skipped (unknown, not refused)" >&2
+        continue
+      fi
+      _bline="$(printf '%s\n' "$_bfull" | head -1)"
+      # The legacy form must name THIS capped PR: a number-blind glob let "Resumes #11."
+      # excuse a reopen of #1.
+      case "$_bline" in "Ladder-successor: opened by cap-ladder.py"*|"Resumes #$_n"|"Resumes #$_n"[!0-9]*) continue ;; esac
       REOPEN_OF="$_n"; break
     fi
   done
 fi
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
   CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
+  CAP_STATUS="$CAP_MSG"
+  [ -z "$REOPEN_OF" ] || CAP_STATUS="PR #$PR reopens capped #$REOPEN_OF; use cap-ladder.py. Override: delete $(basename "$_m")"
   [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
@@ -535,7 +546,7 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
       && echo "  WARN: could not read $STATUS_CONTEXT on $HEAD_SHA; status left untouched" >&2
     if [ "$READ_OK" = 1 ] && [ "$CUR_STATE" != "success" ]; then
       reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
-          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=${CAP_MSG:0:140}" >/dev/null 2>&1 \
+          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=${CAP_STATUS:0:140}" >/dev/null 2>&1 \
         || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2
     fi
   fi
