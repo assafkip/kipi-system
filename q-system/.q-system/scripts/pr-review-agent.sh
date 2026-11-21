@@ -491,19 +491,21 @@ if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
     if { [ -n "$_head" ] && [ "$_head" = "$_ohead" ]; } || { [ -n "$_myissue" ] && [ "$_myissue" = "$_oissue" ]; }; then
       # Fail closed on the allowance: no readable ladder record means refuse.
       if [ -f "$_ladder_state" ] && grep -q "/pull/$PR\"" "$_ladder_state"; then continue; fi
-      # THE SUCCESSOR CARRIES ITS OWN PROOF (PR #866 review, round 1). The ladder
-      # state is written once at the end of a nightly run, and release() never
-      # records new_pr, so a successor cap-ladder.py opened was refused when the
-      # run died early. open_from_branch writes "Resumes #N." at the top of the
-      # body at create time, so read that. The trailing class stops #1 matching #11.
-      if gh pr view "$PR" $KIPI_GH_REPO_ARGS --json body -q .body 2>/dev/null | grep -qE "^Resumes #$_n([^0-9]|$)"; then continue; fi
+      # THE SUCCESSOR CARRIES ITS OWN PROOF (PR #866 rounds 1-2). The ladder state
+      # is written once at the end of a nightly run and release() never records
+      # new_pr; a per-predecessor "Resumes #N." named only the latest marker. So
+      # cap-ladder.py open_from_branch puts "Ladder-successor:" on line one of every
+      # successor body, and ONLY line one counts (a mention on line 3 is a hand-made
+      # reopen). "Resumes #N" on line one stays accepted for successors already open.
+      _bline="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json body -q .body 2>/dev/null | head -1)"
+      case "$_bline" in "Ladder-successor: opened by cap-ladder.py"*|"Resumes #"[0-9]*) continue ;; esac
       REOPEN_OF="$_n"; break
     fi
   done
 fi
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
   CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
-  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $_m"
+  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
     # One comment per PR, not one per refused call: the loop may keep calling.
@@ -533,7 +535,7 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
       && echo "  WARN: could not read $STATUS_CONTEXT on $HEAD_SHA; status left untouched" >&2
     if [ "$READ_OK" = 1 ] && [ "$CUR_STATE" != "success" ]; then
       reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
-          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
+          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=${CAP_MSG:0:140}" >/dev/null 2>&1 \
         || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2
     fi
   fi

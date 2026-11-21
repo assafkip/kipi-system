@@ -162,20 +162,55 @@ ok "successor named in the ladder state: reviewed"
 # ladder state names nothing (release() path, or a run killed before write_state).
 printf '{}' > "$CAP_LADDER_STATE"
 printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-6"
-printf 'Resumes #1. rest of body\n' > "$WORK/body-6"
+printf 'Ladder-successor: opened by cap-ladder.py\n\nbody\n' > "$WORK/body-6"
 before="$(calls)"
 PRNUM=6 run_reviewer "$WORK/p6.out" --post
 [ "$(calls)" = "$((before + 1))" ] || fail "a successor with a Resumes #1 body was refused:
 $(tail -20 "$WORK/p6.out")"
-ok "Resumes #N body: reviewed with an empty ladder state"
+ok "Ladder-successor line one: reviewed with an empty ladder state"
 
-# Resumes #11 is not Resumes #1, and the refusal names the override.
+# A hand-made body with no tag is refused, and the refusal names the override.
 printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-7"
-printf 'Resumes #11. rest of body\n' > "$WORK/body-7"
+printf 'Just reopening this.\n' > "$WORK/body-7"
 before="$(calls)"
 PRNUM=7 run_reviewer "$WORK/p7.out" --post
-[ "$(calls)" = "$before" ] || fail "Resumes #11 was taken for Resumes #1"
+[ "$(calls)" = "$before" ] || fail "an untagged hand-made reopen reached the model"
 grep -q 'delete .*round-cap' "$WORK/p7.out" || fail "refusal does not name the marker override"
-ok "Resumes #11 does not match #1; refusal names the override"
+ok "untagged reopen refused; refusal names the override"
+
+# Line one only: the tag on line 3 is a hand-made reopen.
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-8"
+printf 'Reopening by hand.\n\nLadder-successor: opened by cap-ladder.py\n' > "$WORK/body-8"
+before="$(calls)"
+PRNUM=8 run_reviewer "$WORK/p8.out" --post
+[ "$(calls)" = "$before" ] || fail "a tag on line 3 bypassed the reopen refusal"
+ok "tag below line one: refused"
+
+# Legacy Resumes #N on line one (successors already open) is still accepted.
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-9"
+printf 'Resumes #1. rest of body\n' > "$WORK/body-9"
+before="$(calls)"
+PRNUM=9 run_reviewer "$WORK/p9.out" --post
+[ "$(calls)" = "$((before + 1))" ] || fail "a legacy Resumes #1 successor was refused"
+ok "legacy Resumes #N on line one: reviewed"
+
+# Producer pin: the tag the reviewer reads is the one cap-ladder.py writes, whatever
+# the caller (climb or release) passes as body.
+# KIPI_NOTIFY stubbed: cap-ladder.py reaches slack-notify.sh, and this only imports it.
+KIPI_NOTIFY=/usr/bin/true python3 -I - "$SRC_DIR/cap-ladder.py" <<'PYEOF' || fail "cap-ladder.py open_from_branch does not put the tag on line one"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cap_ladder_under_test", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+calls = []
+def fake_run(cmd, *a, **k):
+    calls.append(cmd)
+    return (0, "1") if "compare" in " ".join(cmd) else (0, "https://x/pull/9")
+m.run = fake_run
+ok, url = m.open_from_branch("o/r", "b", "t", "ASK-1 re-enters after its hold")
+body = calls[-1][calls[-1].index("--body") + 1]
+assert body.splitlines()[0] == m.LADDER_SUCCESSOR_TAG, body
+assert m.LADDER_SUCCESSOR_TAG == "Ladder-successor: opened by cap-ladder.py"
+PYEOF
+ok "cap-ladder.py writes the tag on line one"
 
 echo "PASS ($PASS checks) test-review-reopen-refused.sh"
