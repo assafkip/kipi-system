@@ -183,7 +183,10 @@ def _hook(payload_text: str) -> int:
         return voice_full_gate.EXIT_PASS
     # Block mode is set in the environment the hook is launched from (his shell or a launchd
     # plist), so a session cannot flip it mid-run. Every would-refuse is logged either way.
-    if os.environ.get(MODE_ENV) != BLOCK_MODE:
+    # Only a REFUSE verdict is report-able. An OUTAGE (engine absent, a part that ran 0) stays a
+    # refusal in every mode: voice_full_gate's invariant is that a gate that cannot run must not
+    # pass (PR #864 round 1 repro: report mode let both through).
+    if verdict.verdict == "REFUSE" and os.environ.get(MODE_ENV) != BLOCK_MODE:
         _log({"tool": tool, "decision": "report-only-pass", "verdict": verdict.verdict,
               "reasons": verdict.reasons[:3], "surface": surface})
         print("voice_send_check: %s on the bytes that leave, NOT blocking (%s is not %s):\n%s"

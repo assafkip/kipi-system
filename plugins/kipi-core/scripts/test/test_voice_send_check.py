@@ -199,12 +199,13 @@ def test_hook_refuses_an_ai_shaped_send_in_an_instance_without_q_consult(tmp_pat
 def test_hook_refuses_a_forced_outage(tmp_path):
     parts = {"hard-rows": {"ran": 1, "of": 1}, "authorship": {"ran": 0, "of": 1}}
     root = _stub_engine(tmp_path / "e", _result(parts=parts))
-    r = _fire(tmp_path, root, {"to": ["a@b.c"], "subject": "Hi", "body": "A short note."})
+    # mode=None: the shipped default. Report mode must never turn an outage into a pass (PR #864 r1).
+    r = _fire(tmp_path, root, {"to": ["a@b.c"], "subject": "Hi", "body": "A short note."}, mode=None)
     assert r.returncode == 2 and "OUTAGE" in r.stderr, (r.returncode, r.stderr)
 
 
 def test_hook_refuses_when_the_engine_is_absent(tmp_path):
-    r = _fire(tmp_path, tmp_path / "no-engine", {"subject": "Hi", "body": "A short note."})
+    r = _fire(tmp_path, tmp_path / "no-engine", {"subject": "Hi", "body": "A short note."}, mode=None)
     assert r.returncode == 2
 
 
