@@ -462,8 +462,38 @@ PRIOR_ROUNDS=0
 for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
   [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
 done
-if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
+# A REOPEN IS NOT A NEW ROUND (ASK-5485, RULE-2026-11-19-A). On 2026-11-18 five
+# capped PRs were closed and reopened from the same branch (#610, #619, #839,
+# #847, #856) so this counter started again at 0. The per-PR count above cannot
+# see that, so look across PRs: a CLOSED PR on the same head branch, or for the
+# same Linear issue, that left a cap marker was closed while capped. Refuse its
+# successor and route it to cap-ladder.py, whose rung 1 is an RCA. The ONE
+# successor allowed is the one cap-ladder.py itself opened (its state history
+# names it as new_pr), because that PR is the ladder doing the routing.
+# Version-only and merge-only rounds are not reopens: they take the re-attest path.
+REOPEN_OF=""
+if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
+  _meta="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json headRefName,state,title -q '.headRefName + "\t" + .state + "\t" + .title' 2>/dev/null || true)"
+  _head="${_meta%%$'\t'*}"
+  _ladder_state="${CAP_LADDER_STATE:-$HOME/.local/state/kipi/cap-ladder/state.json}"
+  for _m in "$ENGINE_DIR"/.round-cap-"${REVIEW_SLUG//\//_}"-pr-*; do
+    [ -f "$_m" ] || continue
+    _n="${_m##*-pr-}"
+    [ "$_n" != "$PR" ] || continue
+    _o="$(gh pr view "$_n" $KIPI_GH_REPO_ARGS --json headRefName,state,title -q '.headRefName + "\t" + .state + "\t" + .title' 2>/dev/null || true)"
+    _ohead="${_o%%$'\t'*}"; _rest="${_o#*$'\t'}"; _ostate="${_rest%%$'\t'*}"; _otitle="${_rest#*$'\t'}"
+    [ "$_ostate" = "CLOSED" ] || continue
+    _oissue="$(printf '%s' "$_otitle" | grep -oE 'ASK-[0-9]+' | head -1)"
+    if { [ -n "$_head" ] && [ "$_head" = "$_ohead" ]; } || { [ -n "$ISSUE" ] && [ "$ISSUE" = "$_oissue" ]; }; then
+      # Fail closed on the allowance: no readable ladder record means refuse.
+      if [ -f "$_ladder_state" ] && grep -q "/pull/$PR\"" "$_ladder_state"; then continue; fi
+      REOPEN_OF="$_n"; break
+    fi
+  done
+fi
+if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
   CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
+  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen"
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
     # One comment per PR, not one per refused call: the loop may keep calling.

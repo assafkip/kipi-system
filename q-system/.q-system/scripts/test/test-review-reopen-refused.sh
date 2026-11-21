@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# A capped PR that is closed and reopened must not get a fresh review count
+# (ASK-5485, RULE-2026-11-19-A).
+#
+# THE DEFECT. On 2026-11-18 five capped PRs were closed and reopened from the same
+# branch (#610, #619, #839, #847, #856) so pr-review-agent.sh counted 0 rounds again.
+# The ruling: at the cap the route is cap-ladder.py (RCA), never a reopen.
+#
+# WHAT RED LOOKS LIKE. PR 1 is driven to the cap (3 model calls, then the marker).
+# PR 2 on the same head branch, PR 1 CLOSED, must make 0 model calls and carry the
+# reopen message. Remove the reopen block and PR 2 calls the stub: red. Controls: a
+# PR for a different branch and issue still reaches the model; the successor the
+# ladder itself opened (named in its state file) still reaches the model.
+#
+# Isolation: HOME, KIPI_STATE_DIR, CAP_LADDER_STATE, the repo, gh and claude are
+# fixtures in a mktemp dir. No live PR is read and no model is spent.
+set -uo pipefail
+# NOT A BILLING TEST (ASK-4311). This suite stubs `claude` on PATH and tests its
+# own subject, so its runs take the plan path: KIPI_FLEET_API_KEYS=0 makes the
+# worker, the reviewer and the dispatcher call `env -u ANTHROPIC_API_KEY claude`
+# exactly as before the fleet door. The door has its own suites
+# (test_fleet_api_credit.py, test-dispatch-api-key-gate.sh, test-worker-usage-brake.sh).
+export KIPI_FLEET_API_KEYS=0
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+SRC_DIR="$ROOT/q-system/.q-system/scripts"
+
+PASS=0
+fail() { echo "FAIL: $1" >&2; exit 1; }
+ok()   { PASS=$((PASS + 1)); echo "  ok: $1"; }
+
+[ -f "$SRC_DIR/pr-review-agent.sh" ] || fail "pr-review-agent.sh missing at $SRC_DIR"
+REAL_GIT="$(command -v git)" || fail "git not on PATH"
+
+WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
+trap 'rm -rf "$WORK"' EXIT
+unset KIPI_TARGET_REPO KIPI_REVIEW_ENGINE KIPI_REVIEW_PRIMARY_ENGINE KIPI_REVIEW_MAX_ROUNDS 2>/dev/null || true
+
+G() { git -c user.email=t@t.t -c user.name=t "$@"; }
+STUB="$WORK/bin"; mkdir -p "$STUB"
+
+mkdir -p "$WORK/skel/q-system/.q-system/scripts"
+git init -q "$WORK/skel"
+echo "code" > "$WORK/skel/FILE.txt"
+cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$SRC_DIR/repo-slug-lib.sh" \
+   "$SRC_DIR/env-failure-lib.sh" "$SRC_DIR/reviewer-token-lib.sh" "$SRC_DIR/review-lean-lib.sh" \
+   "$WORK/skel/q-system/.q-system/scripts/"
+G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
+git -C "$WORK/skel" branch -M main
+git -C "$WORK/skel" remote add origin "https://github.com/example-owner/example-repo.git"
+AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"
+SHA="$(git -C "$WORK/skel" rev-parse HEAD)"
+
+GH_LOG="$WORK/gh-calls.txt"; : > "$GH_LOG"
+cat > "$STUB/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$GH_LOG"
+case "\$*" in
+  *"pr view"*"headRefName"*) cat "$WORK/meta-\$3" 2>/dev/null ;;
+  *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "a PR title" ;;
+  *"pr diff"*)              echo "diff --git a/FILE.txt b/FILE.txt" ;;
+  *"pr comment"*)           [ -s "$WORK/comment-fails" ] && exit 1; echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
+  *"commits/"*"/statuses"*) [ -s "$WORK/read-fails" ] && exit 1; cat "$WORK/cur-state" 2>/dev/null ;;
+  *"api"*)                  echo '{}' ;;
+esac
+exit 0
+EOF
+chmod +x "$STUB/gh"
+
+# The engine under count. A REQUEST CHANGES review, so every round is the kind
+# that would send the loop back for another one.
+CLAUDE_LOG="$WORK/claude-calls.txt"; : > "$CLAUDE_LOG"
+cat > "$STUB/claude" <<EOF
+#!/usr/bin/env bash
+echo call >> "$CLAUDE_LOG"
+# An environmental failure: output with no findings block, as a provider blip leaves.
+[ -s "$WORK/blip" ] && { echo "API Error: 529 overloaded"; exit 0; }
+cat <<'REVIEW'
+VERDICT: REQUEST CHANGES
+FINDINGS:
+severity|file|line|what
+major|FILE.txt|1|still wrong
+END FINDINGS
+REVIEW
+exit 0
+EOF
+chmod +x "$STUB/claude"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/codex"; chmod +x "$STUB/codex"
+export PATH="$STUB:$PATH"
+[ "$(command -v git)" = "$REAL_GIT" ] || fail "git was shadowed by a stub"
+
+NOTIFY_LOG="$WORK/notify.txt"; : > "$NOTIFY_LOG"
+cat > "$STUB/notify" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$NOTIFY_LOG"
+[ -s "$WORK/notify-fails" ] && exit 1
+exit 0
+EOF
+chmod +x "$STUB/notify"
+calls() { wc -l <"$CLAUDE_LOG" | tr -d ' '; }
+PRNUM=1
+run_reviewer() {  # run_reviewer <out-file> [extra args...]
+  local out="$1"; shift
+  ( cd "$WORK/skel" \
+    && HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="$STUB/notify" \
+       bash "$AGENT" "$PRNUM" --engine claude "$@" ) >"$out" 2>&1
+  echo $? > "$out.rc"
+}
+
+for n in 1 2 3; do
+  before="$(calls)"; PRNUM=1 run_reviewer "$WORK/r$n.out" --post; sleep 1
+  [ "$(calls)" = "$((before + 1))" ] || fail "round $n did not reach the model once (control broken)"
+done
+PRNUM=1 run_reviewer "$WORK/r4.out" --post
+[ -n "$(find "$WORK/home" -name '.round-cap-*')" ] || fail "PR 1 left no cap marker (control broken)"
+ok "positive control: PR 1 reached the cap and left its marker"
+
+export CAP_LADDER_STATE="$WORK/ladder-state.json"; printf '{}' > "$CAP_LADDER_STATE"
+printf 'sana/ask-9\tCLOSED\tFix thing (ASK-9)\n' > "$WORK/meta-1"
+
+# Reopen: PR 2, same branch, PR 1 closed while capped.
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-2"
+before="$(calls)"; : > "$GH_LOG"
+PRNUM=2 run_reviewer "$WORK/p2.out" --post
+[ "$(calls)" = "$before" ] || fail "a reopened capped branch reached the model:
+$(tail -20 "$WORK/p2.out")"
+grep -q 'reopens capped PR #1' "$WORK/p2.out" || fail "refusal does not name the reopen"
+grep -q 'cap-ladder.py' "$WORK/p2.out" || fail "refusal does not name cap-ladder.py"
+[ "$(cat "$WORK/p2.out.rc")" = "0" ] || fail "refusal must exit 0"
+ok "same branch, earlier PR closed while capped: 0 model calls, names cap-ladder.py"
+
+# Same issue on a different branch name is still a reopen.
+printf 'other-branch\tOPEN\tFix thing again (ASK-9)\n' > "$WORK/meta-3"
+before="$(calls)"
+PRNUM=3 run_reviewer "$WORK/p3.out" --post
+[ "$(calls)" = "$before" ] || fail "same issue on a new branch reached the model"
+ok "same issue, new branch: refused"
+
+# Fresh branch, different issue: reviewed.
+printf 'sana/ask-77\tOPEN\tOther work (ASK-77)\n' > "$WORK/meta-4"
+before="$(calls)"
+PRNUM=4 run_reviewer "$WORK/p4.out" --post
+[ "$(calls)" = "$((before + 1))" ] || fail "a different branch and issue was refused:
+$(tail -20 "$WORK/p4.out")"
+ok "different branch and issue: reviewed"
+
+# The ladder's own successor is allowed.
+printf '{"ASK-9":{"history":[{"rung":1,"new_pr":"https://github.com/example-owner/example-repo/pull/5"}]}}' > "$CAP_LADDER_STATE"
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-5"
+before="$(calls)"
+PRNUM=5 run_reviewer "$WORK/p5.out" --post
+[ "$(calls)" = "$((before + 1))" ] || fail "the successor cap-ladder.py opened was refused:
+$(tail -20 "$WORK/p5.out")"
+ok "successor named in the ladder state: reviewed"
+
+echo "PASS ($PASS checks) test-review-reopen-refused.sh"
