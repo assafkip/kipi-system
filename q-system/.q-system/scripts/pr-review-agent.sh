@@ -475,6 +475,10 @@ REOPEN_OF=""
 if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
   _meta="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json headRefName,state,title -q '.headRefName + "\t" + .state + "\t" + .title' 2>/dev/null || true)"
   _head="${_meta%%$'\t'*}"
+  _mrest="${_meta#*$'\t'}"; _mtitle="${_mrest#*$'\t'}"
+  # The issue id comes from THIS PR's title, read in the same call as the head
+  # branch (ASK-5485: $ISSUE was not the title's id, so the same-issue case never matched).
+  _myissue="$(printf '%s' "$_mtitle" | grep -oE 'ASK-[0-9]+' | head -1)"
   _ladder_state="${CAP_LADDER_STATE:-$HOME/.local/state/kipi/cap-ladder/state.json}"
   for _m in "$ENGINE_DIR"/.round-cap-"${REVIEW_SLUG//\//_}"-pr-*; do
     [ -f "$_m" ] || continue
@@ -484,7 +488,7 @@ if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
     _ohead="${_o%%$'\t'*}"; _rest="${_o#*$'\t'}"; _ostate="${_rest%%$'\t'*}"; _otitle="${_rest#*$'\t'}"
     [ "$_ostate" = "CLOSED" ] || continue
     _oissue="$(printf '%s' "$_otitle" | grep -oE 'ASK-[0-9]+' | head -1)"
-    if { [ -n "$_head" ] && [ "$_head" = "$_ohead" ]; } || { [ -n "$ISSUE" ] && [ "$ISSUE" = "$_oissue" ]; }; then
+    if { [ -n "$_head" ] && [ "$_head" = "$_ohead" ]; } || { [ -n "$_myissue" ] && [ "$_myissue" = "$_oissue" ]; }; then
       # Fail closed on the allowance: no readable ladder record means refuse.
       if [ -f "$_ladder_state" ] && grep -q "/pull/$PR\"" "$_ladder_state"; then continue; fi
       REOPEN_OF="$_n"; break
