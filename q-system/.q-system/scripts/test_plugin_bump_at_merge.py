@@ -68,7 +68,7 @@ def main():
         r = sh(d, "python3", TOOL, "--tree", d)
         check("equal-version PR: tool exits 0", r.returncode == 0)
         check("equal-version PR: ends strictly above main (1.0.2)", ver(d) == "1.0.2")
-        # Case 2: conflict on the version line only (A bumps 1.0.1, C bumps 1.0.5 on a stale base).
+        # Case 2: conflict on the version line only (A bumps 1.0.1, C bumps 1.0.2 on a stale base).
         d2 = os.path.join(root, "w2"); os.makedirs(d2)
         d2 = repo(d2)
         branch(d2, "A", "a.txt", "1.0.1"); branch(d2, "C", "b.txt", "1.0.2")
@@ -89,6 +89,23 @@ def main():
         r = sh(d3, "python3", TOOL, "--tree", d3)
         check("non-version conflict: tool exits 2", r.returncode == 2)
         check("non-version conflict: tree left clean", sh(d3, "git", "status", "--porcelain").stdout.strip() == "")
+        # Case 4: dirty tree refused (unstaged manifest edit must not ride a version commit).
+        d4 = os.path.join(root, "w4"); os.makedirs(d4)
+        d4 = repo(d4)
+        branch(d4, "G", "b.txt", "1.0.1"); land(d4, "G")
+        branch(d4, "H", "a.txt", "1.0.1"); sh(d4, "git", "checkout", "-q", "H")
+        write_pj(d4, "1.0.1", desc="WIP")
+        r = sh(d4, "python3", TOOL, "--tree", d4)
+        check("dirty tree: tool exits 2", r.returncode == 2)
+        # Case 5: main deletes the manifest the branch edits (delete/modify): refuse, no merge left open.
+        d5 = os.path.join(root, "w5"); os.makedirs(d5)
+        d5 = repo(d5)
+        branch(d5, "K", "a.txt", "1.0.1")
+        sh(d5, "git", "rm", "-q", PJ); commit(d5, "retire"); sh(d5, "git", "update-ref", "refs/remotes/origin/main", "main")
+        sh(d5, "git", "checkout", "-q", "K")
+        r = sh(d5, "python3", TOOL, "--tree", d5)
+        check("delete/modify conflict: tool exits 2", r.returncode == 2)
+        check("delete/modify conflict: no merge left in progress", not os.path.exists(os.path.join(d5, ".git", "MERGE_HEAD")))
     print("FAILED: %s" % FAIL if FAIL else "all checks passed")
     sys.exit(1 if FAIL else 0)
 

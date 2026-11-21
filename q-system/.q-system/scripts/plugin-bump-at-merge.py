@@ -61,6 +61,19 @@ def read_version(tree, ref, rel):
 
 
 def run(tree, main, push_ref=None):
+    # Refuse a dirty tree: git add of a manifest carrying unstaged work puts unreviewed
+    # content in a "version-only" commit (same scar as plugin-version-bump-check.py, PR #253).
+    if git(tree, "status", "--porcelain").stdout.strip():
+        sys.stderr.write("refusing: working tree has uncommitted changes\n")
+        sys.exit(2)
+    # A stale origin/main makes "main's number" equal the branch's, the collision this tool
+    # exists to prevent. Fetch when an origin remote exists; a failed fetch refuses.
+    if main.startswith("origin/") and git(tree, "remote").stdout.split():
+        fr = git(tree, "fetch", "-q", "origin", main.split("/", 1)[1])
+        if fr.returncode != 0:
+            sys.stderr.write("refusing: could not fetch %s: %s\n" % (main, fr.stderr.strip()))
+            sys.exit(2)
+    start = git(tree, "rev-parse", "HEAD", check=True).stdout.strip()
     mb = git(tree, "merge-base", main, "HEAD", check=True).stdout.strip()
     changed = git(tree, "diff", "--name-only", mb, "HEAD").stdout.split()
     m = git(tree, "merge", "--no-edit", main)
@@ -69,6 +82,9 @@ def run(tree, main, push_ref=None):
         ok = bool(files) and all(f.endswith(".claude-plugin/plugin.json") for f in files)
         if ok:
             for f in files:
+                if git(tree, "show", ":2:" + f).returncode != 0 or git(tree, "show", ":3:" + f).returncode != 0:
+                    ok = False  # delete/modify conflict: one side has no file to compare
+                    break
                 o = json.loads(git(tree, "show", ":2:" + f, check=True).stdout)
                 t = json.loads(git(tree, "show", ":3:" + f, check=True).stdout)
                 if {k for k in set(o) | set(t) if o.get(k) != t.get(k)} != {"version"}:
@@ -76,7 +92,7 @@ def run(tree, main, push_ref=None):
         if not ok:
             git(tree, "merge", "--abort")
             # exit 2 is the repo's refuse contract; sys.exit(str) would exit 1 and read as a crash.
-            sys.stderr.write("refusing: conflict beyond a plugin.json version line: %s\n" % files)
+            sys.stderr.write("refusing: conflict beyond a plugin.json version line: %s %s\n" % (files, m.stderr.strip()[-200:]))
             sys.exit(2)
         for f in files:
             git(tree, "checkout", "--theirs", "--", f, check=True)
@@ -92,6 +108,8 @@ def run(tree, main, push_ref=None):
         if mv is None:
             continue
         hv = read_version(tree, "HEAD", rel)
+        if hv is None:
+            continue  # this branch retires the plugin; nothing to bump
         want = version_above(hv, mv)
         if want == hv:
             continue
@@ -106,9 +124,10 @@ def run(tree, main, push_ref=None):
         git(tree, "commit", "--no-verify", "-m",
             "Bump plugin version at merge time (ASK-5470)\n\n" + "\n".join(bumped), check=True)
     head = git(tree, "rev-parse", "HEAD", check=True).stdout.strip()
+    moved = head != start
     if push_ref:
         git(tree, "push", "origin", "HEAD:refs/heads/" + push_ref, check=True)
-    return head, bumped
+    return head, bumped, start, moved
 
 
 def main():
@@ -119,9 +138,12 @@ def main():
     ap.add_argument("--carry", nargs=2, metavar=("REVIEWED_SHA", "OWNER/REPO"),
                     help="after the push, carry the approval onto the version-only head")
     a = ap.parse_args()
-    head, bumped = run(a.tree, a.main, a.push)
+    if a.carry and not a.push:
+        sys.exit("--carry needs --push")
+    head, bumped, start, moved = run(a.tree, a.main, a.push)
     print("head %s; bumped: %s" % (head[:8], bumped or "none needed"))
-    if a.carry and a.push and bumped:
+    # moved, not bumped: a merge-only head is also a head the reviewer never saw.
+    if a.carry and moved:
         r = subprocess.run(["bash", os.path.join(HERE, "receipt-carry-approval.sh"),
                             "--reattest-version", a.tree, a.carry[0], head, a.carry[1], a.main])
         sys.exit(r.returncode)
