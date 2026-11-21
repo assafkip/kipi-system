@@ -54,7 +54,8 @@ import time
 
 # --- Thresholds ---
 RETRY_LIMIT = 3            # Same tool+input N times = block
-VOLUME_CEILING = 50         # Tool calls since last user message = block
+VOLUME_CEILING = 50         # Tool calls since last user message = block (OFF, see check_volume)
+VOLUME_CEILING_ENABLED = False
 VOLUME_WARNING = 35         # Tool calls since last user message = warn
 AGENT_CEILING = 30          # Agent spawns per user message = block (morning routine needs ~25)
 MCP_RATE_WINDOW = 60        # Seconds
@@ -427,6 +428,12 @@ def check_volume(cache):
     ceiling would otherwise have blocked. That is why granting it eagerly (on any
     refused commit, at any call count) costs nothing: a run that never reaches the
     ceiling never touches it."""
+    # Founder, 2026-11-21, verbatim: "remove the 50 tool call block from this build. Its a
+    # token suck". The ceiling stalled every agent that could only commit through REPL
+    # (the block refused the exempt commit too). The volume check is off; the retry,
+    # edit-spiral, agent and MCP checks stay.
+    if not VOLUME_CEILING_ENABLED:
+        return None
     calls = cache.get("tool_calls_since_user", 0)
     if calls >= VOLUME_CEILING:
         gate = cache.get("gate_grace_gate")
