@@ -491,13 +491,19 @@ if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
     if { [ -n "$_head" ] && [ "$_head" = "$_ohead" ]; } || { [ -n "$_myissue" ] && [ "$_myissue" = "$_oissue" ]; }; then
       # Fail closed on the allowance: no readable ladder record means refuse.
       if [ -f "$_ladder_state" ] && grep -q "/pull/$PR\"" "$_ladder_state"; then continue; fi
+      # THE SUCCESSOR CARRIES ITS OWN PROOF (PR #866 review, round 1). The ladder
+      # state is written once at the end of a nightly run, and release() never
+      # records new_pr, so a successor cap-ladder.py opened was refused when the
+      # run died early. open_from_branch writes "Resumes #N." at the top of the
+      # body at create time, so read that. The trailing class stops #1 matching #11.
+      if gh pr view "$PR" $KIPI_GH_REPO_ARGS --json body -q .body 2>/dev/null | grep -qE "^Resumes #$_n([^0-9]|$)"; then continue; fi
       REOPEN_OF="$_n"; break
     fi
   done
 fi
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
   CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
-  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen"
+  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $_m"
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
     # One comment per PR, not one per refused call: the loop may keep calling.

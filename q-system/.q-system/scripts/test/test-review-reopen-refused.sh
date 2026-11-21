@@ -60,6 +60,7 @@ cat > "$STUB/gh" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$GH_LOG"
 case "\$*" in
+  *"pr view"*"--json body"*) cat "$WORK/body-\$3" 2>/dev/null ;;
   *"pr view"*"headRefName"*) cat "$WORK/meta-\$3" 2>/dev/null ;;
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "a PR title" ;;
   *"pr diff"*)              echo "diff --git a/FILE.txt b/FILE.txt" ;;
@@ -156,5 +157,25 @@ PRNUM=5 run_reviewer "$WORK/p5.out" --post
 [ "$(calls)" = "$((before + 1))" ] || fail "the successor cap-ladder.py opened was refused:
 $(tail -20 "$WORK/p5.out")"
 ok "successor named in the ladder state: reviewed"
+
+# A successor that carries "Resumes #1." in its body is the ladder's, even when the
+# ladder state names nothing (release() path, or a run killed before write_state).
+printf '{}' > "$CAP_LADDER_STATE"
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-6"
+printf 'Resumes #1. rest of body\n' > "$WORK/body-6"
+before="$(calls)"
+PRNUM=6 run_reviewer "$WORK/p6.out" --post
+[ "$(calls)" = "$((before + 1))" ] || fail "a successor with a Resumes #1 body was refused:
+$(tail -20 "$WORK/p6.out")"
+ok "Resumes #N body: reviewed with an empty ladder state"
+
+# Resumes #11 is not Resumes #1, and the refusal names the override.
+printf 'sana/ask-9\tOPEN\tFix thing (ASK-9)\n' > "$WORK/meta-7"
+printf 'Resumes #11. rest of body\n' > "$WORK/body-7"
+before="$(calls)"
+PRNUM=7 run_reviewer "$WORK/p7.out" --post
+[ "$(calls)" = "$before" ] || fail "Resumes #11 was taken for Resumes #1"
+grep -q 'delete .*round-cap' "$WORK/p7.out" || fail "refusal does not name the marker override"
+ok "Resumes #11 does not match #1; refusal names the override"
 
 echo "PASS ($PASS checks) test-review-reopen-refused.sh"
