@@ -155,10 +155,15 @@ def _send_hook_command():
     return cmds[0]
 
 
-def _fire(tmp_path, engine_root, tool_input, tool="mcp__claude_ai_Gmail__send_message"):
+def _fire(tmp_path, engine_root, tool_input, tool="mcp__claude_ai_Gmail__send_message", mode="block"):
+    """mode="block" is what the refusal tests below exercise; mode=None leaves the variable
+    unset so a test sees the shipped default (report, ASK-5466)."""
     inst = _instance(tmp_path)
     _, hook = _send_hook_command()
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(inst), KIPI_VOICE_ENGINE_ROOT=str(engine_root),
+    base = {k: v for k, v in os.environ.items() if k != "KIPI_VOICE_SEND_MODE"}
+    if mode:
+        base["KIPI_VOICE_SEND_MODE"] = mode
+    env = dict(base, CLAUDE_PROJECT_DIR=str(inst), KIPI_VOICE_ENGINE_ROOT=str(engine_root),
                KIPI_VOICE_RECEIPTS=str(tmp_path / "receipts"),
                KIPI_VOICE_HOOK_LOG=str(tmp_path / "timing.jsonl"))
     if LIVE:
@@ -243,20 +248,34 @@ def test_the_template_matcher_is_the_modules_matcher_and_reaches_the_senders():
         assert re.fullmatch(matcher, tool), tool
 
 
-def test_report_mode_passes_and_logs_but_the_default_refuses(tmp_path):
+def test_block_mode_refuses_and_report_mode_passes_and_logs(tmp_path):
     root = _stub_engine(tmp_path / "e", _result(hard=["banned-word: 'x'"]))
     log = tmp_path / "send-log.jsonl"
     os.environ["KIPI_VOICE_SEND_LOG"] = str(log)
     try:
-        refused = _fire(tmp_path / "a", root, {"subject": "s", "body": "A note."})
-        os.environ["KIPI_VOICE_SEND_MODE"] = "report"
-        passed = _fire(tmp_path / "b", root, {"subject": "s", "body": "A note."})
+        refused = _fire(tmp_path / "a", root, {"subject": "s", "body": "A note."}, mode="block")
+        passed = _fire(tmp_path / "b", root, {"subject": "s", "body": "A note."}, mode="report")
     finally:
-        os.environ.pop("KIPI_VOICE_SEND_MODE", None)
         os.environ.pop("KIPI_VOICE_SEND_LOG", None)
     assert refused.returncode == 2 and passed.returncode == 0
     rows = [json.loads(x) for x in log.read_text().splitlines()]
     assert [r["decision"] for r in rows] == ["refuse", "report-only-pass"], rows
+
+
+def test_the_shipped_default_is_report_and_logs_each_would_refuse(tmp_path):
+    """ASK-5466 / RULE-2026-11-19-A: 2 of 5 realistic client emails were refused by post-shaped
+    rows, so with the variable UNSET the send goes through and the would-refuse is logged."""
+    root = _stub_engine(tmp_path / "e", _result(hard=["assistant-deliberation: x"]))
+    log = tmp_path / "send-log.jsonl"
+    os.environ["KIPI_VOICE_SEND_LOG"] = str(log)
+    try:
+        r = _fire(tmp_path / "a", root, {"subject": "s", "body": "Two things I need from you."}, mode=None)
+    finally:
+        os.environ.pop("KIPI_VOICE_SEND_LOG", None)
+    assert r.returncode == 0, r.stderr
+    rows = [json.loads(x) for x in log.read_text().splitlines()]
+    assert [x["decision"] for x in rows] == ["report-only-pass"], rows
+    assert rows[0]["verdict"] == "REFUSE" and rows[0]["reasons"], rows
 
 
 def test_an_expired_receipt_is_not_spent(tmp_path):

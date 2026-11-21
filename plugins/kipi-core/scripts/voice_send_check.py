@@ -65,7 +65,13 @@ SEND_TOOLS = {
 # names the three known ones exactly; the pattern widens it to renamed or second-connector ones.
 SENDER_MATCHER = r"mcp__[A-Za-z0-9_]*[Gg]mail[A-Za-z0-9_]*__(.*_)?(send|reply|forward)(_.*)?"
 _SENDER_RE = re.compile(SENDER_MATCHER)
-MODE_ENV = "KIPI_VOICE_SEND_MODE"   # "report": log the verdict and let the send through
+# why report is the default (ASK-5466, RULE-2026-11-19-A): the full path refused 2 of 5 realistic
+# client emails (post-shaped rows such as assistant-deliberation fire on a plain request), so
+# until the false-refusal rate on real sent mail is near zero the check logs each would-refuse
+# and lets the send through. "block" is the flip, made in the hook's launch environment after a
+# measured pass. Any other value, or unset, is report.
+MODE_ENV = "KIPI_VOICE_SEND_MODE"
+BLOCK_MODE = "block"
 LOG_ENV = "KIPI_VOICE_SEND_LOG"
 RECEIPT_TTL_S = 24 * 3600
 _TAGS = re.compile(r"<[^>]+>")
@@ -175,13 +181,13 @@ def _hook(payload_text: str) -> int:
     if verdict.ok:
         _log({"tool": tool, "decision": "pass", "surface": surface})
         return voice_full_gate.EXIT_PASS
-    # The founder's override, set in the environment the hook is launched from (his shell or a
-    # launchd plist), so a session cannot grant it to itself mid-run. Logged on every use.
-    if os.environ.get(MODE_ENV) == "report":
+    # Block mode is set in the environment the hook is launched from (his shell or a launchd
+    # plist), so a session cannot flip it mid-run. Every would-refuse is logged either way.
+    if os.environ.get(MODE_ENV) != BLOCK_MODE:
         _log({"tool": tool, "decision": "report-only-pass", "verdict": verdict.verdict,
               "reasons": verdict.reasons[:3], "surface": surface})
-        print("voice_send_check: %s on the bytes that leave, NOT blocking (%s=report):\n%s"
-              % (verdict.verdict, MODE_ENV, verdict.to_json()), file=sys.stderr)
+        print("voice_send_check: %s on the bytes that leave, NOT blocking (%s is not %s):\n%s"
+              % (verdict.verdict, MODE_ENV, BLOCK_MODE, verdict.to_json()), file=sys.stderr)
         return voice_full_gate.EXIT_PASS
     _log({"tool": tool, "decision": "refuse", "verdict": verdict.verdict,
           "reasons": verdict.reasons[:3], "surface": surface})
