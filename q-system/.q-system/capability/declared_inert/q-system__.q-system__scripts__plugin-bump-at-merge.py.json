@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/plugin-bump-at-merge.py",
+ "reason": "ASK-5470 merge-time version bump tool and its test. Not yet called by converge.sh before the auto-merge arm; that wiring is filed as ASK-5526 and the fleet worker picks it from the owner:sana backlog. Run by hand on a PR branch until then.",
+ "spillover_id": "sp-34407f84"
+}

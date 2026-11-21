@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test_plugin_bump_at_merge.py",
+ "runner": "python3",
+ "timeout_s": 120
+}
