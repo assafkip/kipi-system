@@ -45,6 +45,9 @@ import sys
 import tempfile
 import uuid
 
+# The volume ceiling is off by default (founder 2026-11-21); this suite pins the mechanism, so it turns it on.
+os.environ["KIPI_TOKEN_GUARD_VOLUME_CEILING"] = "1"
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 WORKTREE_GUARD = REPO_ROOT / "q-system/.q-system/token-guard.py"
 

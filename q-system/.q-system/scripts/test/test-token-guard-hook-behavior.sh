@@ -9,6 +9,8 @@
 #   3rd successful Edit to one file falsely blocked. This test pins the LEG's
 #   behavior; the wiring test pins the settings wiring.
 set -euo pipefail
+# The volume ceiling is off by default (founder 2026-11-21); this suite pins the mechanism, so it turns it on.
+export KIPI_TOKEN_GUARD_VOLUME_CEILING=1
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 GUARD="$REPO_ROOT/q-system/.q-system/token-guard.py"

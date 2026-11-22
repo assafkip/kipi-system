@@ -36,6 +36,9 @@ import uuid
 
 import pytest
 
+# The volume ceiling is off by default (founder 2026-11-21); this suite pins the mechanism, so it turns it on.
+os.environ["KIPI_TOKEN_GUARD_VOLUME_CEILING"] = "1"
+
 GUARD = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "token-guard.py"))
 VOLUME_CEILING = 50

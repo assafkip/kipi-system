@@ -43,7 +43,7 @@ ROUTINE_TYPES = {"fix", "chore", "lessons", "docs", "test", "refactor", "style",
 # .claude/rules/loop-exits.md; keep the two in sync.
 EXITS = [
     ("Goal met",     "solid", "prd gates run"),
-    ("Turn cap",     "solid", "token-guard VOLUME_CEILING"),
+    ("Turn cap",     "off",   "token-guard VOLUME_CEILING off by default (founder 2026-11-21); KIPI_TOKEN_GUARD_VOLUME_CEILING=1 turns it on"),
     ("Budget",       "proxy", "call/rate proxy, no $ meter"),
     ("Wall clock",   "proxy", "timeout 1800, autonomous only"),
     ("No progress",  "solid", "6 detectors"),

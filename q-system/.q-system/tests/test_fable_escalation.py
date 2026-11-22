@@ -35,6 +35,9 @@ import uuid
 
 import pytest
 
+# The volume ceiling is off by default (founder 2026-11-21); this suite pins the mechanism, so it turns it on.
+os.environ["KIPI_TOKEN_GUARD_VOLUME_CEILING"] = "1"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUARD = os.path.join(HERE, "..", "token-guard.py")
 ESCALATE = os.path.join(HERE, "..", "scripts", "fable-escalate.py")
