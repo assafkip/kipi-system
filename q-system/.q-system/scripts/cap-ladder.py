@@ -750,8 +750,17 @@ def close_pr(slug: str, pr: dict, note: str) -> bool:
     return rc == 0
 
 
+# THE SUCCESSOR'S OWN PROOF (PR 866 rounds 1-2, ASK-5485). pr-review-agent.sh must tell
+# the PR this ladder opened from a hand-made reopen. State written at end of run missed
+# release(); a "Resumes #N." prefix existed on climb() only and named only the latest
+# predecessor. Every successor goes through open_from_branch, so the tag is put on line
+# one HERE, once, for every caller. The reviewer reads line one of the body for it.
+LADDER_SUCCESSOR_TAG = "Ladder-successor: opened by cap-ladder.py"
+
+
 def open_from_branch(slug: str, branch: str, title: str, body: str) -> tuple[bool, str]:
     """(ok, url). ok is False only when the branch holds work and the PR would not open."""
+    body = LADDER_SUCCESSOR_TAG + "\n\n" + body
     rc, ahead = run(GH + ["api", f"repos/{slug}/compare/main...{branch}", "--jq", ".ahead_by"])
     # ONLY A 404 MEANS "NO BRANCH" (PR #662 review, major 2). Any other failure is
     # a gh or network fault, and reading it as "nothing to resume" cleared the cap

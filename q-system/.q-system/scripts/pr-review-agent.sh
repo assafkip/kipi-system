@@ -462,9 +462,63 @@ PRIOR_ROUNDS=0
 for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
   [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
 done
-if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
+# A REOPEN IS NOT A NEW ROUND (ASK-5485, RULE-2026-11-19-A). On 2026-11-18 five
+# capped PRs were closed and reopened from the same branch (#610, #619, #839,
+# #847, #856) so this counter started again at 0. The per-PR count above cannot
+# see that, so look across PRs: a CLOSED PR on the same head branch, or for the
+# same Linear issue, that left a cap marker was closed while capped. Refuse its
+# successor and route it to cap-ladder.py, whose rung 1 is an RCA. The ONE
+# successor allowed is the one cap-ladder.py itself opened (its state history
+# names it as new_pr), because that PR is the ladder doing the routing.
+# Version-only and merge-only rounds are not reopens: they take the re-attest path.
+REOPEN_OF=""
+if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
+  _meta="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json headRefName,state,title -q '.headRefName + "\t" + .state + "\t" + .title' 2>/dev/null || true)"
+  _head="${_meta%%$'\t'*}"
+  _mrest="${_meta#*$'\t'}"; _mtitle="${_mrest#*$'\t'}"
+  # The issue id comes from THIS PR's title, read in the same call as the head
+  # branch (ASK-5485: $ISSUE was not the title's id, so the same-issue case never matched).
+  _myissue="$(printf '%s' "$_mtitle" | grep -oE 'ASK-[0-9]+' | head -1)"
+  _ladder_state="${CAP_LADDER_STATE:-$HOME/.local/state/kipi/cap-ladder/state.json}"
+  for _m in "$ENGINE_DIR"/.round-cap-"${REVIEW_SLUG//\//_}"-pr-*; do
+    [ -f "$_m" ] || continue
+    _n="${_m##*-pr-}"
+    [ "$_n" != "$PR" ] || continue
+    _o="$(gh pr view "$_n" $KIPI_GH_REPO_ARGS --json headRefName,state,title -q '.headRefName + "\t" + .state + "\t" + .title' 2>/dev/null || true)"
+    _ohead="${_o%%$'\t'*}"; _rest="${_o#*$'\t'}"; _ostate="${_rest%%$'\t'*}"; _otitle="${_rest#*$'\t'}"
+    [ "$_ostate" = "CLOSED" ] || continue
+    _oissue="$(printf '%s' "$_otitle" | grep -oE 'ASK-[0-9]+' | head -1)"
+    if { [ -n "$_head" ] && [ "$_head" = "$_ohead" ]; } || { [ -n "$_myissue" ] && [ "$_myissue" = "$_oissue" ]; }; then
+      # Fail closed on the allowance: no readable ladder record means refuse.
+      if [ -f "$_ladder_state" ] && grep -q "/pull/$PR\"" "$_ladder_state"; then continue; fi
+      # THE SUCCESSOR CARRIES ITS OWN PROOF (PR #866 rounds 1-2). The ladder state
+      # is written once at the end of a nightly run and release() never records
+      # new_pr; a per-predecessor "Resumes #N." named only the latest marker. So
+      # cap-ladder.py open_from_branch puts "Ladder-successor:" on line one of every
+      # successor body, and ONLY line one counts (a mention on line 3 is a hand-made
+      # reopen). "Resumes #N" on line one stays accepted for successors already open.
+      # A FAILED body read is UNKNOWN, never "no proof" (PR #866 round 3): refusing on
+      # a network blip marked the ladder's own successor capped and cost a rung. Same
+      # standard as READ_OK below: unknown means hands off, so warn and do not refuse.
+      if ! _bfull="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json body -q .body 2>/dev/null)"; then
+        echo "  WARN: could not read the body of PR #$PR; reopen check skipped (unknown, not refused)" >&2
+        continue
+      fi
+      _bline="$(printf '%s\n' "$_bfull" | head -1)"
+      # The legacy form must name THIS capped PR: a number-blind glob let "Resumes #11."
+      # excuse a reopen of #1.
+      case "$_bline" in "Ladder-successor: opened by cap-ladder.py"*|"Resumes #$_n"|"Resumes #$_n"[!0-9]*) continue ;; esac
+      REOPEN_OF="$_n"; break
+    fi
+  done
+fi
+if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
   CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
-  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
+  CAP_NOTE="$CAP_MSG"
+  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped #$REOPEN_OF; use cap-ladder.py. Override: delete $(basename "$_m")"
+  CAP_MSG=${CAP_MSG:0:140}  # GitHub refuses a status description over 140 chars; CAP_MSG is what the pending status posts (P35)
+  [ -z "$REOPEN_OF" ] || CAP_NOTE="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
+  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_NOTE. No model call made."
   if [ "$POST" = "1" ]; then
     # One comment per PR, not one per refused call: the loop may keep calling.
     # THE MARKER IS THE HAND-OFF (ASK-3824). cap-ladder.py reads this marker on
@@ -477,7 +531,7 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
     # failed comment re-fired the send on every later call (PR #501 review).
     CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
     if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
-      gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
+      gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_NOTE" >/dev/null 2>&1 \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
