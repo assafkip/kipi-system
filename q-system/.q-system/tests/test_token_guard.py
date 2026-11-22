@@ -281,6 +281,21 @@ def test_auto_commit_subject_is_not_progress(session_id, fake_repo):
     assert result.returncode == 2
 
 
+def test_three_identical_polls_are_not_a_retry(session_id):
+    """Poll takes no input, so every Poll hashes the same. The harness adds
+    Polls itself; the 3rd one blocked Sana agents twice on 2026-11-22 (ASK-5543)."""
+    codes = [run_guard(pre_tool_use(session_id, tool="Poll", tool_input={})).returncode
+             for _ in range(3)]
+    assert codes == [0, 0, 0]
+
+
+def test_three_identical_bash_calls_still_block(session_id):
+    """The mutant for the Poll exemption: a real retry must still stop."""
+    call = pre_tool_use(session_id, tool="Bash", tool_input={"command": "false"})
+    codes = [run_guard(call).returncode for _ in range(3)]
+    assert codes == [0, 0, 2]
+
+
 def test_a_foreign_runtime_is_a_no_op(session_id):
     """The other half of the marker, which nothing covered.
 

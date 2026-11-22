@@ -92,6 +92,10 @@ OBSERVATION_TOOLS = frozenset((
     "mcp__playwright__browser_take_screenshot",
     "mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot",
     "mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot",
+    # Poll takes no input, so every Poll hashes the same and the harness adds
+    # Polls itself. Scar (ASK-5543, 2026-11-22): the 3rd Poll blocked Sana
+    # agents twice mid-task and spent the Fable escalation cap.
+    "Poll",
 ))
 # Multi-action tools where only the observation action is read-only.
 OBSERVATION_ACTIONS = {"mcp__claude-in-chrome__computer": ("screenshot", "zoom")}
