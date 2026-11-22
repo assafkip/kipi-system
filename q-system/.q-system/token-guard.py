@@ -55,7 +55,7 @@ import time
 # --- Thresholds ---
 RETRY_LIMIT = 3            # Same tool+input N times = block
 VOLUME_CEILING = 50         # Tool calls since last user message = block (OFF, see check_volume)
-VOLUME_CEILING_ENABLED = False
+VOLUME_CEILING_ENABLED = os.environ.get("KIPI_TOKEN_GUARD_VOLUME_CEILING") == "1"  # off unless set; only the tests that pin the mechanism set it
 VOLUME_WARNING = 35         # Tool calls since last user message = warn
 AGENT_CEILING = 30          # Agent spawns per user message = block (morning routine needs ~25)
 MCP_RATE_WINDOW = 60        # Seconds
