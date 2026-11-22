@@ -272,6 +272,50 @@ class TransformersBackend:
                 t, add_special_tokens=False,
                 return_offsets_mapping=True)["offset_mapping"])
 
+    def encode_windowed_many(self, texts, documents):
+        """`encode_windowed` for N drafts in ONE model load (ASK-5540).
+
+        Scar: consulting #622 batched calibrate through this name, but only a test
+        fake defined it, so on the real backends the batch silently fell back to
+        one uv process (one 319MB load) per email. Every document-side field comes
+        from a single `windowed_reply`; later texts embed only their own windows.
+        """
+        self._load()
+        tok = self._tok
+        return windowed_many_reply(
+            texts,
+            lambda t: tok(t, add_special_tokens=False,
+                          return_offsets_mapping=True)["offset_mapping"],
+            self.encode, documents,
+            count_tokens=lambda t: len(tok(
+                t, add_special_tokens=False)["input_ids"]),
+            offsets_of=lambda t: tok(
+                t, add_special_tokens=False,
+                return_offsets_mapping=True)["offset_mapping"])
+
+
+def windowed_many_reply(texts, offsets_for, encode, documents, count_tokens,
+                        offsets_of=None):
+    """One reply for many drafts: `per_text` (window_vectors, tokens, share_read
+    for each text, in order) beside the document fields of `windowed_reply`.
+
+    The documents ride on the FIRST text only. Handing them to every text would
+    re-embed the same exemplars N times inside the one process, which is the cost
+    this exists to remove.
+    """
+    texts = list(texts)
+    if not texts:
+        raise ValueError("encode_windowed_many needs at least one text")
+    first = windowed_reply(texts[0], offsets_for(texts[0]), encode, documents,
+                           count_tokens, offsets_of=offsets_of)
+    keys = ("window_vectors", "tokens", "share_read")
+    per_text = [{k: first[k] for k in keys}]
+    for text in texts[1:]:
+        r = windowed_reply(text, offsets_for(text), encode, [], count_tokens)
+        per_text.append({k: r[k] for k in keys})
+    return {"per_text": per_text,
+            **{k: v for k, v in first.items() if k not in keys}}
+
 
 # ---------------------------------------------------------------- windows ----
 
