@@ -422,7 +422,8 @@ def check_exact_retry(tool_name, tool_input, cache):
 
 
 def check_volume(cache):
-    """Block at ceiling, warn at warning threshold.
+    """Block at ceiling, warn at warning threshold. Both are OFF unless
+    KIPI_TOKEN_GUARD_VOLUME_CEILING=1 (founder 2026-11-21: "remove the 50 tool call block").
 
     The gate-refusal budget is spent HERE and nowhere else — only on a call the
     ceiling would otherwise have blocked. That is why granting it eagerly (on any
