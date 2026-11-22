@@ -514,10 +514,11 @@ if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
 fi
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
   CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
-  CAP_STATUS="$CAP_MSG"
-  [ -z "$REOPEN_OF" ] || CAP_STATUS="PR #$PR reopens capped #$REOPEN_OF; use cap-ladder.py. Override: delete $(basename "$_m")"
-  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
-  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
+  CAP_NOTE="$CAP_MSG"
+  [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped #$REOPEN_OF; use cap-ladder.py. Override: delete $(basename "$_m")"
+  CAP_MSG=${CAP_MSG:0:140}  # GitHub refuses a status description over 140 chars; CAP_MSG is what the pending status posts (P35)
+  [ -z "$REOPEN_OF" ] || CAP_NOTE="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
+  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_NOTE. No model call made."
   if [ "$POST" = "1" ]; then
     # One comment per PR, not one per refused call: the loop may keep calling.
     # THE MARKER IS THE HAND-OFF (ASK-3824). cap-ladder.py reads this marker on
@@ -530,7 +531,7 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
     # failed comment re-fired the send on every later call (PR #501 review).
     CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
     if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
-      gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
+      gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_NOTE" >/dev/null 2>&1 \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
@@ -546,7 +547,7 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
       && echo "  WARN: could not read $STATUS_CONTEXT on $HEAD_SHA; status left untouched" >&2
     if [ "$READ_OK" = 1 ] && [ "$CUR_STATE" != "success" ]; then
       reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
-          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=${CAP_STATUS:0:140}" >/dev/null 2>&1 \
+          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
         || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2
     fi
   fi
