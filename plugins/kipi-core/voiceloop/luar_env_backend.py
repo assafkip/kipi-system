@@ -303,6 +303,8 @@ def encode_via_declared_env(documents, windowed_text=None, windowed_texts=None):
     """
     from .luar_scorer import ScorerUnavailable
 
+    if windowed_texts is not None and not list(windowed_texts):
+        raise ScorerUnavailable("encode_windowed_many needs at least one text")
     if not _uv_available():
         raise ScorerUnavailable(
             "uv is not on PATH, so the declared authorship environment "
@@ -388,15 +390,37 @@ def encode_via_declared_env(documents, windowed_text=None, windowed_texts=None):
     if not isinstance(vectors, list):
         raise ScorerUnavailable("declared-env worker returned no vectors")
     if windowed_texts is not None:
-        per_text = payload.get("per_text")
-        if not isinstance(per_text, list) or len(per_text) != len(windowed_texts):
-            raise ScorerUnavailable("declared-env worker returned no per-text windows")
+        _check_many(payload, vectors, windowed_texts, documents)
         return payload
     if windowed_text is not None:
         if not isinstance(payload.get("window_vectors"), list):
             raise ScorerUnavailable("declared-env worker returned no windows")
         return payload
     return vectors
+
+
+def _check_many(payload, vectors, texts, documents):
+    """The batch reply crosses a process boundary, so each text's entry gets the
+    same re-plan the single-text path gets in score(). Scar: a head-only window
+    list labelled windowed-512 reads 1,200 tokens on 504 and reports share 1.0
+    (PR #837); the first cut of this batch path checked only the list length, and
+    a [{}, None, 7] reply passed (PR #869 review)."""
+    from .luar_scorer import ScorerUnavailable, WINDOW_TOKENS, plan_windows
+    per_text = payload.get("per_text")
+    if not isinstance(per_text, list) or len(per_text) != len(texts):
+        raise ScorerUnavailable("declared-env worker returned no per-text windows")
+    if len(vectors) != len(documents):
+        raise ScorerUnavailable("declared-env worker returned the wrong vector count")
+    for i, rec in enumerate(per_text):
+        try:
+            planned = len(plan_windows(int(rec["tokens"]), WINDOW_TOKENS))
+            ok = (len(rec["window_vectors"]) == planned
+                  and 0.0 <= float(rec["share_read"]) <= 1.0)
+        except (KeyError, TypeError, ValueError):
+            ok = False
+        if not ok:
+            raise ScorerUnavailable(
+                f"declared-env worker returned a malformed window list for text #{i}")
 
 
 def _request(documents, windowed_text, windowed_texts=None):

@@ -68,8 +68,31 @@ class ManyReply(unittest.TestCase):
         self.assertEqual(embedded.count("doc one"), 1, enc.batches)
 
     def test_no_texts_is_refused(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(s.ScorerUnavailable):
             _many([], DOCS, Counting())
+
+
+class RealTransformersBackend(unittest.TestCase):
+    """The method itself, with a stub tokenizer: deleting it must fail a test
+    (PR #869 review: the first cut covered only the helper and a fake)."""
+
+    def test_matches_encode_windowed_field_for_field(self):
+        class Tok:
+            def __call__(self, t, add_special_tokens=False,
+                         return_offsets_mapping=False, **kw):
+                return {"input_ids": list(range(len(t.split()))),
+                        "offset_mapping": _offsets(t)}
+
+        b = s.TransformersBackend()
+        b._model, b._tok = object(), Tok()      # _load() is then a no-op
+        b.encode = Counting()
+        many = b.encode_windowed_many(TEXTS, DOCS)
+        one = b.encode_windowed(TEXTS[1], DOCS)
+        self.assertEqual(len(many["per_text"]), 3)
+        for k in ("window_vectors", "tokens", "share_read"):
+            self.assertEqual(many["per_text"][1][k], one[k], k)
+        for k in ("vectors", "document_windows", "document_tokens"):
+            self.assertEqual(many[k], one[k], k)
 
 
 class UvPath(unittest.TestCase):
@@ -81,7 +104,6 @@ class UvPath(unittest.TestCase):
         self.calls += 1
         req = json.loads(input)
         out = cmd[cmd.index("--out") + 1]
-        fake = type("B", (), {})()
         enc = Counting()
         if "windowed_texts" in req:
             payload = _many(req["windowed_texts"], req["documents"], enc)
@@ -115,6 +137,39 @@ class UvPath(unittest.TestCase):
         with self._backend(), mock.patch.object(eb.subprocess, "run", self._run):
             with self.assertRaises(s.ScorerUnavailable):
                 eb.UvEnvBackend().encode_windowed_many(TEXTS, DOCS)
+
+    def test_head_only_window_list_per_text_is_refused(self):
+        # The PR #837 scar on the batch path: text 1 has 1200 tokens (3 windows).
+        self.reply_mutator = lambda p: p["per_text"][1].update(
+            window_vectors=p["per_text"][1]["window_vectors"][:1])
+        with self._backend(), mock.patch.object(eb.subprocess, "run", self._run):
+            with self.assertRaises(s.ScorerUnavailable):
+                eb.UvEnvBackend().encode_windowed_many(TEXTS, DOCS)
+
+    def test_contentless_per_text_entries_are_refused(self):
+        self.reply_mutator = lambda p: p.update(per_text=[{}, None, 7])
+        with self._backend(), mock.patch.object(eb.subprocess, "run", self._run):
+            with self.assertRaises(s.ScorerUnavailable):
+                eb.UvEnvBackend().encode_windowed_many(TEXTS, DOCS)
+
+    def test_empty_texts_refused_before_any_spawn(self):
+        with self._backend(), mock.patch.object(eb.subprocess, "run", self._run):
+            with self.assertRaises(s.ScorerUnavailable):
+                eb.UvEnvBackend().encode_windowed_many([], DOCS)
+        self.assertEqual(self.calls, 0)
+
+    def test_a_bad_text_is_named_by_index(self):
+        def enc(docs):
+            return [[1.0] for _ in docs]
+
+        def offs(t):
+            if t == "boom":
+                raise RuntimeError("tokenizer blew up")
+            return _offsets(t)
+        with self.assertRaises(s.ScorerUnavailable) as cm:
+            s.windowed_many_reply(["a b", "boom", "c"], offs, enc, DOCS,
+                                  count_tokens=lambda t: len(t.split()))
+        self.assertIn("text #1 of 3", str(cm.exception))
 
     def test_worker_dispatches_to_many(self):
         seen = {}

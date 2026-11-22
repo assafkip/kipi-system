@@ -305,13 +305,22 @@ def windowed_many_reply(texts, offsets_for, encode, documents, count_tokens,
     """
     texts = list(texts)
     if not texts:
-        raise ValueError("encode_windowed_many needs at least one text")
-    first = windowed_reply(texts[0], offsets_for(texts[0]), encode, documents,
-                           count_tokens, offsets_of=offsets_of)
+        # ScorerUnavailable, not ValueError: the caller's contract turns exactly
+        # that into `authorship: null` (PR #869 review).
+        raise ScorerUnavailable("encode_windowed_many needs at least one text")
     keys = ("window_vectors", "tokens", "share_read")
-    per_text = [{k: first[k] for k in keys}]
-    for text in texts[1:]:
-        r = windowed_reply(text, offsets_for(text), encode, [], count_tokens)
+    first, per_text = None, []
+    for i, text in enumerate(texts):
+        try:
+            r = windowed_reply(
+                text, offsets_for(text), encode, documents if i == 0 else [],
+                count_tokens, offsets_of=offsets_of if i == 0 else None)
+        except Exception as exc:                      # noqa: BLE001
+            # The index is what triage needs: all-or-nothing is the design, but
+            # "which draft" must not be lost with the batch.
+            raise ScorerUnavailable(
+                f"text #{i} of {len(texts)}: {type(exc).__name__}: {exc}") from exc
+        first = first or r
         per_text.append({k: r[k] for k in keys})
     return {"per_text": per_text,
             **{k: v for k, v in first.items() if k not in keys}}
