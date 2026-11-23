@@ -1066,31 +1066,84 @@ def on_skeleton_default_branch():
     return head == default
 
 
-def hold_skeleton_memory(groups):
-    """Drop session-memory groups on the skeleton's default branch (ASK-3525).
+HELD_CONTENT_MARKER = "held-content.json"
+
+
+def page_held_content(paths):
+    """Page Sana's queue ONCE per held content set. True if a page went out.
+
+    why: the held RCAs and canonical files are real work that must reach origin, and
+    the hook itself cannot land them (it never pushes, and a pre-commit here runs 8 to
+    30 min). Nothing else picks them up, so the fleet worker gets a ticket naming them
+    and lands them through a worktree branch and a PR. Once per held SET, because the
+    files stay on disk and every turn end re-derives the same hold (the report_skipped
+    scar is what a per-turn page becomes); a new file joining the set is a new event.
+    """
+    key = json.dumps([os.path.abspath(PROJ_DIR), sorted(paths)])
+    marker = os.path.join(_refusal_marker_dir("auto-commit-skeleton-held"), HELD_CONTENT_MARKER)
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            if fh.read().strip() == key:
+                return False
+    except OSError:
+        pass
+    notify = os.environ.get("KIPI_AUTOCOMMIT_NOTIFY") or os.path.join(
+        PROJ_DIR, "q-system", ".q-system", "scripts", "slack-notify.sh")
+    if not os.path.isfile(notify):
+        print(f"auto-commit: no pager at {notify}; the held files reached the "
+              "transcript only")
+        return False
+    shown = ", ".join(sorted(paths)[:5]) + (" ..." if len(paths) > 5 else "")
+    msg = (f"auto-commit held {len(paths)} content file(s) on the skeleton's default "
+           f"branch in {os.path.abspath(PROJ_DIR)}: {shown}. Land them through a "
+           "worktree branch cut from origin/main and a PR (ASK-5583); local main "
+           "takes no unattended commit.")
+    r = subprocess.run(["bash", notify, msg], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        print(f"auto-commit: pager failed rc={r.returncode}; will retry next turn")
+        return False
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write(key + "\n")
+    return True
+
+
+def clear_held_content_marker():
+    try:
+        os.remove(os.path.join(_refusal_marker_dir("auto-commit-skeleton-held"),
+                               HELD_CONTENT_MARKER))
+    except OSError:
+        pass
+
+
+def hold_skeleton_default_branch(groups):
+    """Commit NOTHING on the skeleton's default branch (ASK-3525, ASK-4647, ASK-5583).
 
     why: this hook commits on the checked-out branch and never pushes it. On the
     skeleton that branch is main, so every Stop put local main further ahead of
     origin/main, lessons-daily's sync_skel_to_main then left it alone and
-    kipi-update.sh refused (`propagate FAILED` 2026-10-05, 10-12, 10-19; PR #573
-    tried to undo the drift after the fact and stopped at its round cap). The
-    files stay on disk, uncommitted; lessons-daily holds any that origin also
-    changed before it fast-forwards. The skeleton is a public repo, so its own
-    handoff is published nowhere (notes-publish.py, founder choice b 2026-09-28).
+    kipi-update.sh's provenance check refused (`propagate FAILED` 2026-10-05, 10-12,
+    10-19). ASK-3525 held memory/, ASK-4647 added .prd-os/, and the drift moved to the
+    next prefix: ffc287ff, cb9c8846, 170d0ecd (RCAs, canonical) left local main 3
+    ahead on 2026-11-23 and `kipi update --dry` aborted. A path list loses to the
+    next path, so the property is the branch. The files stay on disk, uncommitted
+    (the sync's dirty guard reads only .claude/ and plugins/, so they do not block
+    it); content files page Sana's queue to land by PR. The skeleton is a public repo,
+    so its own handoff is published nowhere (notes-publish.py, founder choice b
+    2026-09-28).
     """
     if not on_skeleton_default_branch():
         return groups
-    kept, held = {}, []
-    for key, paths in groups.items():
-        keep = [p for p in paths if not p.startswith(SKELETON_MEMORY_PREFIXES)]
-        held += [p for p in paths if p.startswith(SKELETON_MEMORY_PREFIXES)]
-        if keep:
-            kept[key] = keep
+    held = [p for paths in groups.values() for p in paths]
+    content = sorted(p for p in held if not p.startswith(SKELETON_MEMORY_PREFIXES))
     if held:
-        print(f"auto-commit: skeleton default branch: {len(held)} memory/ledger file(s) "
-              "left uncommitted so local main stays at origin/main")
-    return kept
-
+        print(f"auto-commit: skeleton default branch: {len(held)} file(s) left "
+              "uncommitted so local main stays at origin/main")
+    if content:
+        page_held_content(content)
+    else:
+        clear_held_content_marker()
+    return {}
 
 def main():
     paused =git_operation_in_progress()
@@ -1167,7 +1220,7 @@ def _commit_main():
         return
 
     groups, unclassified = group_files(files)
-    groups = hold_skeleton_memory(groups)
+    groups = hold_skeleton_default_branch(groups)
     refusals = shrink_refusals([f for fl in groups.values() for f in fl])
     if refusals:
         report_refusal(refusals)
