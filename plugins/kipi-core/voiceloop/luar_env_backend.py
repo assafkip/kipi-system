@@ -290,7 +290,7 @@ def _child_env(package_parent):
     return env
 
 
-def encode_via_declared_env(documents, windowed_text=None):
+def encode_via_declared_env(documents, windowed_text=None, windowed_texts=None):
     """Vectors for `documents`, computed in the declared environment.
 
     Raises `ScorerUnavailable` for every failure mode, because the caller
@@ -303,6 +303,8 @@ def encode_via_declared_env(documents, windowed_text=None):
     """
     from .luar_scorer import ScorerUnavailable
 
+    if windowed_texts is not None and not list(windowed_texts):
+        raise ScorerUnavailable("encode_windowed_many needs at least one text")
     if not _uv_available():
         raise ScorerUnavailable(
             "uv is not on PATH, so the declared authorship environment "
@@ -343,7 +345,7 @@ def encode_via_declared_env(documents, windowed_text=None):
     cwd = os.path.dirname(HERE)
     try:
         proc = subprocess.run(
-            cmd, input=json.dumps(_request(documents, windowed_text)),
+            cmd, input=json.dumps(_request(documents, windowed_text, windowed_texts)),
             capture_output=True, text=True,
             timeout=TIMEOUT_SECONDS, cwd=cwd,
             # The child must not inherit a pytest marker: luar_scorer is imported
@@ -387,6 +389,9 @@ def encode_via_declared_env(documents, windowed_text=None):
     vectors = payload.get("vectors")
     if not isinstance(vectors, list):
         raise ScorerUnavailable("declared-env worker returned no vectors")
+    if windowed_texts is not None:
+        _check_many(payload, vectors, windowed_texts, documents)
+        return payload
     if windowed_text is not None:
         if not isinstance(payload.get("window_vectors"), list):
             raise ScorerUnavailable("declared-env worker returned no windows")
@@ -394,13 +399,40 @@ def encode_via_declared_env(documents, windowed_text=None):
     return vectors
 
 
-def _request(documents, windowed_text):
+def _check_many(payload, vectors, texts, documents):
+    """The batch reply crosses a process boundary, so each text's entry gets the
+    same re-plan the single-text path gets in score(). Scar: a head-only window
+    list labelled windowed-512 reads 1,200 tokens on 504 and reports share 1.0
+    (PR #837); the first cut of this batch path checked only the list length, and
+    a [{}, None, 7] reply passed (PR #869 review)."""
+    from .luar_scorer import ScorerUnavailable, WINDOW_TOKENS, plan_windows
+    per_text = payload.get("per_text")
+    if not isinstance(per_text, list) or len(per_text) != len(texts):
+        raise ScorerUnavailable("declared-env worker returned no per-text windows")
+    if len(vectors) != len(documents):
+        raise ScorerUnavailable("declared-env worker returned the wrong vector count")
+    for i, rec in enumerate(per_text):
+        try:
+            planned = len(plan_windows(int(rec["tokens"]), WINDOW_TOKENS))
+            ok = (len(rec["window_vectors"]) == planned
+                  and 0.0 <= float(rec["share_read"]) <= 1.0)
+        except (KeyError, TypeError, ValueError):
+            ok = False
+        if not ok:
+            raise ScorerUnavailable(
+                f"declared-env worker returned a malformed window list for text #{i}")
+
+
+def _request(documents, windowed_text, windowed_texts=None):
     # ONE child per score (ASK-5358): the draft's windows are cut and embedded in
     # the same process that embeds the exemplars, so the 319MB load is not paid
     # twice to read a long draft.
     req = {"documents": list(documents)}
     if windowed_text is not None:
         req["windowed_text"] = windowed_text
+    if windowed_texts is not None:
+        # ASK-5540: N drafts, one child, so the model load is paid once.
+        req["windowed_texts"] = list(windowed_texts)
     return req
 
 
@@ -424,6 +456,9 @@ class UvEnvBackend:
 
     def encode_windowed(self, text, documents):
         return encode_via_declared_env(documents, windowed_text=text)
+
+    def encode_windowed_many(self, texts, documents):
+        return encode_via_declared_env(documents, windowed_texts=list(texts))
 
 
 def _worker_main(argv):
@@ -454,7 +489,10 @@ def _worker_main(argv):
         from .luar_scorer import TransformersBackend
         request = json.load(sys.stdin)
         backend = TransformersBackend()
-        if "windowed_text" in request:
+        if "windowed_texts" in request:
+            payload = backend.encode_windowed_many(request["windowed_texts"],
+                                                   request["documents"])
+        elif "windowed_text" in request:
             payload = backend.encode_windowed(request["windowed_text"],
                                               request["documents"])
         else:
