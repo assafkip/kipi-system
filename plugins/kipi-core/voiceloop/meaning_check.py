@@ -159,7 +159,7 @@ def _small_words(text):
     return neg, mod, +cond
 
 
-def _diff(before, after, render, allow_removals, presence=False):
+def _diff(before, after, render, allow_removals, presence=False, forgive=None):
     out = []
     for key in sorted(set(before) | set(after), key=str):
         delta = after[key] - before[key]
@@ -171,13 +171,18 @@ def _diff(before, after, render, allow_removals, presence=False):
             delta = (after[key] > 0) - (before[key] > 0)
         if delta < 0 and allow_removals:
             continue
+        if delta < 0 and forgive:
+            # why forgive the DROP and not lower the before-count (PR #871 round 2): a
+            # paraphrase that keeps the draft's own "should" has delta 0 and must pass; the
+            # before-side subtraction made it read as an ADDED modal and refused it.
+            delta = min(0, delta + forgive[key])
         if delta:
             out.append(("+" if delta > 0 else "-") + render(key))
     return out
 
 
 def changes(original, revised, skip_numbers=False, allow_removals=False,
-            skip_small_words=False, presence=False, removable=""):
+            skip_small_words=False, presence=False, removable=()):
     """Meaning-bearing tokens that differ between `original` and `revised`.
 
     `skip_numbers`: the revision was asked to fix a figure rule, which changes numbers by
@@ -190,8 +195,9 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     has is not an added figure. Off by default: under the strict rules every figure must
     survive exactly and a second "3 hours" is a new claim. Only a span rewrite (marketer-ending,
     substance-mechanism: "facts already in the draft") turns it on (ASK-5566).
-    `removable`: text the revision was told to delete (the banned phrase). The negations,
-    modals and conditions inside it may go; the same words anywhere else may not.
+    `removable`: phrases the revision was told to delete. A phrase that is really gone from
+    `revised` may take its own negations, modals and conditions with it, no more than it
+    holds; a phrase still present excuses nothing, and the same words elsewhere stay counted.
     `skip_small_words`: the revision was asked to rewrite a span (every rule outside revise.STRICT_RULES),
     so negation/modal/condition drift inside it is not judged here.
 
@@ -210,15 +216,16 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
         return out
     n0, m0, c0 = _small_words(original)
     n1, m1, c1 = _small_words(revised)
-    if removable:
-        # why subtract from the BEFORE side: the phrase's own small words are expected to
-        # vanish with it, and Counter `-` clamps at zero so a phrase can never excuse
-        # more than it holds. A "not" elsewhere in the post still reads as dropped.
-        rn, rm, rc = _small_words(removable)
-        n0, m0, c0 = n0 - rn, m0 - rm, c0 - rc
-    for name, before, after in (("negations", n0, n1), ("modals", m0, m1),
-                                ("conditions", c0, c1)):
-        rows = _diff(before, after, str, allow_removals)
+    forgiven = [Counter(), Counter(), Counter()]
+    squash = lambda s: " ".join(s.lower().split())
+    for phrase in removable:
+        if squash(phrase) and squash(phrase) not in squash(revised):
+            for total, part in zip(forgiven, _small_words(phrase)):
+                total.update(part)
+    for name, before, after, forgive in (("negations", n0, n1, forgiven[0]),
+                                         ("modals", m0, m1, forgiven[1]),
+                                         ("conditions", c0, c1, forgiven[2])):
+        rows = _diff(before, after, str, allow_removals, forgive=forgive)
         if rows:
             out[name] = rows
     return out

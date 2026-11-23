@@ -75,3 +75,20 @@ def test_a_strict_rule_still_counts_a_restated_figure_as_added():
     bad = "We use 3 hours a week. Those 3 hours matter."
     with pytest.raises(revise.MeaningRefused):
         revise.revise(text, word, runner=lambda p: bad)
+
+def test_banned_phrase_paraphrase_keeping_the_modal_passes():
+    text = "Here is one thing you should know. The scripts file the mail."
+    out = "Here is what you should know. The scripts file the mail."
+    assert revise.revise(text, PHRASE, runner=lambda p: out) == out
+
+
+def test_banned_phrase_still_present_excuses_nothing():
+    text = "Here is one thing you should know. The scripts file the mail. You should check."
+    bad = "Here is one thing you should know. The scripts file the mail."
+    with pytest.raises(revise.MeaningRefused):
+        revise.revise(text, PHRASE, runner=lambda p: bad)
+
+
+def test_an_apostrophe_phrase_detail_parses():
+    v = [{"rule": "banned-phrase", "detail": "banned phrase: \"here's what you shouldn't miss\""}]
+    assert revise._banned_phrases(v) == ["here's what you shouldn't miss"]
