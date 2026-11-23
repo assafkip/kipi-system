@@ -155,7 +155,25 @@ class LuarEnvGuard(unittest.TestCase):
             built = os.path.exists(os.path.join(d, "uv-built"))
         self.assertIn("LUAR_ENV_UNAVAILABLE", out)
         self.assertIn("MiB free", out)
+        self.assertIn("offline reuse check failed (exit 3)", out)
         self.assertFalse(built)
+
+    def test_reused_env_runs_the_worker_with_the_hub_offline(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            _fake_uv(d, 'case "$*" in *--worker*) echo "hub=$HF_HUB_OFFLINE" > %s/worker;; esac;'
+                        ' exit 0' % d)
+            _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+            seen = open(os.path.join(d, "worker")).read().strip()
+        self.assertEqual(seen, "hub=1")
+
+    def test_built_env_worker_keeps_the_hub_online(self):
+        with tempfile.TemporaryDirectory() as d:
+            _fake_uv(d, 'case "$*" in *--worker*) echo "hub=$HF_HUB_OFFLINE" > %s/worker;; esac;'
+                        ' exit 0' % d)
+            _drive(d, d, budget=5)
+            seen = open(os.path.join(d, "worker")).read().strip()
+        self.assertEqual(seen, "hub=")
 
     def _refuses_without_uv(self, d):
         _fake_uv(d, "touch %s/uv-ran; exit 0" % d)

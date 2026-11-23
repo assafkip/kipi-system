@@ -96,6 +96,11 @@ ENV_ERROR_NAME = "LUAR_ENV_UNAVAILABLE"
 
 _IN_PROCESS_OK = set()
 
+#: Env keys this process took on the reuse path, past the build floor. Their
+#: worker runs with HF_HUB_OFFLINE=1 so a model fetch cannot happen under the
+#: floor that reuse skipped (PR #872 review, minor 2).
+_REUSED = set()
+
 #: LUAR gets its OWN caches on the internal disk (ASK-3515, measured 2026-10-30).
 #: The fleet-wide UV_CACHE_DIR / HF_HOME point at /Volumes/Storage, where a file
 #: open costs about 160 ms against 0.75 ms on the internal disk (20 opens: 3.28s
@@ -233,9 +238,11 @@ def ensure_declared_env():
             fail(v.get("detail", "an earlier build in this run failed"))
         cache = _local_cache_env()
         cwd = os.path.dirname(HERE)
-        if _built_env_reusable(cache, cwd):
+        reusable, why_not = _built_env_reusable(cache, cwd)
+        if reusable:
             _record(marker, {"status": "ok"})
             _IN_PROCESS_OK.add(key)
+            _REUSED.add(key)
             return
         os.makedirs(cache["UV_CACHE_DIR"], exist_ok=True)
         free = shutil.disk_usage(cache["UV_CACHE_DIR"]).free
@@ -243,7 +250,8 @@ def ensure_declared_env():
             # Never build or seed into a nearly full disk: it hit 313 MiB free on
             # 2026-10-30 and the half-written torch install is what followed.
             fail(f"internal disk has {free // 2**20} MiB free, need "
-                 f"{MIN_FREE_BYTES // 2**20} MiB before building the LUAR env")
+                 f"{MIN_FREE_BYTES // 2**20} MiB before building the LUAR env"
+                 + (f"; {why_not}" if why_not else ""))
         try:
             _seed_hf_model(cache["HF_HOME"])
         except OSError as exc:
@@ -342,19 +350,37 @@ def _built_env_reusable(cache, cwd):
     The env and the model are proven on disk first, without running uv; only
     then does a bounded `--offline` probe confirm uv resolves to them, so a
     probe that would need a download fails and the floor applies as before.
+
+    Returns (reusable, why_not). why_not is "" when nothing was there to reuse,
+    so a refusal names a failed probe instead of reading as plain low disk
+    (PR #872 review, minor 1).
     """
     uv_dir = cache["UV_CACHE_DIR"]
     if not _model_snapshot_complete(cache["HF_HOME"]) or not _env_installed(uv_dir):
-        return False
-    if shutil.disk_usage(uv_dir).free < REUSE_MIN_FREE_BYTES:
-        return False
+        return False, ""
+    free = shutil.disk_usage(uv_dir).free
+    if free < REUSE_MIN_FREE_BYTES:
+        return False, (f"reuse refused too: {free // 2**20} MiB free, reuse needs "
+                       f"{REUSE_MIN_FREE_BYTES // 2**20} MiB")
     cmd = ["uv", "run", "--offline", "--python", PYTHON_PIN,
            "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]
     try:
-        rc, _ = _run_bounded(cmd, cwd, _child_env(cwd), OFFLINE_CHECK_TIMEOUT_SECONDS)
-    except OSError:
-        return False
-    return rc == 0
+        rc, err = _run_bounded(cmd, cwd, _child_env(cwd), OFFLINE_CHECK_TIMEOUT_SECONDS)
+    except OSError as exc:
+        return False, f"offline reuse check could not run: {exc}"
+    if rc == 0:
+        return True, ""
+    if rc is None:
+        return False, f"offline reuse check timed out after {OFFLINE_CHECK_TIMEOUT_SECONDS}s"
+    tail = " | ".join(err.strip().splitlines()[-2:]) or "no stderr"
+    return False, f"offline reuse check failed (exit {rc}): {tail}"
+
+
+def _worker_env(cwd):
+    env = _child_env(cwd)
+    if _env_key() in _REUSED:
+        env["HF_HUB_OFFLINE"] = "1"
+    return env
 
 
 def _uv_available():
@@ -446,7 +472,7 @@ def encode_via_declared_env(documents, windowed_text=None, windowed_texts=None):
             # The child must not inherit a pytest marker: luar_scorer is imported
             # there, and a suite-detection chokepoint keyed on PYTEST_CURRENT_TEST
             # would read the worker as a test and refuse the real work.
-            env=_child_env(cwd))
+            env=_worker_env(cwd))
     except subprocess.TimeoutExpired as exc:
         raise ScorerUnavailable(
             f"declared-env embedding timed out after {TIMEOUT_SECONDS}s") from exc
