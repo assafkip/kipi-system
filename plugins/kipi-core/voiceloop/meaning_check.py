@@ -17,7 +17,9 @@ one. This is NOT the ASK-4988 question. That one asks whether a figure is vouche
 SOURCE; this one asks whether a revision kept the draft's OWN figures. When ASK-4988
 tightens what counts as a figure, this inherits it for free.
 
-Four categories, each a multiset compare (count of each token before vs after):
+Four categories, each a multiset compare (count of each token before vs after). The one
+exception is numbers under `presence=True` (a span-rewrite revision, see `changes`), which
+compare as a set of (value, unit) pairs:
 - numbers: (value, unit). "3 hours" and "three hours" are the same figure; "3" and "30",
   "hours" and "days" are not. A bare number carries unit "" so "3" -> "30" still flags.
 - negations: not / never / no / n't. "does not" and "doesn't" are the same token.
@@ -157,19 +159,30 @@ def _small_words(text):
     return neg, mod, +cond
 
 
-def _diff(before, after, render, allow_removals):
+def _diff(before, after, render, allow_removals, presence=False, forgive=None):
     out = []
     for key in sorted(set(before) | set(after), key=str):
         delta = after[key] - before[key]
+        if presence:
+            # why presence for figures (ASK-5566, #632 review): marketer-ending and
+            # substance-mechanism guidance say "facts already in the draft", so a repair
+            # that restates "3 hours" is the instructed fix. A count compare read the
+            # second mention as an ADDED figure, refused twice, and shipped the defect.
+            delta = (after[key] > 0) - (before[key] > 0)
         if delta < 0 and allow_removals:
             continue
+        if delta < 0 and forgive:
+            # why forgive the DROP and not lower the before-count (PR #871 round 2): a
+            # paraphrase that keeps the draft's own "should" has delta 0 and must pass; the
+            # before-side subtraction made it read as an ADDED modal and refused it.
+            delta = min(0, delta + forgive[key])
         if delta:
             out.append(("+" if delta > 0 else "-") + render(key))
     return out
 
 
 def changes(original, revised, skip_numbers=False, allow_removals=False,
-            skip_small_words=False):
+            skip_small_words=False, presence=False, removable=()):
     """Meaning-bearing tokens that differ between `original` and `revised`.
 
     `skip_numbers`: the revision was asked to fix a figure rule, which changes numbers by
@@ -178,6 +191,13 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     expected. An ADDED token never is. A token dropped from a sentence the revision KEPT
     (a cut that deletes the "not" of a retained line) is a removal and is allowed here:
     removals are indistinguishable from the cut itself at multiset level.
+    `presence`: figures compare as a set of (value, unit), so restating a figure the draft already
+    has is not an added figure. Off by default: under the strict rules every figure must
+    survive exactly and a second "3 hours" is a new claim. Only a span rewrite (marketer-ending,
+    substance-mechanism: "facts already in the draft") turns it on (ASK-5566).
+    `removable`: phrases the revision was told to delete. A phrase that is really gone from
+    `revised` may take its own negations, modals and conditions with it, no more than it
+    holds; a phrase still present excuses nothing, and the same words elsewhere stay counted.
     `skip_small_words`: the revision was asked to rewrite a span (every rule outside revise.STRICT_RULES),
     so negation/modal/condition drift inside it is not judged here.
 
@@ -188,16 +208,24 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     out = {}
     if not skip_numbers:
         rows = _diff(_figures(original), _figures(revised),
-                     lambda k: ("%g %s" % (k[0], k[1])).strip(), allow_removals)
+                     lambda k: ("%g %s" % (k[0], k[1])).strip(), allow_removals,
+                     presence=presence)
         if rows:
             out["numbers"] = rows
     if skip_small_words:
         return out
     n0, m0, c0 = _small_words(original)
     n1, m1, c1 = _small_words(revised)
-    for name, before, after in (("negations", n0, n1), ("modals", m0, m1),
-                                ("conditions", c0, c1)):
-        rows = _diff(before, after, str, allow_removals)
+    forgiven = [Counter(), Counter(), Counter()]
+    squash = lambda s: " ".join(s.lower().split())
+    for phrase in removable:
+        if squash(phrase) and squash(phrase) not in squash(revised):
+            for total, part in zip(forgiven, _small_words(phrase)):
+                total.update(part)
+    for name, before, after, forgive in (("negations", n0, n1, forgiven[0]),
+                                         ("modals", m0, m1, forgiven[1]),
+                                         ("conditions", c0, c1, forgiven[2])):
+        rows = _diff(before, after, str, allow_removals, forgive=forgive)
         if rows:
             out[name] = rows
     return out

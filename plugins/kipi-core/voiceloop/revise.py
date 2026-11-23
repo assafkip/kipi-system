@@ -46,6 +46,7 @@ words with a model's, which is the exact thing the voice system exists to preven
 from __future__ import annotations
 
 import os
+import re
 
 from . import meaning_check, prompt_render
 
@@ -204,7 +205,8 @@ RULE_GUIDANCE = {
 #: The ONLY rules whose fix is a mechanical word swap, where every number, negation, modal
 #: and condition must survive exactly. Every OTHER rule (a span rewrite, a figure removal,
 #: a style repair, a rule nobody has written yet) is checked leniently: removals allowed,
-#: negation/modal/condition compare skipped, an ADDED figure still refused.
+#: negation/modal/condition compare skipped. Figures compare as a SET there (ASK-5566): a new
+#: claim that reuses a figure already in the draft is not refused by this check.
 #:
 #: why the list names the STRICT rules and not the exempt ones (ASK-5428 round 3, PR #616
 #: review): rounds 1 and 2 listed the exempt rules by name and each round missed some
@@ -358,13 +360,36 @@ _NUMBER_RULES = frozenset({"figure-unsourced", "stats-citation", "substance-numb
 MeaningRefused = meaning_check.MeaningRefused
 
 
+# Either quote: post_repair formats details with repr, so a phrase with an apostrophe arrives
+# double-quoted (PR #871 round 2).
+_PHRASE = re.compile(r"""banned phrase:?\s*(['"])(.+)\1""")
+
+
+def _banned_phrases(violations):
+    """The phrases a banned-phrase repair was told to delete, read from the lint detail, as a list.
+
+    why (ASK-5566): deleting "one thing you should know" loses its "should", and a strict
+    compare refused the fix twice. Allowing removals for the whole post was the first try and
+    would also forgive a dropped "not" anywhere else, so the allowance is the phrase's own
+    words, and only once the phrase is gone. An unparseable detail yields nothing: strict.
+    """
+    found = []
+    for v in violations:
+        if isinstance(v, dict) and v.get("rule") == "banned-phrase":
+            m = _PHRASE.search(str(v.get("detail", "")))
+            if m:
+                found.append(m.group(2))
+    return found
+
+
 def _meaning_changes(text, out, violations):
     rules = {v.get("rule") for v in violations if isinstance(v, dict)}
     span = bool(rules - STRICT_RULES - REWRITE_RULES - _NUMBER_RULES
                 - _FAIL_CLOSED_RULES - {None})
     return meaning_check.changes(
         text, out, skip_numbers=bool(rules & _NUMBER_RULES),
-        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES)) or span, skip_small_words=span)
+        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES)) or span, skip_small_words=span,
+        presence=span, removable=_banned_phrases(violations))
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
