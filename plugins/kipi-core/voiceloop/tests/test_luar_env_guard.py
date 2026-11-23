@@ -116,11 +116,15 @@ class LuarEnvGuard(unittest.TestCase):
     # ASK-5577, 2026-11-23: every CRM "Draft comment" failed with
     # LUAR_ENV_UNAVAILABLE at 4086 MiB free while ~/.cache/kipi-luar held a
     # built 4.4 GB env. The floor guards a BUILD; a built env needs none.
-    def _built_cache(self, d, weights=True, torch=True):
+    PINS = (("torch", "2.13.0"), ("transformers", "5.15.0"), ("einops", "0.8.2"),
+            ("numpy", "2.5.2"))
+
+    def _built_cache(self, d, weights=True, torch=True, pins=None, record=True):
         snap = os.path.join(d, "cache", "hf", "hub", "models--rrivera1849--LUAR-MUD",
                             "snapshots", "abc")
         os.makedirs(snap)
         open(os.path.join(snap, "config.json"), "w").write("{}")
+        open(os.path.join(snap, "tokenizer_config.json"), "w").write("{}")
         if weights:
             open(os.path.join(snap, "model.safetensors"), "w").write("w")
         # The real layout: environments-v2/<key>/<key2> -> archive-v0/<id> (venv).
@@ -128,9 +132,13 @@ class LuarEnvGuard(unittest.TestCase):
         sp = os.path.join(arch, "lib", "python3.12", "site-packages")
         os.makedirs(os.path.join(d, "cache", "uv", "environments-v2", "k1"))
         os.symlink(arch, os.path.join(d, "cache", "uv", "environments-v2", "k1", "k2"))
-        os.makedirs(os.path.join(sp, "transformers"))
-        if torch:
-            os.makedirs(os.path.join(sp, "torch"))
+        for name, ver in (pins or self.PINS):
+            if name == "torch" and not torch:
+                continue
+            di = os.path.join(sp, "%s-%s.dist-info" % (name, ver))
+            os.makedirs(di)
+            if record:
+                open(os.path.join(di, "RECORD"), "w").write("x")
 
     def test_built_env_under_the_floor_is_reused_after_an_offline_check(self):
         with tempfile.TemporaryDirectory() as d:
@@ -199,6 +207,21 @@ class LuarEnvGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._built_cache(d, torch=False)       # wheels may be cached, env is not
             self._refuses_without_uv(d)
+
+    def test_env_for_other_pins_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as d:     # a stale sibling env
+            self._built_cache(d, pins=(("torch", "2.0.0"), ("transformers", "5.15.0"),
+                                       ("einops", "0.8.2"), ("numpy", "2.5.2")))
+            self._refuses_without_uv(d)
+
+    def test_half_written_env_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as d:     # dist-info dirs, no RECORD yet
+            self._built_cache(d, record=False)
+            self._refuses_without_uv(d)
+
+    def test_pins_in_the_test_match_the_requirements_file(self):
+        from voiceloop import luar_env_backend as b   # noqa: PLC0415
+        self.assertEqual(sorted(b._pins()), sorted(self.PINS))
 
     def test_reuse_has_its_own_hard_floor(self):
         with tempfile.TemporaryDirectory() as d:

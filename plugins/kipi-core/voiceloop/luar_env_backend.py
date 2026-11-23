@@ -112,7 +112,7 @@ MODEL_DIR = "models--rrivera1849--LUAR-MUD"
 
 #: Bound on the offline reuse probe. Measured 2026-11-23 on the built env:
 #: `uv run --offline ... -c pass` took 0.11s. 60s is far past slow; it is hung.
-OFFLINE_CHECK_TIMEOUT_SECONDS = int(os.environ.get("KIPI_LUAR_OFFLINE_CHECK_TIMEOUT", "60"))
+OFFLINE_CHECK_TIMEOUT_SECONDS = float(os.environ.get("KIPI_LUAR_OFFLINE_CHECK_TIMEOUT", "60"))
 
 #: Hard floor for REUSE. Reuse downloads nothing (--offline) and needs a completed
 #: env already on disk, but uv may still write metadata or clones; under 1 GB the
@@ -303,7 +303,8 @@ def _model_snapshot_complete(hf_home):
         return False
     for snap in os.listdir(snaps):
         d = os.path.join(snaps, snap)
-        has_cfg = any(os.path.isfile(os.path.join(d, n)) for n in ("config.json", "config.py"))
+        has_cfg = (os.path.isfile(os.path.join(d, "config.json"))
+                   and os.path.isfile(os.path.join(d, "tokenizer_config.json")))
         has_w = any(os.path.isfile(os.path.join(d, n))
                     for n in ("model.safetensors", "pytorch_model.bin"))
         if has_cfg and has_w:
@@ -311,15 +312,34 @@ def _model_snapshot_complete(hf_home):
     return False
 
 
+def _pins():
+    """(name, version) for every `name==version` line of the requirements file."""
+    out = []
+    try:
+        with open(REQUIREMENTS) as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if "==" in line:
+                    name, ver = (p.strip() for p in line.split("==", 1))
+                    out.append((name.lower().replace("-", "_"), ver))
+    except OSError:
+        pass
+    return out
+
+
 def _env_installed(uv_dir):
-    """A uv `--with` env that already holds torch and transformers.
+    """A uv `--with` env holding EVERY pin of requirements-authorship.txt, fully.
 
     PR #872 review (P1): `--offline` only disables the network; with wheels cached
-    but the env evicted, uv would re-install gigabytes before the floor ran. So
-    reuse needs the finished env on disk, read without running uv.
+    but the env evicted, uv would re-install gigabytes before the floor ran.
+    Consulting PR #637 review (major): "any env with a torch/ dir" matched a stale
+    sibling env or a half-written one, so the probe could still install under the
+    skipped floor. Now one python{PYTHON_PIN} site-packages must hold
+    <name>-<version>.dist-info with a RECORD for each pin, read without running uv.
     """
+    pins = _pins()
     envs = os.path.join(uv_dir, "environments-v2")
-    if not os.path.isdir(envs):
+    if not pins or not os.path.isdir(envs):
         return False
     # Measured 2026-11-23 (uv on this Mac): environments-v2/<key>/<key2> is a
     # symlink into archive-v0/<id>, which is the venv. Both depths are read.
@@ -330,13 +350,10 @@ def _env_installed(uv_dir):
         if os.path.isdir(top):
             candidates.extend(os.path.join(top, c) for c in os.listdir(top))
     for env in candidates:
-        lib = os.path.join(env, "lib")
-        if not os.path.isdir(lib):
-            continue
-        for py in os.listdir(lib):
-            sp = os.path.join(lib, py, "site-packages")
-            if all(os.path.isdir(os.path.join(sp, m)) for m in ("torch", "transformers")):
-                return True
+        sp = os.path.join(env, "lib", f"python{PYTHON_PIN}", "site-packages")
+        if all(os.path.isfile(os.path.join(sp, f"{n}-{v}.dist-info", "RECORD"))
+               for n, v in pins):
+            return True
     return False
 
 
