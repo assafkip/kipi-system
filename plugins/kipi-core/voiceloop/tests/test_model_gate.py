@@ -402,3 +402,20 @@ def test_a_reshaped_record_still_finds_the_conventional_clone(tmp_path):
                                 with_clone=lambda root: root / "marketplaces" / "kipi")
     assert run.returncode == model_gate.REFUSE, run.stderr
     assert "Traceback" not in run.stderr and len(sent) == 1, (sent, run.stderr)
+
+
+def test_the_hand_door_is_never_refused_by_the_daily_pool(gate, monkeypatch):
+    """ASK-5586 / RULE-2026-11-23-B. Live 2026-11-23 23:33Z: his own Substack request was
+    refused at 800/800 fleet calls, the pool the automated jobs had spent. A request he makes
+    passes through him before it goes anywhere, so it is counted and never refused. The
+    automated jobs keep both limits (the control below)."""
+    monkeypatch.setenv("KIPI_MODEL_GATE_FLEET", "1")
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "1")
+    assert model_gate.check("social", now=AFTER)["admit"]
+    assert not model_gate.check("social", now=AFTER)["admit"], "control: automated job capped"
+    assert not model_gate.check("chief-social", now=AFTER)["admit"], "control: fleet capped"
+    rows = [model_gate.check(model_gate.HAND_DOOR_JOB, now=AFTER) for _ in range(3)]
+    assert all(r["admit"] for r in rows)
+    day = AFTER.strftime("%Y-%m-%d")
+    lines = open(os.path.join(os.environ["KIPI_MODEL_GATE_DIR"], day + ".jsonl")).read()
+    assert lines.count('"job": "%s"' % model_gate.HAND_DOOR_JOB) == 3, "its calls are still counted"

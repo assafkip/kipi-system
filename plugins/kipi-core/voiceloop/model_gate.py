@@ -151,6 +151,13 @@ def _ledger_error(job: str, day: str, m: str, exc: Exception) -> dict:
     return {"admit": admit, "mode": m, "reason": "ledger-error"}
 
 
+#: The job a request the founder makes himself runs as (social idea, /voiceloop). ASK-5586,
+#: RULE-2026-11-23-B: that text passes through him before it goes anywhere, so the gate counts
+#: its calls and never refuses them. why: on 2026-11-23 his own Substack request was refused at
+#: 800/800 fleet calls the automated jobs had spent. Every other job keeps both limits.
+HAND_DOOR_JOB = "hand-door"
+
+
 def check(job: str, item: str | None = None, now=None) -> dict:
     day = _today(now)
     m = mode(day)
@@ -175,7 +182,9 @@ def check(job: str, item: str | None = None, now=None) -> dict:
                 elif row.get("kind") == "alerted":
                     alerted_keys.add(row.get("job"))
             reason = None
-            if job_n >= per_job:
+            if job == HAND_DOOR_JOB:
+                reason = None
+            elif job_n >= per_job:
                 reason = f"job {job} at {job_n}/{per_job} calls today"
             elif fleet_n >= fleet:
                 reason = f"fleet at {fleet_n}/{fleet} calls today (first over: job {job})"
