@@ -157,10 +157,16 @@ def _small_words(text):
     return neg, mod, +cond
 
 
-def _diff(before, after, render, allow_removals):
+def _diff(before, after, render, allow_removals, presence=False):
     out = []
     for key in sorted(set(before) | set(after), key=str):
         delta = after[key] - before[key]
+        if presence:
+            # why presence for figures (ASK-5566, #632 review): marketer-ending and
+            # substance-mechanism guidance say "facts already in the draft", so a repair
+            # that restates "3 hours" is the instructed fix. A count compare read the
+            # second mention as an ADDED figure, refused twice, and shipped the defect.
+            delta = (after[key] > 0) - (before[key] > 0)
         if delta < 0 and allow_removals:
             continue
         if delta:
@@ -188,7 +194,8 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     out = {}
     if not skip_numbers:
         rows = _diff(_figures(original), _figures(revised),
-                     lambda k: ("%g %s" % (k[0], k[1])).strip(), allow_removals)
+                     lambda k: ("%g %s" % (k[0], k[1])).strip(), allow_removals,
+                     presence=True)
         if rows:
             out["numbers"] = rows
     if skip_small_words:

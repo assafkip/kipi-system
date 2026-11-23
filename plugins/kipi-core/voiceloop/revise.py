@@ -223,6 +223,11 @@ STRICT_RULES = frozenset({"banned-word", "banned-phrase", "emdash", "double-dash
 #: so it must not switch the meaning check off for the whole revision (PR #854 review).
 _FAIL_CLOSED_RULES = frozenset({"voice-lint-error"})
 
+#: Strict rules whose mandated fix is a DELETION. Still strict (an added or flipped small word
+#: is refused) but a dropped one is the fix, not drift. ASK-5566: deleting the listed phrase
+#: "one thing you should know" lost its "should" and was refused twice, discarding the draft.
+_DELETE_RULES = frozenset({"banned-phrase"})
+
 
 #: Who the post is attributed to inside the instruction, when the caller names nobody.
 #:
@@ -364,7 +369,7 @@ def _meaning_changes(text, out, violations):
                 - _FAIL_CLOSED_RULES - {None})
     return meaning_check.changes(
         text, out, skip_numbers=bool(rules & _NUMBER_RULES),
-        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES)) or span, skip_small_words=span)
+        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES | _DELETE_RULES)) or span, skip_small_words=span)
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
