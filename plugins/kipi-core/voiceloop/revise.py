@@ -46,6 +46,7 @@ words with a model's, which is the exact thing the voice system exists to preven
 from __future__ import annotations
 
 import os
+import re
 
 from . import meaning_check, prompt_render
 
@@ -223,11 +224,6 @@ STRICT_RULES = frozenset({"banned-word", "banned-phrase", "emdash", "double-dash
 #: so it must not switch the meaning check off for the whole revision (PR #854 review).
 _FAIL_CLOSED_RULES = frozenset({"voice-lint-error"})
 
-#: Strict rules whose mandated fix is a DELETION. Still strict (an added or flipped small word
-#: is refused) but a dropped one is the fix, not drift. ASK-5566: deleting the listed phrase
-#: "one thing you should know" lost its "should" and was refused twice, discarding the draft.
-_DELETE_RULES = frozenset({"banned-phrase"})
-
 
 #: Who the post is attributed to inside the instruction, when the caller names nobody.
 #:
@@ -363,13 +359,34 @@ _NUMBER_RULES = frozenset({"figure-unsourced", "stats-citation", "substance-numb
 MeaningRefused = meaning_check.MeaningRefused
 
 
+_PHRASE = re.compile(r"banned phrase:?\s*'(.+)'")
+
+
+def _banned_phrases(violations):
+    """The phrases a banned-phrase repair was told to delete, read from the lint detail.
+
+    why (ASK-5566): deleting "one thing you should know" loses its "should", and a strict
+    compare refused the fix twice. Allowing removals for the whole post was the first try and
+    would also forgive a dropped "not" anywhere else, so the allowance is the phrase's own
+    words. An unparseable detail yields nothing, which stays strict.
+    """
+    found = []
+    for v in violations:
+        if isinstance(v, dict) and v.get("rule") == "banned-phrase":
+            m = _PHRASE.search(str(v.get("detail", "")))
+            if m:
+                found.append(m.group(1))
+    return " ".join(found)
+
+
 def _meaning_changes(text, out, violations):
     rules = {v.get("rule") for v in violations if isinstance(v, dict)}
     span = bool(rules - STRICT_RULES - REWRITE_RULES - _NUMBER_RULES
                 - _FAIL_CLOSED_RULES - {None})
     return meaning_check.changes(
         text, out, skip_numbers=bool(rules & _NUMBER_RULES),
-        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES | _DELETE_RULES)) or span, skip_small_words=span)
+        allow_removals=bool(rules & (REWRITE_RULES | _NUMBER_RULES)) or span, skip_small_words=span,
+        presence=span, removable=_banned_phrases(violations))
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,

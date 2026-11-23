@@ -23,17 +23,17 @@ DRAFT = ("We cut the intake backlog by 3 hours a week because the scripts now fi
 RESTATED = ("We cut the intake backlog by 3 hours a week because the scripts now file the mail.\n\n"
             "Those 3 hours now go to the client work.")
 ENDING = [{"rule": "marketer-ending", "detail": "ends on a question"}]
-PHRASE = [{"rule": "banned-phrase", "detail": "banned phrase 'one thing you should know'"}]
+PHRASE = [{"rule": "banned-phrase", "detail": "banned phrase: 'one thing you should know'"}]
 
 
 def test_a_figure_already_in_the_draft_is_not_an_added_figure():
-    assert meaning_check.changes(DRAFT, RESTATED, allow_removals=True) == {}
+    assert meaning_check.changes(DRAFT, RESTATED, allow_removals=True, presence=True) == {}
     assert revise.revise(DRAFT, ENDING, runner=lambda p: RESTATED) == RESTATED
 
 
 def test_a_genuinely_new_figure_is_still_refused():
     new = RESTATED.replace("Those 3 hours", "Those 40 hours")
-    assert meaning_check.changes(DRAFT, new, allow_removals=True) == {"numbers": ["+40 hour"]}
+    assert meaning_check.changes(DRAFT, new, allow_removals=True, presence=True) == {"numbers": ["+40 hour"]}
     with pytest.raises(revise.MeaningRefused):
         revise.revise(DRAFT, ENDING, runner=lambda p: new)
 
@@ -53,3 +53,25 @@ def test_banned_phrase_repair_still_refuses_an_added_negation():
     bad = "The scripts do not file the mail."
     with pytest.raises(revise.MeaningRefused):
         revise.revise(text, PHRASE, runner=lambda p: bad)
+
+
+def test_banned_phrase_repair_refuses_a_not_dropped_elsewhere():
+    text = "Here is one thing you should know. The scripts do not file the mail."
+    bad = "The scripts file the mail."
+    with pytest.raises(revise.MeaningRefused):
+        revise.revise(text, PHRASE, runner=lambda p: bad)
+
+
+def test_banned_phrase_repair_refuses_a_deleted_figure():
+    text = "Here is one thing you should know. It took 3 hours."
+    bad = "It took a while."
+    with pytest.raises(revise.MeaningRefused):
+        revise.revise(text, PHRASE, runner=lambda p: bad)
+
+
+def test_a_strict_rule_still_counts_a_restated_figure_as_added():
+    word = [{"rule": "banned-word", "detail": "banned word 'leverage'"}]
+    text = "We leverage 3 hours a week."
+    bad = "We use 3 hours a week. Those 3 hours matter."
+    with pytest.raises(revise.MeaningRefused):
+        revise.revise(text, word, runner=lambda p: bad)

@@ -17,7 +17,9 @@ one. This is NOT the ASK-4988 question. That one asks whether a figure is vouche
 SOURCE; this one asks whether a revision kept the draft's OWN figures. When ASK-4988
 tightens what counts as a figure, this inherits it for free.
 
-Four categories, each a multiset compare (count of each token before vs after):
+Four categories, each a multiset compare (count of each token before vs after). The one
+exception is numbers under `presence=True` (a span-rewrite revision, see `changes`), which
+compare as a set of (value, unit) pairs:
 - numbers: (value, unit). "3 hours" and "three hours" are the same figure; "3" and "30",
   "hours" and "days" are not. A bare number carries unit "" so "3" -> "30" still flags.
 - negations: not / never / no / n't. "does not" and "doesn't" are the same token.
@@ -175,7 +177,7 @@ def _diff(before, after, render, allow_removals, presence=False):
 
 
 def changes(original, revised, skip_numbers=False, allow_removals=False,
-            skip_small_words=False):
+            skip_small_words=False, presence=False, removable=""):
     """Meaning-bearing tokens that differ between `original` and `revised`.
 
     `skip_numbers`: the revision was asked to fix a figure rule, which changes numbers by
@@ -184,6 +186,12 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     expected. An ADDED token never is. A token dropped from a sentence the revision KEPT
     (a cut that deletes the "not" of a retained line) is a removal and is allowed here:
     removals are indistinguishable from the cut itself at multiset level.
+    `presence`: figures compare as a set of (value, unit), so restating a figure the draft already
+    has is not an added figure. Off by default: under the strict rules every figure must
+    survive exactly and a second "3 hours" is a new claim. Only a span rewrite (marketer-ending,
+    substance-mechanism: "facts already in the draft") turns it on (ASK-5566).
+    `removable`: text the revision was told to delete (the banned phrase). The negations,
+    modals and conditions inside it may go; the same words anywhere else may not.
     `skip_small_words`: the revision was asked to rewrite a span (every rule outside revise.STRICT_RULES),
     so negation/modal/condition drift inside it is not judged here.
 
@@ -195,13 +203,19 @@ def changes(original, revised, skip_numbers=False, allow_removals=False,
     if not skip_numbers:
         rows = _diff(_figures(original), _figures(revised),
                      lambda k: ("%g %s" % (k[0], k[1])).strip(), allow_removals,
-                     presence=True)
+                     presence=presence)
         if rows:
             out["numbers"] = rows
     if skip_small_words:
         return out
     n0, m0, c0 = _small_words(original)
     n1, m1, c1 = _small_words(revised)
+    if removable:
+        # why subtract from the BEFORE side: the phrase's own small words are expected to
+        # vanish with it, and Counter `-` clamps at zero so a phrase can never excuse
+        # more than it holds. A "not" elsewhere in the post still reads as dropped.
+        rn, rm, rc = _small_words(removable)
+        n0, m0, c0 = n0 - rn, m0 - rm, c0 - rc
     for name, before, after in (("negations", n0, n1), ("modals", m0, m1),
                                 ("conditions", c0, c1)):
         rows = _diff(before, after, str, allow_removals)
