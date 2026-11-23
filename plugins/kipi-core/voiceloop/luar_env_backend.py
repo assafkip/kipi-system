@@ -105,6 +105,10 @@ _IN_PROCESS_OK = set()
 MIN_FREE_BYTES = int(float(os.environ.get("KIPI_LUAR_MIN_FREE_GB", "5")) * 1024 ** 3)
 MODEL_DIR = "models--rrivera1849--LUAR-MUD"
 
+#: Bound on the offline reuse probe. Measured 2026-11-23 on the built env:
+#: `uv run --offline ... -c pass` took 0.11s. 60s is far past slow; it is hung.
+OFFLINE_CHECK_TIMEOUT_SECONDS = int(os.environ.get("KIPI_LUAR_OFFLINE_CHECK_TIMEOUT", "60"))
+
 
 def _cache_root():
     return os.environ.get("KIPI_LUAR_CACHE_DIR") or os.path.join(
@@ -223,6 +227,11 @@ def ensure_declared_env():
         if v and v.get("status") == "failed":
             fail(v.get("detail", "an earlier build in this run failed"))
         cache = _local_cache_env()
+        cwd = os.path.dirname(HERE)
+        if _built_env_reusable(cache, cwd):
+            _record(marker, {"status": "ok"})
+            _IN_PROCESS_OK.add(key)
+            return
         os.makedirs(cache["UV_CACHE_DIR"], exist_ok=True)
         free = shutil.disk_usage(cache["UV_CACHE_DIR"]).free
         if free < MIN_FREE_BYTES:
@@ -234,7 +243,6 @@ def ensure_declared_env():
             _seed_hf_model(cache["HF_HOME"])
         except OSError as exc:
             fail(f"could not seed the LUAR model into {cache['HF_HOME']}: {exc}")
-        cwd = os.path.dirname(HERE)
         cmd = ["uv", "run", "--python", PYTHON_PIN,
                "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]
         try:
@@ -250,16 +258,44 @@ def ensure_declared_env():
             tail = " | ".join(err.strip().splitlines()[-3:]) or "no stderr"
             result = {"status": "failed",
                       "detail": f"env build failed (exit {rc}): {tail}"}
-        if marker:
-            tmp = marker + f".{os.getpid()}"
-            with open(tmp, "w") as fh:
-                json.dump(result, fh)
-            os.replace(tmp, marker)
+        _record(marker, result)
         if result["status"] != "ok":
             fail(result["detail"])
         _IN_PROCESS_OK.add(key)
     finally:
         lock_fh.close()
+
+
+def _record(marker, result):
+    if not marker:
+        return
+    tmp = marker + f".{os.getpid()}"
+    with open(tmp, "w") as fh:
+        json.dump(result, fh)
+    os.replace(tmp, marker)
+
+
+def _built_env_reusable(cache, cwd):
+    """True when the env and model are already on disk and resolve offline.
+
+    ASK-5577 scar, 2026-11-23: the free-disk floor ran in every new process, so
+    at 4086 MiB free every CRM "Draft comment" failed with LUAR_ENV_UNAVAILABLE
+    while a built 4.4 GB env sat in ~/.cache/kipi-luar. The floor exists to stop
+    a BUILD or SEED into a full disk; reusing what is built writes nothing big.
+    `--offline` is what makes this safe: a probe that would need a download
+    fails instead of filling the disk, and then the floor applies as before.
+    """
+    model = os.path.join(cache["HF_HOME"], "hub", MODEL_DIR)
+    uv_dir = cache["UV_CACHE_DIR"]
+    if not os.path.isdir(model) or not os.path.isdir(uv_dir) or not os.listdir(uv_dir):
+        return False
+    cmd = ["uv", "run", "--offline", "--python", PYTHON_PIN,
+           "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]
+    try:
+        rc, _ = _run_bounded(cmd, cwd, _child_env(cwd), OFFLINE_CHECK_TIMEOUT_SECONDS)
+    except OSError:
+        return False
+    return rc == 0
 
 
 def _uv_available():
