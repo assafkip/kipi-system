@@ -46,6 +46,9 @@ def _drive(bin_dir, state_dir, budget=3, wall=60, extra=None):
     env["KIPI_LUAR_ENV_BUILD_TIMEOUT"] = str(budget)
     env["TMPDIR"] = state_dir
     env["KIPI_LUAR_CACHE_DIR"] = os.path.join(state_dir, "cache")   # never the live cache
+    # Floor off unless a test sets it: these tests ran red on 2026-11-23 only
+    # because the real disk sat at 4 GB, which is not what they test (ASK-5577).
+    env["KIPI_LUAR_MIN_FREE_GB"] = "0"
     env.update(extra or {})
     if state_dir:
         env["KIPI_LUAR_ENV_STATE_DIR"] = state_dir
@@ -109,6 +112,112 @@ class LuarEnvGuard(unittest.TestCase):
         self.assertEqual(seen, "%s|%s" % (os.path.join(d, "cache", "uv"),
                                           os.path.join(d, "cache", "hf")))
         self.assertTrue(copied)
+
+    # ASK-5577, 2026-11-23: every CRM "Draft comment" failed with
+    # LUAR_ENV_UNAVAILABLE at 4086 MiB free while ~/.cache/kipi-luar held a
+    # built 4.4 GB env. The floor guards a BUILD; a built env needs none.
+    def _built_cache(self, d, weights=True, torch=True):
+        snap = os.path.join(d, "cache", "hf", "hub", "models--rrivera1849--LUAR-MUD",
+                            "snapshots", "abc")
+        os.makedirs(snap)
+        open(os.path.join(snap, "config.json"), "w").write("{}")
+        if weights:
+            open(os.path.join(snap, "model.safetensors"), "w").write("w")
+        # The real layout: environments-v2/<key>/<key2> -> archive-v0/<id> (venv).
+        arch = os.path.join(d, "cache", "uv", "archive-v0", "id1")
+        sp = os.path.join(arch, "lib", "python3.12", "site-packages")
+        os.makedirs(os.path.join(d, "cache", "uv", "environments-v2", "k1"))
+        os.symlink(arch, os.path.join(d, "cache", "uv", "environments-v2", "k1", "k2"))
+        os.makedirs(os.path.join(sp, "transformers"))
+        if torch:
+            os.makedirs(os.path.join(sp, "torch"))
+
+    def test_built_env_under_the_floor_is_reused_after_an_offline_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            # Succeeds only offline: a probe that would download cannot pass.
+            _fake_uv(d, 'case "$*" in *--offline*) echo "$*" >> %s/offline;'
+                        ' exit 0;; esac; echo "$*" >> %s/online; exit 0' % (d, d))
+            out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+            probed = os.path.exists(os.path.join(d, "offline"))
+            online = open(os.path.join(d, "online")).read() if os.path.exists(
+                os.path.join(d, "online")) else ""
+        self.assertNotIn("LUAR_ENV_UNAVAILABLE", out)
+        self.assertTrue(probed, out)
+        self.assertNotIn('-c pass', online)       # no online build was attempted
+
+    def test_built_env_whose_offline_check_fails_still_refuses_under_the_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            _fake_uv(d, 'case "$*" in *--offline*) exit 3;; esac;'
+                        ' touch %s/uv-built; exit 0' % d)
+            out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+            built = os.path.exists(os.path.join(d, "uv-built"))
+        self.assertIn("LUAR_ENV_UNAVAILABLE", out)
+        self.assertIn("MiB free", out)
+        self.assertIn("offline reuse check failed (exit 3)", out)
+        self.assertFalse(built)
+
+    def test_reused_env_runs_the_worker_with_the_hub_offline(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            _fake_uv(d, 'case "$*" in *--worker*) echo "hub=$HF_HUB_OFFLINE" > %s/worker;; esac;'
+                        ' exit 0' % d)
+            _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+            seen = open(os.path.join(d, "worker")).read().strip()
+        self.assertEqual(seen, "hub=1")
+
+    def test_built_env_worker_keeps_the_hub_online(self):
+        with tempfile.TemporaryDirectory() as d:
+            _fake_uv(d, 'case "$*" in *--worker*) echo "hub=$HF_HUB_OFFLINE" > %s/worker;; esac;'
+                        ' exit 0' % d)
+            _drive(d, d, budget=5)
+            seen = open(os.path.join(d, "worker")).read().strip()
+        self.assertEqual(seen, "hub=")
+
+    def _refuses_without_uv(self, d):
+        _fake_uv(d, "touch %s/uv-ran; exit 0" % d)
+        out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+        self.assertIn("LUAR_ENV_UNAVAILABLE", out)
+        self.assertIn("MiB free", out)
+        self.assertFalse(os.path.exists(os.path.join(d, "uv-ran")))
+
+    def test_model_dir_without_weights_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d, weights=False)     # an interrupted download
+            self._refuses_without_uv(d)
+
+    def test_half_downloaded_blob_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            blobs = os.path.join(d, "cache", "hf", "hub", "models--rrivera1849--LUAR-MUD", "blobs")
+            os.makedirs(blobs)
+            open(os.path.join(blobs, "x.incomplete"), "w").write("")
+            self._refuses_without_uv(d)
+
+    def test_evicted_env_is_not_reinstalled_under_the_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d, torch=False)       # wheels may be cached, env is not
+            self._refuses_without_uv(d)
+
+    def test_reuse_has_its_own_hard_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            _fake_uv(d, "touch %s/uv-ran; exit 0" % d)
+            out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999",
+                                                   "KIPI_LUAR_REUSE_MIN_FREE_GB": "99999999"})
+            self.assertIn("LUAR_ENV_UNAVAILABLE", out)
+            self.assertFalse(os.path.exists(os.path.join(d, "uv-ran")))
+
+    def test_unbuilt_env_under_the_floor_refuses_without_probing(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "cache", "uv"))   # uv dir, no model
+            _fake_uv(d, "touch %s/uv-ran; exit 0" % d)
+            out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+            ran = os.path.exists(os.path.join(d, "uv-ran"))
+        self.assertIn("LUAR_ENV_UNAVAILABLE", out)
+        self.assertIn("MiB free", out)
+        self.assertFalse(ran)
 
 
 if __name__ == "__main__":

@@ -96,6 +96,11 @@ ENV_ERROR_NAME = "LUAR_ENV_UNAVAILABLE"
 
 _IN_PROCESS_OK = set()
 
+#: Env keys this process took on the reuse path, past the build floor. Their
+#: worker runs with HF_HUB_OFFLINE=1 so a model fetch cannot happen under the
+#: floor that reuse skipped (PR #872 review, minor 2).
+_REUSED = set()
+
 #: LUAR gets its OWN caches on the internal disk (ASK-3515, measured 2026-10-30).
 #: The fleet-wide UV_CACHE_DIR / HF_HOME point at /Volumes/Storage, where a file
 #: open costs about 160 ms against 0.75 ms on the internal disk (20 opens: 3.28s
@@ -104,6 +109,15 @@ _IN_PROCESS_OK = set()
 #: until nothing finished. Scoped to this child only: the fleet env is untouched.
 MIN_FREE_BYTES = int(float(os.environ.get("KIPI_LUAR_MIN_FREE_GB", "5")) * 1024 ** 3)
 MODEL_DIR = "models--rrivera1849--LUAR-MUD"
+
+#: Bound on the offline reuse probe. Measured 2026-11-23 on the built env:
+#: `uv run --offline ... -c pass` took 0.11s. 60s is far past slow; it is hung.
+OFFLINE_CHECK_TIMEOUT_SECONDS = int(os.environ.get("KIPI_LUAR_OFFLINE_CHECK_TIMEOUT", "60"))
+
+#: Hard floor for REUSE. Reuse downloads nothing (--offline) and needs a completed
+#: env already on disk, but uv may still write metadata or clones; under 1 GB the
+#: machine is too close to the 2026-10-30 disk-full event to run anything here.
+REUSE_MIN_FREE_BYTES = int(float(os.environ.get("KIPI_LUAR_REUSE_MIN_FREE_GB", "1")) * 1024 ** 3)
 
 
 def _cache_root():
@@ -223,18 +237,25 @@ def ensure_declared_env():
         if v and v.get("status") == "failed":
             fail(v.get("detail", "an earlier build in this run failed"))
         cache = _local_cache_env()
+        cwd = os.path.dirname(HERE)
+        reusable, why_not = _built_env_reusable(cache, cwd)
+        if reusable:
+            _record(marker, {"status": "ok"})
+            _IN_PROCESS_OK.add(key)
+            _REUSED.add(key)
+            return
         os.makedirs(cache["UV_CACHE_DIR"], exist_ok=True)
         free = shutil.disk_usage(cache["UV_CACHE_DIR"]).free
         if free < MIN_FREE_BYTES:
             # Never build or seed into a nearly full disk: it hit 313 MiB free on
             # 2026-10-30 and the half-written torch install is what followed.
             fail(f"internal disk has {free // 2**20} MiB free, need "
-                 f"{MIN_FREE_BYTES // 2**20} MiB before building the LUAR env")
+                 f"{MIN_FREE_BYTES // 2**20} MiB before building the LUAR env"
+                 + (f"; {why_not}" if why_not else ""))
         try:
             _seed_hf_model(cache["HF_HOME"])
         except OSError as exc:
             fail(f"could not seed the LUAR model into {cache['HF_HOME']}: {exc}")
-        cwd = os.path.dirname(HERE)
         cmd = ["uv", "run", "--python", PYTHON_PIN,
                "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]
         try:
@@ -250,16 +271,116 @@ def ensure_declared_env():
             tail = " | ".join(err.strip().splitlines()[-3:]) or "no stderr"
             result = {"status": "failed",
                       "detail": f"env build failed (exit {rc}): {tail}"}
-        if marker:
-            tmp = marker + f".{os.getpid()}"
-            with open(tmp, "w") as fh:
-                json.dump(result, fh)
-            os.replace(tmp, marker)
+        _record(marker, result)
         if result["status"] != "ok":
             fail(result["detail"])
         _IN_PROCESS_OK.add(key)
     finally:
         lock_fh.close()
+
+
+def _record(marker, result):
+    if not marker:
+        return
+    tmp = marker + f".{os.getpid()}"
+    with open(tmp, "w") as fh:
+        json.dump(result, fh)
+    os.replace(tmp, marker)
+
+
+def _model_snapshot_complete(hf_home):
+    """A snapshot with config and weights that resolve, and no half-downloaded blob.
+
+    PR #872 review (P2): a bare model dir is what an interrupted download leaves,
+    and the worker's from_pretrained would then resume the download under the floor.
+    """
+    root = os.path.join(hf_home, "hub", MODEL_DIR)
+    blobs = os.path.join(root, "blobs")
+    if os.path.isdir(blobs) and any(n.endswith(".incomplete") for n in os.listdir(blobs)):
+        return False
+    snaps = os.path.join(root, "snapshots")
+    if not os.path.isdir(snaps):
+        return False
+    for snap in os.listdir(snaps):
+        d = os.path.join(snaps, snap)
+        has_cfg = any(os.path.isfile(os.path.join(d, n)) for n in ("config.json", "config.py"))
+        has_w = any(os.path.isfile(os.path.join(d, n))
+                    for n in ("model.safetensors", "pytorch_model.bin"))
+        if has_cfg and has_w:
+            return True
+    return False
+
+
+def _env_installed(uv_dir):
+    """A uv `--with` env that already holds torch and transformers.
+
+    PR #872 review (P1): `--offline` only disables the network; with wheels cached
+    but the env evicted, uv would re-install gigabytes before the floor ran. So
+    reuse needs the finished env on disk, read without running uv.
+    """
+    envs = os.path.join(uv_dir, "environments-v2")
+    if not os.path.isdir(envs):
+        return False
+    # Measured 2026-11-23 (uv on this Mac): environments-v2/<key>/<key2> is a
+    # symlink into archive-v0/<id>, which is the venv. Both depths are read.
+    candidates = []
+    for name in os.listdir(envs):
+        top = os.path.join(envs, name)
+        candidates.append(top)
+        if os.path.isdir(top):
+            candidates.extend(os.path.join(top, c) for c in os.listdir(top))
+    for env in candidates:
+        lib = os.path.join(env, "lib")
+        if not os.path.isdir(lib):
+            continue
+        for py in os.listdir(lib):
+            sp = os.path.join(lib, py, "site-packages")
+            if all(os.path.isdir(os.path.join(sp, m)) for m in ("torch", "transformers")):
+                return True
+    return False
+
+
+def _built_env_reusable(cache, cwd):
+    """True when the env and model are already on disk and resolve offline.
+
+    ASK-5577 scar, 2026-11-23: the free-disk floor ran in every new process, so
+    at 4086 MiB free every CRM "Draft comment" failed with LUAR_ENV_UNAVAILABLE
+    while a built 4.4 GB env sat in ~/.cache/kipi-luar. The floor exists to stop
+    a BUILD or SEED into a full disk; reusing what is built writes nothing big.
+    The env and the model are proven on disk first, without running uv; only
+    then does a bounded `--offline` probe confirm uv resolves to them, so a
+    probe that would need a download fails and the floor applies as before.
+
+    Returns (reusable, why_not). why_not is "" when nothing was there to reuse,
+    so a refusal names a failed probe instead of reading as plain low disk
+    (PR #872 review, minor 1).
+    """
+    uv_dir = cache["UV_CACHE_DIR"]
+    if not _model_snapshot_complete(cache["HF_HOME"]) or not _env_installed(uv_dir):
+        return False, ""
+    free = shutil.disk_usage(uv_dir).free
+    if free < REUSE_MIN_FREE_BYTES:
+        return False, (f"reuse refused too: {free // 2**20} MiB free, reuse needs "
+                       f"{REUSE_MIN_FREE_BYTES // 2**20} MiB")
+    cmd = ["uv", "run", "--offline", "--python", PYTHON_PIN,
+           "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]
+    try:
+        rc, err = _run_bounded(cmd, cwd, _child_env(cwd), OFFLINE_CHECK_TIMEOUT_SECONDS)
+    except OSError as exc:
+        return False, f"offline reuse check could not run: {exc}"
+    if rc == 0:
+        return True, ""
+    if rc is None:
+        return False, f"offline reuse check timed out after {OFFLINE_CHECK_TIMEOUT_SECONDS}s"
+    tail = " | ".join(err.strip().splitlines()[-2:]) or "no stderr"
+    return False, f"offline reuse check failed (exit {rc}): {tail}"
+
+
+def _worker_env(cwd):
+    env = _child_env(cwd)
+    if _env_key() in _REUSED:
+        env["HF_HUB_OFFLINE"] = "1"
+    return env
 
 
 def _uv_available():
@@ -351,7 +472,7 @@ def encode_via_declared_env(documents, windowed_text=None, windowed_texts=None):
             # The child must not inherit a pytest marker: luar_scorer is imported
             # there, and a suite-detection chokepoint keyed on PYTEST_CURRENT_TEST
             # would read the worker as a test and refuse the real work.
-            env=_child_env(cwd))
+            env=_worker_env(cwd))
     except subprocess.TimeoutExpired as exc:
         raise ScorerUnavailable(
             f"declared-env embedding timed out after {TIMEOUT_SECONDS}s") from exc
