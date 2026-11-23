@@ -109,6 +109,11 @@ MODEL_DIR = "models--rrivera1849--LUAR-MUD"
 #: `uv run --offline ... -c pass` took 0.11s. 60s is far past slow; it is hung.
 OFFLINE_CHECK_TIMEOUT_SECONDS = int(os.environ.get("KIPI_LUAR_OFFLINE_CHECK_TIMEOUT", "60"))
 
+#: Hard floor for REUSE. Reuse downloads nothing (--offline) and needs a completed
+#: env already on disk, but uv may still write metadata or clones; under 1 GB the
+#: machine is too close to the 2026-10-30 disk-full event to run anything here.
+REUSE_MIN_FREE_BYTES = int(float(os.environ.get("KIPI_LUAR_REUSE_MIN_FREE_GB", "1")) * 1024 ** 3)
+
 
 def _cache_root():
     return os.environ.get("KIPI_LUAR_CACHE_DIR") or os.path.join(
@@ -275,6 +280,58 @@ def _record(marker, result):
     os.replace(tmp, marker)
 
 
+def _model_snapshot_complete(hf_home):
+    """A snapshot with config and weights that resolve, and no half-downloaded blob.
+
+    PR #872 review (P2): a bare model dir is what an interrupted download leaves,
+    and the worker's from_pretrained would then resume the download under the floor.
+    """
+    root = os.path.join(hf_home, "hub", MODEL_DIR)
+    blobs = os.path.join(root, "blobs")
+    if os.path.isdir(blobs) and any(n.endswith(".incomplete") for n in os.listdir(blobs)):
+        return False
+    snaps = os.path.join(root, "snapshots")
+    if not os.path.isdir(snaps):
+        return False
+    for snap in os.listdir(snaps):
+        d = os.path.join(snaps, snap)
+        has_cfg = any(os.path.isfile(os.path.join(d, n)) for n in ("config.json", "config.py"))
+        has_w = any(os.path.isfile(os.path.join(d, n))
+                    for n in ("model.safetensors", "pytorch_model.bin"))
+        if has_cfg and has_w:
+            return True
+    return False
+
+
+def _env_installed(uv_dir):
+    """A uv `--with` env that already holds torch and transformers.
+
+    PR #872 review (P1): `--offline` only disables the network; with wheels cached
+    but the env evicted, uv would re-install gigabytes before the floor ran. So
+    reuse needs the finished env on disk, read without running uv.
+    """
+    envs = os.path.join(uv_dir, "environments-v2")
+    if not os.path.isdir(envs):
+        return False
+    # Measured 2026-11-23 (uv on this Mac): environments-v2/<key>/<key2> is a
+    # symlink into archive-v0/<id>, which is the venv. Both depths are read.
+    candidates = []
+    for name in os.listdir(envs):
+        top = os.path.join(envs, name)
+        candidates.append(top)
+        if os.path.isdir(top):
+            candidates.extend(os.path.join(top, c) for c in os.listdir(top))
+    for env in candidates:
+        lib = os.path.join(env, "lib")
+        if not os.path.isdir(lib):
+            continue
+        for py in os.listdir(lib):
+            sp = os.path.join(lib, py, "site-packages")
+            if all(os.path.isdir(os.path.join(sp, m)) for m in ("torch", "transformers")):
+                return True
+    return False
+
+
 def _built_env_reusable(cache, cwd):
     """True when the env and model are already on disk and resolve offline.
 
@@ -282,12 +339,14 @@ def _built_env_reusable(cache, cwd):
     at 4086 MiB free every CRM "Draft comment" failed with LUAR_ENV_UNAVAILABLE
     while a built 4.4 GB env sat in ~/.cache/kipi-luar. The floor exists to stop
     a BUILD or SEED into a full disk; reusing what is built writes nothing big.
-    `--offline` is what makes this safe: a probe that would need a download
-    fails instead of filling the disk, and then the floor applies as before.
+    The env and the model are proven on disk first, without running uv; only
+    then does a bounded `--offline` probe confirm uv resolves to them, so a
+    probe that would need a download fails and the floor applies as before.
     """
-    model = os.path.join(cache["HF_HOME"], "hub", MODEL_DIR)
     uv_dir = cache["UV_CACHE_DIR"]
-    if not os.path.isdir(model) or not os.path.isdir(uv_dir) or not os.listdir(uv_dir):
+    if not _model_snapshot_complete(cache["HF_HOME"]) or not _env_installed(uv_dir):
+        return False
+    if shutil.disk_usage(uv_dir).free < REUSE_MIN_FREE_BYTES:
         return False
     cmd = ["uv", "run", "--offline", "--python", PYTHON_PIN,
            "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]

@@ -116,10 +116,21 @@ class LuarEnvGuard(unittest.TestCase):
     # ASK-5577, 2026-11-23: every CRM "Draft comment" failed with
     # LUAR_ENV_UNAVAILABLE at 4086 MiB free while ~/.cache/kipi-luar held a
     # built 4.4 GB env. The floor guards a BUILD; a built env needs none.
-    def _built_cache(self, d):
-        os.makedirs(os.path.join(d, "cache", "hf", "hub", "models--rrivera1849--LUAR-MUD"))
-        os.makedirs(os.path.join(d, "cache", "uv"))
-        open(os.path.join(d, "cache", "uv", "CACHEDIR.TAG"), "w").write("x")
+    def _built_cache(self, d, weights=True, torch=True):
+        snap = os.path.join(d, "cache", "hf", "hub", "models--rrivera1849--LUAR-MUD",
+                            "snapshots", "abc")
+        os.makedirs(snap)
+        open(os.path.join(snap, "config.json"), "w").write("{}")
+        if weights:
+            open(os.path.join(snap, "model.safetensors"), "w").write("w")
+        # The real layout: environments-v2/<key>/<key2> -> archive-v0/<id> (venv).
+        arch = os.path.join(d, "cache", "uv", "archive-v0", "id1")
+        sp = os.path.join(arch, "lib", "python3.12", "site-packages")
+        os.makedirs(os.path.join(d, "cache", "uv", "environments-v2", "k1"))
+        os.symlink(arch, os.path.join(d, "cache", "uv", "environments-v2", "k1", "k2"))
+        os.makedirs(os.path.join(sp, "transformers"))
+        if torch:
+            os.makedirs(os.path.join(sp, "torch"))
 
     def test_built_env_under_the_floor_is_reused_after_an_offline_check(self):
         with tempfile.TemporaryDirectory() as d:
@@ -145,6 +156,40 @@ class LuarEnvGuard(unittest.TestCase):
         self.assertIn("LUAR_ENV_UNAVAILABLE", out)
         self.assertIn("MiB free", out)
         self.assertFalse(built)
+
+    def _refuses_without_uv(self, d):
+        _fake_uv(d, "touch %s/uv-ran; exit 0" % d)
+        out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+        self.assertIn("LUAR_ENV_UNAVAILABLE", out)
+        self.assertIn("MiB free", out)
+        self.assertFalse(os.path.exists(os.path.join(d, "uv-ran")))
+
+    def test_model_dir_without_weights_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d, weights=False)     # an interrupted download
+            self._refuses_without_uv(d)
+
+    def test_half_downloaded_blob_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            blobs = os.path.join(d, "cache", "hf", "hub", "models--rrivera1849--LUAR-MUD", "blobs")
+            os.makedirs(blobs)
+            open(os.path.join(blobs, "x.incomplete"), "w").write("")
+            self._refuses_without_uv(d)
+
+    def test_evicted_env_is_not_reinstalled_under_the_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d, torch=False)       # wheels may be cached, env is not
+            self._refuses_without_uv(d)
+
+    def test_reuse_has_its_own_hard_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._built_cache(d)
+            _fake_uv(d, "touch %s/uv-ran; exit 0" % d)
+            out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999",
+                                                   "KIPI_LUAR_REUSE_MIN_FREE_GB": "99999999"})
+            self.assertIn("LUAR_ENV_UNAVAILABLE", out)
+            self.assertFalse(os.path.exists(os.path.join(d, "uv-ran")))
 
     def test_unbuilt_env_under_the_floor_refuses_without_probing(self):
         with tempfile.TemporaryDirectory() as d:
