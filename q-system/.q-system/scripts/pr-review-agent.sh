@@ -439,6 +439,7 @@ if [ -n "${KIPI_REVIEW_EXPECT_HEAD:-}" ] && [ "$HEAD_SHA" != "$KIPI_REVIEW_EXPEC
   exit 1
 fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
+# >>> critical-ticket routing (TestTheReviewerProducesTheFlags extracts and runs this block)
 # A focus-gate critical ticket bills the plan (founder 2026-11-24: "for the critical jobs we
 # use the normal account, not the api key"; fleet_door.critical_ticket). It rides as the
 # fleet-claude.sh shim's own flags on the reviewer call, never as env: env reached the
@@ -456,6 +457,7 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -z "${KIPI_FLEET_CLAUDE:-}" ]; th
       esac ;;
   esac
 fi
+# <<< critical-ticket routing
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"

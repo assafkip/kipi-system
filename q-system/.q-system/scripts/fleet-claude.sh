@@ -34,6 +34,12 @@ while [ "$#" -ge 2 ]; do
   esac
 done
 
+# A --kipi-* flag anywhere else would reach the model CLI and the routing would be lost
+# without a word (PR #875 round 2): refuse it.
+for _a in "$@"; do
+  case "$_a" in --kipi-*) echo "fleet-claude: $_a must lead the arguments; no run" >&2; exit 2 ;; esac
+done
+
 if [ "${KIPI_FLEET_API_KEYS:-1}" = "0" ]; then
   echo "fleet-claude: KIPI_FLEET_API_KEYS=0 -- this run bills the PLAN, not the API credit" >&2
   exec env -u ANTHROPIC_API_KEY "${KIPI_CLAUDE_BIN:-claude}" "$@"

@@ -463,11 +463,66 @@ class TestTheShimCarriesTheTicketAsFlags(Base):
         self.assertEqual(call["argv"], ["-p", "hi"])
         self.assertEqual(call["ticket_env"], [])
 
+    def test_a_stray_kipi_flag_is_refused_not_handed_to_the_model(self):
+        gate = _focus_gate(self.tmp.name, ["ASK-5586"])
+        res = self._shim(["-p", "--kipi-ticket", "ASK-5586", "--kipi-focus-gate", gate, "hi"])
+        self.assertEqual(res.returncode, 2, res.stderr)
+        self.assertIn("--kipi-ticket", res.stderr)
+        self.assertEqual(self.calls(), [])
+
     def test_an_ambient_ticket_env_is_ignored_by_the_shim(self):
         res = self._shim(["-p", "hi"], KIPI_TICKET="ASK-5586",
                          KIPI_FOCUS_GATE=_focus_gate(self.tmp.name, ["ASK-5586"]))
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn(LIVE_KEY_1, res.stdout)
+
+
+class TestTheReviewerProducesTheFlags(unittest.TestCase):
+    """PR #875 round 2: the shim cases never ran the producer, so deleting pr-review-agent.sh's
+    routing block left every suite green, and the plan notice blinded the outage classifier."""
+
+    AGENT = os.path.join(SCRIPTS, "pr-review-agent.sh")
+    START, END = "# >>> critical-ticket routing", "# <<< critical-ticket routing"
+
+    def _block(self):
+        with open(self.AGENT) as fh:
+            text = fh.read()
+        self.assertIn(self.START, text, "the routing block is gone from pr-review-agent.sh")
+        block = text.split(self.START, 1)[1].split(self.END, 1)[0]
+        # It must run after ISSUE is final and before the reviewer line reads FLEET_CLAUDE.
+        self.assertLess(text.index("ISSUE=\"$(printf '%s' \"$PR_TITLE\""), text.index(self.START))
+        self.assertLess(text.index(self.END), text.index("KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p"))
+        return block
+
+    def _run(self, issue, **env):
+        with tempfile.TemporaryDirectory() as home:
+            script = 'FLEET_CLAUDE=/s/fleet-claude.sh\nISSUE=%s\n%s\nprintf %%s "$FLEET_CLAUDE"' % (
+                issue, self._block())
+            full = {"PATH": os.environ.get("PATH", ""), "HOME": home}
+            full.update(env)
+            res = subprocess.run(["bash", "-c", script], env=full, capture_output=True,
+                                 text=True, timeout=30)
+            return res.stdout, home
+
+    def test_a_ticket_reaches_the_shim_as_leading_flags(self):
+        out, home = self._run("ASK-5586")
+        self.assertEqual(out, "/s/fleet-claude.sh --kipi-ticket 'ASK-5586' --kipi-focus-gate "
+                              "'%s/.config/kipi/focus-gate/focus.json'" % home)
+
+    def test_control_the_off_switch_or_an_override_adds_nothing(self):
+        self.assertEqual(self._run("ASK-5586", KIPI_FLEET_API_KEYS="0")[0], "/s/fleet-claude.sh")
+        self.assertEqual(self._run("ASK-5586", KIPI_FLEET_CLAUDE="/x")[0], "/s/fleet-claude.sh")
+        self.assertEqual(self._run("")[0], "/s/fleet-claude.sh")
+
+    def test_the_plan_notice_does_not_hide_an_outage(self):
+        lib = os.path.join(SCRIPTS, "env-failure-lib.sh")
+        notice = ("fleet_api_key: critical ticket ASK-5586 -- this run bills the PLAN, not the "
+                  "API credit (founder 2026-11-24)")
+        def env_fail(payload):
+            return subprocess.run(["bash", "-c", '. "$1"; is_environmental "$2"', "_", lib,
+                                   payload], capture_output=True, timeout=30).returncode == 0
+        self.assertTrue(env_fail(notice + "\nPlease run /login"))
+        self.assertFalse(env_fail(notice + "\nThe fix looks right."), "an answer is not an outage")
 
 
 class TestNoTestCanReachTheLiveFocusGate(Base):

@@ -108,7 +108,10 @@ ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]{1,3}-hour)
 # And the CLI's untrusted-workspace preamble (PR #421 round 16, minor): 22 times
 # in the worker log, e.g. ASK-757's window in limit-charges-2026-09-23.json. It
 # is the CLI's own sentence, anchored from its first word, never an agent's.
-ENV_NOISE_RE='^[[:space:]]{0,3}((SessionEnd|SessionStart|Stop|SubagentStop|PreCompact|Notification|UserPromptSubmit|PreToolUse|PostToolUse) hook \[.*\] failed: Hook cancelled|Ignoring [0-9]+ permissions\.allow entries from [^:]+: this workspace has not been trusted\. .*)[[:space:]]*$'
+# The critical-ticket plan notice (fleet_api_key.cmd_exec) is the helper's own line, exact
+# shape only: it lands in a review's 2>&1 capture before the model speaks, and one extra line
+# turned a logged-out plan into "an unusable review" (PR #875 round 2).
+ENV_NOISE_RE='^[[:space:]]{0,3}((SessionEnd|SessionStart|Stop|SubagentStop|PreCompact|Notification|UserPromptSubmit|PreToolUse|PostToolUse) hook \[.*\] failed: Hook cancelled|Ignoring [0-9]+ permissions\.allow entries from [^:]+: this workspace has not been trusted\. .*|fleet_api_key: critical ticket ASK-[0-9]+ -- this run bills the PLAN, not the API credit \(founder 2026-11-24\))[[:space:]]*$'
 
 # AND THE SEPARATOR MUST LEAD SOMEWHERE THE MACHINE GOES. Allowing a separator
 # plus ANYTHING was the third attempt and it was wrong for the same reason as the
