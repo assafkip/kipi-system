@@ -134,7 +134,8 @@ def _notify(text: str) -> None:
 
 
 def _ledger_error(job: str, day: str, m: str, exc: Exception) -> dict:
-    admit = m == "report"
+    # PR #874 review, minor: an unusable ledger must not refuse his own request either.
+    admit = m == "report" or _norm_job(job) == HAND_DOOR_JOB
     print(f"model_gate: ledger unusable ({exc}); {'admitting' if admit else 'refusing'} {job}",
           file=sys.stderr)
     # One alert per day. The marker lives outside the ledger dir, since that dir
@@ -149,6 +150,21 @@ def _ledger_error(job: str, day: str, m: str, exc: Exception) -> dict:
     _notify(f"model gate: ledger unusable ({type(exc).__name__}); mode {m}, "
             f"{'admitting' if admit else 'refusing'} calls until it is fixed")
     return {"admit": admit, "mode": m, "reason": "ledger-error"}
+
+
+#: The job a request the founder makes himself runs as (social idea, /voiceloop). ASK-5586,
+#: RULE-2026-11-23-B: that text passes through him before it goes anywhere, so the gate counts
+#: its calls and never refuses them. why: on 2026-11-23 his own Substack request was refused at
+#: 800/800 fleet calls the automated jobs had spent. Every other job keeps both limits.
+HAND_DOOR_JOB = "hand-door"
+#: Past this many hand-door calls in a UTC day the gate alerts once (and still admits). PR #639
+#: review round 1: an exempt job that still counted toward the fleet starved the capped jobs and
+#: its spend raised no alert. Counted apart, never refused, one alert naming hand-door.
+HAND_DOOR_ALERT_DEFAULT = 400
+
+
+def _norm_job(job) -> str:
+    return str(job or "").strip().lower()
 
 
 def check(job: str, item: str | None = None, now=None) -> dict:
@@ -170,30 +186,44 @@ def check(job: str, item: str | None = None, now=None) -> dict:
                 except ValueError:
                     continue  # a torn line is skipped, never fatal
                 if row.get("kind") == "call":
-                    fleet_n += 1
-                    job_n += row.get("job") == job
+                    # hand-door calls are counted apart: they never spend the shared pool.
+                    fleet_n += _norm_job(row.get("job")) != HAND_DOOR_JOB
+                    job_n += _norm_job(row.get("job")) == _norm_job(job)
                 elif row.get("kind") == "alerted":
-                    alerted_keys.add(row.get("job"))
+                    alerted_keys.add(_norm_job(row.get("job")))
             reason = None
-            if job_n >= per_job:
+            hand_alert = None
+            if _norm_job(job) == HAND_DOOR_JOB:
+                job = HAND_DOOR_JOB
+                reason = None
+                if job_n >= _limit("KIPI_MODEL_GATE_HAND_DOOR_ALERT", HAND_DOOR_ALERT_DEFAULT) \
+                        and HAND_DOOR_JOB not in alerted_keys:
+                    hand_alert = (f"hand-door at {job_n} calls today, past its reserve; "
+                                  "admitted, his own requests are never refused")
+            elif job_n >= per_job:
                 reason = f"job {job} at {job_n}/{per_job} calls today"
             elif fleet_n >= fleet:
                 reason = f"fleet at {fleet_n}/{fleet} calls today (first over: job {job})"
             # A fleet breach is ONE event, so it alerts under one key. Keyed on the job,
             # one breach filed one identical ticket per distinct caller (PR #509 review).
-            alert_key = FLEET_KEY if reason and job_n < per_job else job
+            alert_key = FLEET_KEY if reason and job_n < per_job else _norm_job(job)
             alerted = alert_key in alerted_keys
             admit = reason is None or m == "report"
             stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             out = []
             if reason and not alerted:
                 out.append({"kind": "alerted", "job": alert_key, "ts": stamp, "reason": reason})
+            if hand_alert:
+                out.append({"kind": "alerted", "job": HAND_DOOR_JOB, "ts": stamp,
+                            "reason": hand_alert})
             if admit:
                 out.append({"kind": "call", "job": job, "item": item, "ts": stamp})
             fh.write("".join(json.dumps(r) + "\n" for r in out))
             fh.flush()
     except OSError as exc:
         return _ledger_error(job, day, m, exc)
+    if hand_alert:
+        _notify(f"model gate ({m}): {hand_alert}")
     if reason and not alerted:
         _notify(f"model gate ({m}): {reason}; "
                 f"{'admitted, report-only until ' + ENFORCE_FROM if admit else 'calls refused'}")
