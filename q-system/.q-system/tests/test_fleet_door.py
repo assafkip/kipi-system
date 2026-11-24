@@ -363,3 +363,38 @@ def _alive(pid):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestACriticalTicketRunsOnThePlan(Base):
+    """Founder, 2026-11-24, verbatim: "for the critical jobs we use the normal account, not the
+    api key. this is settled already". The earlier ruling is the focus gate's (2026-11-23):
+    tickets off the critical list "wait for when the credits are back", so a critical one
+    does not wait on credit. Live: the review of kipi-system PR #874 (ASK-5586, critical)
+    refused "every known key's cycle credit is spent"."""
+
+    def _focus(self, critical, active=True):
+        path = os.path.join(self.tmp.name, "focus.json")
+        with open(path, "w") as fh:
+            json.dump({"active": active, "critical": critical}, fh)
+        os.environ["KIPI_FOCUS_GATE"] = path
+
+    def test_a_critical_ticket_bills_the_plan_and_says_so(self):
+        self._focus(["ASK-5586"])
+        os.environ["KIPI_TICKET"] = "ask-5586"
+        saved, sys.stderr = sys.stderr, _Capture()
+        try:
+            res = door.run([self.fake, "-p", "hi"], actor="t", capture_output=True, text=True)
+            said = sys.stderr.text
+        finally:
+            sys.stderr = saved
+        self.assertEqual(res.stdout, "ok from plan\n")
+        self.assertIsNone(self.calls()[0]["key"])
+        self.assertIn("critical ticket ASK-5586", said)
+        self.assertEqual(self.rows(), [])
+
+    def test_control_a_ticket_off_the_list_keeps_the_key_path(self):
+        self._focus(["ASK-5586"])
+        os.environ["KIPI_TICKET"] = "ASK-9999"
+        self.assertIsNone(door.critical_ticket())
+        self._focus(["ASK-9999"], active=False)
+        self.assertIsNone(door.critical_ticket(), "an inactive focus gate names nothing critical")

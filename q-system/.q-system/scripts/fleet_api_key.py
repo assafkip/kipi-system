@@ -761,6 +761,17 @@ def cmd_exec(argv, actor=None):
         sys.stderr.write("fleet_api_key: exec needs a command after `--`\n")
         return EXIT_USAGE
 
+    # A critical ticket runs on the plan (founder 2026-11-24, fleet_door.critical_ticket),
+    # checked before any credit question so a spent key never stops it.
+    import fleet_door
+    ticket = fleet_door.critical_ticket()
+    if ticket:
+        sys.stderr.write("fleet_api_key: critical ticket %s -- this run bills the PLAN, not "
+                         "the API credit (founder 2026-11-24)\n" % ticket)
+        sys.stderr.flush()
+        env = fleet_door.plan_env()
+        os.execvpe(argv[0], argv, env)
+
     facts = spend.key_facts()
     if not spend.configured_slots(facts):
         # NO KEY WITH A KNOWN CREDIT. Never guessed (fleet_api_spend docstring).

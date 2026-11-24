@@ -80,6 +80,30 @@ def plan_env(env=None):
     return {k: v for k, v in src.items() if k != KEY}
 
 
+def critical_ticket(env=None):
+    """The ticket this run is for, when it is on the active focus gate's critical list.
+
+    Founder, 2026-11-24, verbatim: "for the critical jobs we use the normal account, not the
+    api key. this is settled already". The settled ruling is the focus gate's (2026-11-23):
+    tickets off the critical list wait "for when the credits are back", so a critical one
+    never waits on API credit. A caller names its ticket in KIPI_TICKET (pr-review-agent.sh
+    exports its --issue). why: the review of kipi-system PR #874 (ASK-5586, critical)
+    refused "every known key's cycle credit is spent"."""
+    import json
+    src = os.environ if env is None else env
+    ticket = (src.get("KIPI_TICKET") or "").strip().upper()
+    if not ticket:
+        return None
+    path = src.get("KIPI_FOCUS_GATE") or os.path.expanduser("~/.config/kipi/focus-gate/focus.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            focus = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    critical = {str(t).strip().upper() for t in focus.get("critical") or []}
+    return ticket if focus.get("active") and ticket in critical else None
+
+
 def in_fleet_run(env=None):
     """Did a fleet run launch this one? (See run_for_caller.)"""
     src = os.environ if env is None else env
@@ -243,6 +267,12 @@ def run(cmd, actor, env=None, **kw):
     if src.get("KIPI_FLEET_API_KEYS", "1") == "0":
         sys.stderr.write("fleet_door: KIPI_FLEET_API_KEYS=0 -- %s bills the PLAN, not the "
                          "API credit\n" % actor)
+        sys.stderr.flush()
+        return _spawn(list(cmd), list(cmd), env=plan_env(src), **kw)
+    ticket = critical_ticket(src)
+    if ticket:
+        sys.stderr.write("fleet_door: critical ticket %s -- %s bills the PLAN, not the API "
+                         "credit (founder 2026-11-24)\n" % (ticket, actor))
         sys.stderr.flush()
         return _spawn(list(cmd), list(cmd), env=plan_env(src), **kw)
     res = _spawn(door_argv(cmd, actor), list(cmd), env=door_env(cmd, src), **kw)
