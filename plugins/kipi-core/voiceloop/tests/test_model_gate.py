@@ -419,3 +419,26 @@ def test_the_hand_door_is_never_refused_by_the_daily_pool(gate, monkeypatch):
     day = AFTER.strftime("%Y-%m-%d")
     lines = open(os.path.join(os.environ["KIPI_MODEL_GATE_DIR"], day + ".jsonl")).read()
     assert lines.count('"job": "%s"' % model_gate.HAND_DOOR_JOB) == 3, "its calls are still counted"
+
+
+def test_hand_door_calls_never_spend_the_pool_the_automated_jobs_share(gate, monkeypatch):
+    """PR #639 review round 1 (major): an exempt job that still counted toward the fleet
+    starved every capped job, and its spend raised no alert. Counted apart, never refused,
+    one alert at the reserve naming hand-door."""
+    monkeypatch.setenv("KIPI_MODEL_GATE_FLEET", "2")
+    monkeypatch.setenv("KIPI_MODEL_GATE_HAND_DOOR_ALERT", "3")
+    rows = [model_gate.check(" Hand-Door ", now=AFTER) for _ in range(5)]
+    assert all(r["admit"] for r in rows), "his own requests are never refused"
+    assert model_gate.check("social", now=AFTER)["admit"], "hand-door did not spend the pool"
+    assert model_gate.check("social", now=AFTER)["admit"]
+    assert not model_gate.check("social", now=AFTER)["admit"], "control: the pool still caps"
+    sent = [s for s in gate() if "hand-door" in s]
+    assert len(sent) == 1 and "never refused" in sent[0], gate()
+
+
+def test_an_unusable_ledger_still_admits_the_hand_door(gate, tmp_path, monkeypatch):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    monkeypatch.setenv("KIPI_MODEL_GATE_DIR", str(blocker))
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    assert model_gate.check(model_gate.HAND_DOOR_JOB, now=AFTER)["admit"]
