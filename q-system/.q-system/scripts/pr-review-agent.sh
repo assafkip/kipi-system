@@ -440,18 +440,22 @@ if [ -n "${KIPI_REVIEW_EXPECT_HEAD:-}" ] && [ "$HEAD_SHA" != "$KIPI_REVIEW_EXPEC
 fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 # A focus-gate critical ticket bills the plan (founder 2026-11-24: "for the critical jobs we
-# use the normal account, not the api key"; fleet_door.critical_ticket). Set on the reviewer
-# call ONLY, never exported: an export reached the reviewer's own test runs, which then read
-# the live gate (PR #874 rounds 3 and 4). fleet-claude.sh turns these two into flags and
-# strips them before the model starts. Only an ASK id and a quote-free path are spliced.
-REVIEW_TICKET_ENV=""
-_focus_gate="${KIPI_FOCUS_GATE:-$HOME/.config/kipi/focus-gate/focus.json}"
-case "$ISSUE" in
-  ASK-[0-9]*) case "$ISSUE$_focus_gate" in
-      *[!A-Za-z0-9_./-]*) ;;
-      *) REVIEW_TICKET_ENV="KIPI_TICKET='$ISSUE' KIPI_FOCUS_GATE='$_focus_gate' " ;;
-    esac ;;
-esac
+# use the normal account, not the api key"; fleet_door.critical_ticket). It rides as the
+# fleet-claude.sh shim's own flags on the reviewer call, never as env: env reached the
+# reviewer's test runs, which then read the live gate (PR #874 rounds 3 and 4, PR #875 round
+# 1). Only for the default shim (an override or the off switch is not that shim), and only
+# an ASK id and a quote-free path are spliced into the bash -c string. Appended to
+# FLEET_CLAUDE itself, so the reviewer line keeps its literal text (test_model_routing).
+_focus_gate="$HOME/.config/kipi/focus-gate/focus.json"
+if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -z "${KIPI_FLEET_CLAUDE:-}" ]; then
+  case "$ISSUE" in
+    ASK-[0-9]*) case "$ISSUE$_focus_gate" in
+        *[!A-Za-z0-9_./-]*)
+          echo "  critical-ticket routing skipped: $ISSUE or $_focus_gate holds a character outside [A-Za-z0-9_./-]" >&2 ;;
+        *) FLEET_CLAUDE="$FLEET_CLAUDE --kipi-ticket '$ISSUE' --kipi-focus-gate '$_focus_gate'" ;;
+      esac ;;
+  esac
+fi
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"
@@ -1760,7 +1764,7 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # text apart from those two splices, so call_sites.py and every test that reads this
     # file still see the call (ASK-4796).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && ${REVIEW_TICKET_ENV}${REVIEW_LEAN_ENV}KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)'${REVIEW_LEAN_FLAGS} </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && ${REVIEW_LEAN_ENV}KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)'${REVIEW_LEAN_FLAGS} </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac

@@ -615,10 +615,11 @@ Founder, 2026-11-13, verbatim: "remember - every decision needs to be anchored i
 
 ## Critical tickets run on the plan, never on spent API credit (2026-11-24)
 
-- **Decision:** A fleet `claude` call for a ticket on the active focus gate's critical list (`~/.config/kipi/focus-gate/focus.json`) runs on the signed-in plan account, with the API key stripped and a stderr line saying so. Every other call keeps the API-key path and its credit checks.
+- **Decision:** A fleet `claude` call for a ticket on the active focus gate's critical list (`~/.config/kipi/focus-gate/focus.json`) runs on the signed-in plan account, with the API key stripped and a stderr line saying so. Every other call keeps the API-key path and its credit checks. Wired today for the PR reviewer call only.
 - **Founder, verbatim, 2026-11-24:** "for the critical jobs we use the normal account, not the api key. this is settled already"
 - **The earlier ruling he means:** the focus gate, 2026-11-23: "if new tickets get opened that are not critical to Voice Loop, you don't just start working them, but you put them in the fleet to wait for when the credits are back." Waiting on credit is for tickets off the critical list.
 - **Reason:** the review of PR #874 (ASK-5586, on the critical list) refused "every known key's cycle credit is spent".
 - **Date:** 2026-11-24
-- **Enforcement:** ENFORCED
-- **Held by:** `q-system/.q-system/scripts/fleet_door.py` `critical_ticket(ticket, gate_path)`, both explicit with no default, used by `fleet_api_key.py exec --ticket --focus-gate`. `pr-review-agent.sh` sets `KIPI_TICKET` and `KIPI_FOCUS_GATE` on its reviewer call only; `fleet-claude.sh` turns them into flags and strips them. Pinned by `q-system/.q-system/tests/test_fleet_door.py::TestACriticalTicketRunsOnThePlan`, `TestTheShimCarriesTheTicketAsFlags` and `TestNoTestCanReachTheLiveFocusGate`.
+- **Enforcement:** PARTIAL
+- **Held by:** `q-system/.q-system/scripts/fleet_door.py` `critical_ticket(ticket, gate_path)`, both explicit with no default, used by `fleet_api_key.py exec --ticket --focus-gate`. `pr-review-agent.sh` passes them as `fleet-claude.sh`'s own `--kipi-ticket` and `--kipi-focus-gate` flags on the reviewer call; nothing carries them in the env. Pinned by `q-system/.q-system/tests/test_fleet_door.py::TestACriticalTicketRunsOnThePlan`, `TestTheShimCarriesTheTicketAsFlags` and `TestNoTestCanReachTheLiveFocusGate`.
+- **Not yet:** ASK-5593 wires the worker's own work call (`linear-worker.sh`).

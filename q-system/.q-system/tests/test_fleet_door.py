@@ -430,25 +430,42 @@ class TestACriticalTicketRunsOnThePlan(Base):
 
 
 class TestTheShimCarriesTheTicketAsFlags(Base):
-    """pr-review-agent.sh sets KIPI_TICKET and KIPI_FOCUS_GATE on the fleet-claude.sh call only;
-    the shim turns them into flags and strips them, so the model and its tool runs never see
-    them (rca-critical-ticket-routing-test-isolation-2026-11-24)."""
+    """pr-review-agent.sh passes the ticket and gate as fleet-claude.sh's own leading flags; the
+    shim reads no env for them, so nothing reaches the model or its tool runs
+    (rca-critical-ticket-routing-test-isolation-2026-11-24, PR #875 round 1)."""
 
-    def test_a_critical_ticket_through_the_shim_bills_the_plan_and_the_env_is_gone(self):
+    def _shim(self, args, **env):
         shim = os.path.join(SCRIPTS, "fleet-claude.sh")
-        env = dict(os.environ, KIPI_CLAUDE_BIN=self.fake, KIPI_TICKET="ASK-5586",
-                   KIPI_FOCUS_GATE=_focus_gate(self.tmp.name, ["ASK-5586"]))
-        res = subprocess.run(["bash", shim, "-p", "hi"], env=env, capture_output=True,
-                             text=True, timeout=60)
+        full = dict(os.environ, KIPI_CLAUDE_BIN=self.fake)
+        # Only what the case passes: a runner's own ambient ticket env (a reviewer session) is
+        # not what these cases are about, and the nested whole-file run below sets it.
+        for k in ("KIPI_TICKET", "KIPI_FOCUS_GATE", "KIPI_FLEET_API_KEYS"):
+            full.pop(k, None)
+        full.update(env)
+        return subprocess.run(["bash", shim] + args, env=full, capture_output=True,
+                              text=True, timeout=60)
+
+    def test_a_critical_ticket_by_flag_bills_the_plan(self):
+        gate = _focus_gate(self.tmp.name, ["ASK-5586"])
+        res = self._shim(["--kipi-ticket", "ASK-5586", "--kipi-focus-gate", gate, "-p", "hi"])
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(res.stdout, "ok from plan\n")
-        self.assertEqual(self.calls()[-1]["ticket_env"], [])
+        call = self.calls()[-1]
+        self.assertEqual(call["argv"], ["-p", "hi"])
+        self.assertEqual(call["ticket_env"], [])
 
-    def test_control_without_the_ticket_the_shim_keeps_the_key_path(self):
-        shim = os.path.join(SCRIPTS, "fleet-claude.sh")
-        env = dict(os.environ, KIPI_CLAUDE_BIN=self.fake)
-        res = subprocess.run(["bash", shim, "-p", "hi"], env=env, capture_output=True,
-                             text=True, timeout=60)
+    def test_the_off_switch_drops_the_flags_too(self):
+        gate = _focus_gate(self.tmp.name, ["ASK-5586"])
+        res = self._shim(["--kipi-ticket", "ASK-5586", "--kipi-focus-gate", gate, "-p", "hi"],
+                         KIPI_FLEET_API_KEYS="0")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        call = self.calls()[-1]
+        self.assertEqual(call["argv"], ["-p", "hi"])
+        self.assertEqual(call["ticket_env"], [])
+
+    def test_an_ambient_ticket_env_is_ignored_by_the_shim(self):
+        res = self._shim(["-p", "hi"], KIPI_TICKET="ASK-5586",
+                         KIPI_FOCUS_GATE=_focus_gate(self.tmp.name, ["ASK-5586"]))
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn(LIVE_KEY_1, res.stdout)
 
@@ -474,17 +491,20 @@ class TestNoTestCanReachTheLiveFocusGate(Base):
         res = door.run([self.fake, "-p", "hi"], actor="t", capture_output=True, text=True)
         self.assertEqual(res.stdout, "ok from %s\n" % LIVE_KEY_1)
 
-    def test_the_file_is_green_under_its_own_main_with_a_critical_env(self):
-        """Round 4 ran `python3 test_fleet_door.py`; pytest was the only runner proven."""
+    def test_the_whole_file_is_green_under_its_own_main_with_a_critical_env(self):
+        """Round 4 ran `python3 test_fleet_door.py`; pytest was the only runner proven. The whole
+        file, not chosen classes (PR #875 round 1: the class left out was the one that failed)."""
+        if os.environ.get("KIPI_FLEET_DOOR_NESTED") == "1":
+            self.skipTest("the nested run of this file")
         env = dict(self._saved)
-        env.update({"KIPI_TICKET": "ASK-5586",
+        env.update({"KIPI_TICKET": "ASK-5586", "KIPI_FLEET_DOOR_NESTED": "1",
                     "KIPI_FOCUS_GATE": _focus_gate(self.tmp.name, ["ASK-5586"])})
         env.pop("KIPI_TEST", None)
-        res = subprocess.run([sys.executable, os.path.abspath(__file__),
-                              "TestATestNeverReachesTheRealKeychain", "TestTheDoorBillsTheFleetKey"],
-                             env=env, capture_output=True, text=True, timeout=120)
+        env.pop("KIPI_FLEET_API_KEYS", None)
+        res = subprocess.run([sys.executable, os.path.abspath(__file__)],
+                             env=env, capture_output=True, text=True, timeout=300)
         self.assertEqual(res.returncode, 0, res.stderr[-2000:])
-        self.assertNotIn("critical ticket", res.stderr)
+        self.assertIn("OK", res.stderr.strip().splitlines()[-1])
 
 
 if __name__ == "__main__":
