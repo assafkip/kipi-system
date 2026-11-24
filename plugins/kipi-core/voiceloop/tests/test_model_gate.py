@@ -442,3 +442,11 @@ def test_an_unusable_ledger_still_admits_the_hand_door(gate, tmp_path, monkeypat
     monkeypatch.setenv("KIPI_MODEL_GATE_DIR", str(blocker))
     monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
     assert model_gate.check(model_gate.HAND_DOOR_JOB, now=AFTER)["admit"]
+
+
+def test_the_hand_door_alert_is_one_per_day_whatever_the_case(gate, monkeypatch):
+    """PR #874 review round 3 (minor): the counter normalized the job and the alert key did not."""
+    monkeypatch.setenv("KIPI_MODEL_GATE_HAND_DOOR_ALERT", "1")
+    for job in ("hand-door", "Hand-Door", "HAND-DOOR", "hand-door"):
+        model_gate.check(job, now=AFTER)
+    assert len([s for s in gate() if "hand-door" in s]) == 1, gate()

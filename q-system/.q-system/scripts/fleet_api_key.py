@@ -769,8 +769,13 @@ def cmd_exec(argv, actor=None):
         sys.stderr.write("fleet_api_key: critical ticket %s -- this run bills the PLAN, not "
                          "the API credit (founder 2026-11-24)\n" % ticket)
         sys.stderr.flush()
-        env = fleet_door.plan_env()
-        os.execvpe(argv[0], argv, env)
+        # A child, not an exec (PR #874 review round 3): exec replaced in-process callers and
+        # a test suite stopped after its first case. The child's code is this command's code.
+        try:
+            return subprocess.run(argv, env=fleet_door.plan_env()).returncode
+        except FileNotFoundError:
+            sys.stderr.write("fleet_api_key: %s was not found; no run\n" % argv[0])
+            return 127
 
     facts = spend.key_facts()
     if not spend.configured_slots(facts):

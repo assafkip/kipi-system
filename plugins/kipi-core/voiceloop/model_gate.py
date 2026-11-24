@@ -190,7 +190,7 @@ def check(job: str, item: str | None = None, now=None) -> dict:
                     fleet_n += _norm_job(row.get("job")) != HAND_DOOR_JOB
                     job_n += _norm_job(row.get("job")) == _norm_job(job)
                 elif row.get("kind") == "alerted":
-                    alerted_keys.add(row.get("job"))
+                    alerted_keys.add(_norm_job(row.get("job")))
             reason = None
             hand_alert = None
             if _norm_job(job) == HAND_DOOR_JOB:
@@ -206,7 +206,7 @@ def check(job: str, item: str | None = None, now=None) -> dict:
                 reason = f"fleet at {fleet_n}/{fleet} calls today (first over: job {job})"
             # A fleet breach is ONE event, so it alerts under one key. Keyed on the job,
             # one breach filed one identical ticket per distinct caller (PR #509 review).
-            alert_key = FLEET_KEY if reason and job_n < per_job else job
+            alert_key = FLEET_KEY if reason and job_n < per_job else _norm_job(job)
             alerted = alert_key in alerted_keys
             admit = reason is None or m == "report"
             stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

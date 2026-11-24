@@ -94,7 +94,13 @@ def critical_ticket(env=None):
     ticket = (src.get("KIPI_TICKET") or "").strip().upper()
     if not ticket:
         return None
-    path = src.get("KIPI_FOCUS_GATE") or os.path.expanduser("~/.config/kipi/focus-gate/focus.json")
+    path = src.get("KIPI_FOCUS_GATE")
+    if not path:
+        # Under a test only an injected gate is read (PR #874 review round 3): the live
+        # focus.json turned a review of a critical ticket into failing door tests.
+        if src.get("KIPI_TEST") == "1" or "pytest" in sys.modules:
+            return None
+        path = os.path.expanduser("~/.config/kipi/focus-gate/focus.json")
     try:
         with open(path, encoding="utf-8") as fh:
             focus = json.load(fh)

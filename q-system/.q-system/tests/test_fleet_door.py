@@ -398,3 +398,24 @@ class TestACriticalTicketRunsOnThePlan(Base):
         self.assertIsNone(door.critical_ticket())
         self._focus(["ASK-9999"], active=False)
         self.assertIsNone(door.critical_ticket(), "an inactive focus gate names nothing critical")
+
+
+class TestCriticalRoutingIsSafeInProcess(Base):
+    """PR #874 review round 3 (majors): os.execvpe replaced an in-process caller, and
+    critical_ticket() read the live focus gate inside tests."""
+
+    def test_under_test_the_live_focus_gate_is_not_read(self):
+        os.environ.pop("KIPI_FOCUS_GATE", None)
+        os.environ["KIPI_TICKET"] = "ASK-5586"
+        self.assertIsNone(door.critical_ticket())
+
+    def test_exec_returns_the_childs_code_and_the_caller_lives_on(self):
+        import fleet_api_key as fak
+        path = os.path.join(self.tmp.name, "focus.json")
+        with open(path, "w") as fh:
+            json.dump({"active": True, "critical": ["ASK-5586"]}, fh)
+        os.environ.update({"KIPI_FOCUS_GATE": path, "KIPI_TICKET": "ASK-5586", "FAKE_RC": "3"})
+        rc = fak.cmd_exec([self.fake, "-p", "hi"])
+        self.assertEqual(rc, 3)
+        self.assertIsNone(self.calls()[-1]["key"])
+        self.assertEqual(fak.cmd_exec([os.path.join(self.tmp.name, "no-such-binary")]), 127)
