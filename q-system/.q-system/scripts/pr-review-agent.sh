@@ -439,6 +439,25 @@ if [ -n "${KIPI_REVIEW_EXPECT_HEAD:-}" ] && [ "$HEAD_SHA" != "$KIPI_REVIEW_EXPEC
   exit 1
 fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
+# >>> critical-ticket routing (TestTheReviewerProducesTheFlags extracts and runs this block)
+# A focus-gate critical ticket bills the plan (founder 2026-11-24: "for the critical jobs we
+# use the normal account, not the api key"; fleet_door.critical_ticket). It rides as the
+# fleet-claude.sh shim's own flags on the reviewer call, never as env: env reached the
+# reviewer's test runs, which then read the live gate (PR #874 rounds 3 and 4, PR #875 round
+# 1). Only for the default shim (an override or the off switch is not that shim), and only
+# an ASK id and a quote-free path are spliced into the bash -c string. Appended to
+# FLEET_CLAUDE itself, so the reviewer line keeps its literal text (test_model_routing).
+_focus_gate="$HOME/.config/kipi/focus-gate/focus.json"
+if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -z "${KIPI_FLEET_CLAUDE:-}" ]; then
+  case "$ISSUE" in
+    ASK-[0-9]*) case "$ISSUE$_focus_gate" in
+        *[!A-Za-z0-9_./-]*)
+          echo "  critical-ticket routing skipped: $ISSUE or $_focus_gate holds a character outside [A-Za-z0-9_./-]" >&2 ;;
+        *) FLEET_CLAUDE="$FLEET_CLAUDE --kipi-ticket '$ISSUE' --kipi-focus-gate '$_focus_gate'" ;;
+      esac ;;
+  esac
+fi
+# <<< critical-ticket routing
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"

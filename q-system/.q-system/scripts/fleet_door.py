@@ -80,6 +80,36 @@ def plan_env(env=None):
     return {k: v for k, v in src.items() if k != KEY}
 
 
+def critical_ticket(ticket, gate_path):
+    """`ticket`, normalized, when it is on the active focus gate at `gate_path`; else None.
+
+    Founder, 2026-11-24, verbatim: "for the critical jobs we use the normal account, not the
+    api key. this is settled already". The settled ruling is the focus gate's (2026-11-23):
+    tickets off the critical list wait "for when the credits are back", so a critical one
+    never waits on API credit. why: the review of kipi-system PR #874 (ASK-5586, critical)
+    refused "every known key's cycle credit is spent".
+
+    Both arguments are explicit, with no default and no env read, on purpose. The first
+    version read KIPI_TICKET from the env and fell back to ~/.config/kipi/focus-gate/focus.json;
+    a review exported KIPI_TICKET to its whole subtree, so the reviewer's own test runs read
+    the live gate. Two guesses at "am I under a test" (KIPI_TEST, pytest loaded) each missed
+    a runner (PR #874 rounds 3 and 4, rca-critical-ticket-routing-test-isolation-2026-11-24).
+    The one caller that routes is `fleet_api_key.py exec --ticket --focus-gate`."""
+    import json
+    ticket = (ticket or "").strip().upper()
+    if not ticket or not gate_path:
+        return None
+    try:
+        with open(gate_path, encoding="utf-8") as fh:
+            focus = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(focus, dict):
+        return None
+    critical = {str(t).strip().upper() for t in focus.get("critical") or []}
+    return ticket if focus.get("active") and ticket in critical else None
+
+
 def in_fleet_run(env=None):
     """Did a fleet run launch this one? (See run_for_caller.)"""
     src = os.environ if env is None else env

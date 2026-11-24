@@ -21,6 +21,25 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$HERE/fleet_api_key.py"
 
+# A critical ticket rides as this shim's own leading flags, never as env: env reached the model
+# and its test runs, which then read the live focus gate (PR #874 rounds 3 and 4, PR #875
+# round 1; rca-critical-ticket-routing-test-isolation-2026-11-24). Consumed here, before
+# either branch, so neither branch hands them to claude.
+_ticket_flags=()
+while [ "$#" -ge 2 ]; do
+  case "$1" in
+    --kipi-ticket) _ticket_flags+=(--ticket "$2"); shift 2 ;;
+    --kipi-focus-gate) _ticket_flags+=(--focus-gate "$2"); shift 2 ;;
+    *) break ;;
+  esac
+done
+
+# A --kipi-* flag anywhere else would reach the model CLI and the routing would be lost
+# without a word (PR #875 round 2): refuse it.
+for _a in "$@"; do
+  case "$_a" in --kipi-*) echo "fleet-claude: $_a must lead the arguments; no run" >&2; exit 2 ;; esac
+done
+
 if [ "${KIPI_FLEET_API_KEYS:-1}" = "0" ]; then
   echo "fleet-claude: KIPI_FLEET_API_KEYS=0 -- this run bills the PLAN, not the API credit" >&2
   exec env -u ANTHROPIC_API_KEY "${KIPI_CLAUDE_BIN:-claude}" "$@"
@@ -32,5 +51,5 @@ if [ ! -f "$HELPER" ]; then
   exit 4
 fi
 
-exec python3 "$HELPER" exec --actor "${KIPI_AGENT:-unknown}" -- \
-  "${KIPI_CLAUDE_BIN:-claude}" "$@"
+exec python3 "$HELPER" exec --actor "${KIPI_AGENT:-unknown}" \
+  ${_ticket_flags[@]+"${_ticket_flags[@]}"} -- "${KIPI_CLAUDE_BIN:-claude}" "$@"
