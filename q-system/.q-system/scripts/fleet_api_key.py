@@ -756,10 +756,28 @@ def _run_once(slot, argv, actor):
     return proc.returncode, text, cost, raw, envelope
 
 
-def cmd_exec(argv, actor=None):
+def cmd_exec(argv, actor=None, ticket=None, focus_gate=None):
     if not argv:
         sys.stderr.write("fleet_api_key: exec needs a command after `--`\n")
         return EXIT_USAGE
+
+    # A critical ticket runs on the plan (founder 2026-11-24, fleet_door.critical_ticket),
+    # checked before any credit question so a spent key never stops it. Ticket and gate come
+    # only from the caller's flags, never the env (rca-critical-ticket-routing-test-isolation).
+    import fleet_door
+    ticket = fleet_door.critical_ticket(ticket, focus_gate)
+    if ticket:
+        sys.stderr.write("fleet_api_key: critical ticket %s -- this run bills the PLAN, not "
+                         "the API credit (founder 2026-11-24)\n" % ticket)
+        sys.stderr.flush()
+        # A child, not an exec (PR #874 review round 3): exec replaced in-process callers and
+        # a test suite stopped after its first case. The child's code is this command's code.
+        try:
+            return subprocess.run(argv, env=fleet_door.plan_env()).returncode
+        except OSError as exc:
+            # Every OSError, as on the key path (PR #874 round 4: a file without +x).
+            sys.stderr.write("fleet_api_key: cannot run %r (%s)\n" % (argv[0], exc))
+            return 127
 
     facts = spend.key_facts()
     if not spend.configured_slots(facts):
@@ -860,6 +878,8 @@ def _main(argv):
 
     p_exec = sub.add_parser("exec", help="run a command with a fleet API key")
     p_exec.add_argument("--actor")
+    p_exec.add_argument("--ticket")
+    p_exec.add_argument("--focus-gate", dest="focus_gate")
     p_exec.add_argument("rest", nargs=argparse.REMAINDER)
 
     p_st = sub.add_parser("status", help="active slot, credit left, paused state")
@@ -873,7 +893,8 @@ def _main(argv):
         rest = list(args.rest)
         if rest and rest[0] == "--":
             rest = rest[1:]
-        return cmd_exec(rest, actor=args.actor)
+        return cmd_exec(rest, actor=args.actor, ticket=args.ticket,
+                        focus_gate=args.focus_gate)
 
     if args.cmd == "status":
         state = status()

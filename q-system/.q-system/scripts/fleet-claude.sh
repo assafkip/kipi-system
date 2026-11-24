@@ -32,5 +32,11 @@ if [ ! -f "$HELPER" ]; then
   exit 4
 fi
 
-exec python3 "$HELPER" exec --actor "${KIPI_AGENT:-unknown}" -- \
-  "${KIPI_CLAUDE_BIN:-claude}" "$@"
+# A critical ticket rides as flags, never as env the model and its tool runs inherit
+# (rca-critical-ticket-routing-test-isolation-2026-11-24; fleet_door.critical_ticket).
+_ticket_flags=()
+if [ -n "${KIPI_TICKET:-}" ] && [ -n "${KIPI_FOCUS_GATE:-}" ]; then
+  _ticket_flags=(--ticket "$KIPI_TICKET" --focus-gate "$KIPI_FOCUS_GATE")
+fi
+exec env -u KIPI_TICKET -u KIPI_FOCUS_GATE python3 "$HELPER" exec --actor "${KIPI_AGENT:-unknown}" \
+  ${_ticket_flags[@]+"${_ticket_flags[@]}"} -- "${KIPI_CLAUDE_BIN:-claude}" "$@"
