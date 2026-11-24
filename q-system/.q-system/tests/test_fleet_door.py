@@ -488,7 +488,8 @@ class TestTheReviewerProducesTheFlags(unittest.TestCase):
         with open(self.AGENT) as fh:
             text = fh.read()
         self.assertIn(self.START, text, "the routing block is gone from pr-review-agent.sh")
-        block = text.split(self.START, 1)[1].split(self.END, 1)[0]
+        # From the line after the start marker: the marker line's tail is not code.
+        block = text.split(self.START, 1)[1].split("\n", 1)[1].split(self.END, 1)[0]
         # It must run after ISSUE is final and before the reviewer line reads FLEET_CLAUDE.
         self.assertLess(text.index("ISSUE=\"$(printf '%s' \"$PR_TITLE\""), text.index(self.START))
         self.assertLess(text.index(self.END), text.index("KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p"))
@@ -496,12 +497,17 @@ class TestTheReviewerProducesTheFlags(unittest.TestCase):
 
     def _run(self, issue, **env):
         with tempfile.TemporaryDirectory() as home:
-            script = 'FLEET_CLAUDE=/s/fleet-claude.sh\nISSUE=%s\n%s\nprintf %%s "$FLEET_CLAUDE"' % (
-                issue, self._block())
+            # The script's own options (set -uo pipefail): an unset name in the block must
+            # fail here as it would kill the agent before any status (PR #875 round 3).
+            script = ('set -uo pipefail\nFLEET_CLAUDE=/s/fleet-claude.sh\nISSUE=%s\n%s\n'
+                      'printf %%s "$FLEET_CLAUDE"' % (issue, self._block()))
             full = {"PATH": os.environ.get("PATH", ""), "HOME": home}
             full.update(env)
             res = subprocess.run(["bash", "-c", script], env=full, capture_output=True,
                                  text=True, timeout=30)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            if issue and "KIPI_FLEET_CLAUDE" not in env and env.get("KIPI_FLEET_API_KEYS") != "0":
+                self.assertEqual(res.stderr, "")
             return res.stdout, home
 
     def test_a_ticket_reaches_the_shim_as_leading_flags(self):

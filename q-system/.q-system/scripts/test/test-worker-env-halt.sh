@@ -541,6 +541,16 @@ env_case halt "the observed line surrounded by blank lines" \
 env_case halt "a two-line machine message where BOTH lines are the machine's" \
   "$(printf '%s\n%s\n' "Invalid API key" "Please run /login")"
 
+# The critical-ticket plan notice is the helper's own line (PR #875 rounds 2 and 3): a plan
+# outage behind it still halts, for an ASK id or any other prefix, and an answer behind it
+# does not.
+for _tid in ASK-5586 ENG-77; do
+  env_case halt "the critical-ticket plan notice, then a logged-out plan ($_tid)" \
+    "$(printf '%s\n%s\n' "fleet_api_key: critical ticket $_tid -- this run bills the PLAN, not the API credit (founder 2026-11-24)" "Please run /login")"
+done
+env_case continue "the critical-ticket plan notice, then a real answer" \
+  "$(printf '%s\n%s\n' "fleet_api_key: critical ticket ASK-5586 -- this run bills the PLAN, not the API credit (founder 2026-11-24)" "The fix looks right.")"
+
 # environmental_reason must recognise exactly what is_environmental recognises.
 # Two patterns drifting apart means a real outage halts with an EMPTY reason, so
 # the Linear note and the page say nothing about why the fleet stopped.
