@@ -286,10 +286,6 @@ GH_R_PROMPT=""
 STATUS_REPO_PATH="{owner}/{repo}"
 [ -n "$REVIEW_SLUG" ] && STATUS_REPO_PATH="$REVIEW_SLUG"
 [ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex] [--full | --base <sha>]" >&2; exit 1; }
-# The ticket this review is for, so the fleet door can route a focus-gate critical ticket to
-# the plan (founder 2026-11-24: "for the critical jobs we use the normal account, not the api
-# key"; fleet_door.critical_ticket).
-[ -n "$ISSUE" ] && export KIPI_TICKET="$ISSUE"
 
 # WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is
 # the whole reason this is a flag and not a second script.

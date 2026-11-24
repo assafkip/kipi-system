@@ -444,9 +444,13 @@ def test_an_unusable_ledger_still_admits_the_hand_door(gate, tmp_path, monkeypat
     assert model_gate.check(model_gate.HAND_DOOR_JOB, now=AFTER)["admit"]
 
 
-def test_the_hand_door_alert_is_one_per_day_whatever_the_case(gate, monkeypatch):
-    """PR #874 review round 3 (minor): the counter normalized the job and the alert key did not."""
-    monkeypatch.setenv("KIPI_MODEL_GATE_HAND_DOOR_ALERT", "1")
-    for job in ("hand-door", "Hand-Door", "HAND-DOOR", "hand-door"):
+def test_one_job_in_three_casings_alerts_once_a_day(gate, monkeypatch):
+    """PR #874 review round 3 (minor): the counter normalized the job and the per-job alert key
+    did not, so one job spelled three ways alerted three times. Round 4 found the first version
+    of this test used the hand-door key, which was never case-sensitive, and passed on the
+    pre-fix code; this one is red on 49ba97b7's model_gate.py (3 alerts)."""
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "0")
+    for job in ("Critic.Judge()", "critic.judge()", "CRITIC.JUDGE()"):
         model_gate.check(job, now=AFTER)
-    assert len([s for s in gate() if "hand-door" in s]) == 1, gate()
+    sent = [s for s in gate() if "judge" in s.lower()]
+    assert len(sent) == 1, sent
