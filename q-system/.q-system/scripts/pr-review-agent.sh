@@ -463,6 +463,83 @@ echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
+# DEFINED ABOVE THE CAP, NOT BESIDE ITS --post CALLER BELOW: the cap block
+# posts a recorded approval through this same writer (ASK-5605), and a bash
+# function must exist before the line that calls it. Moved, not copied: one
+# writer of the gate.
+# The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
+#
+# WHY THIS EXISTS: the verdict record above is a LOCAL file. GitHub cannot see
+# it, so no platform mechanism can gate on it, so every approved PR ends its
+# life waiting on a human. Every prior-art integrator (merge queue, Bors,
+# Mergify, Kodiak) has one shape: every precondition is a required status check
+# and the platform does the merging. pr-receipt-gate.py is already a CI step;
+# this was the one piece still stuck on disk.
+#
+# WHY A STATUS AND NOT A PR REVIEW: a commit status needs no second identity. A
+# PR *review* would deadlock -- this agent runs as the account that authors
+# these PRs, and GitHub forbids self-approval. Proven live on PR #23, 2026-07-27.
+#
+# ABSENT IS NOT APPROVED, and that is the point. A reviewer that fails or times
+# out exits well above this, before the verdict is even computed, so no status is
+# posted at all. Once this context becomes a REQUIRED check, "absent" is what
+# holds the PR -- the safe direction. Nothing on an error path here invents one.
+post_reviewer_status() {
+  local sha="$1" verdict="$2" target="$3"
+  # The context is the ENGINE's slot: kipi/reviewer-approved for claude,
+  # kipi/codex-approved for the independent second opinion. Two contexts, one
+  # writer each, so a gate can require either or both without either engine
+  # being able to answer for the other.
+  local context="$STATUS_CONTEXT" state="failure" desc
+  # ONE reader of the verdict. $VERDICT is the derived-over-stated value already
+  # written to the record; re-grepping the review prose here would be a second
+  # reader with its own semantics, which is the defect class this repo keeps
+  # finding. Anything that is not an approval -- including an unstated verdict --
+  # is a failure, so an unparseable review cannot pass a gate by accident.
+  case "$verdict" in
+    "APPROVE"|"APPROVE WITH NITS") state="success" ;;
+  esac
+  desc="${verdict:-unstated: no verdict parsed from the review}"
+  # SAY IT IN THE SLOT ITSELF. The page fires once on the transition and is gone;
+  # the status description is what a human reads on the PR weeks later. Without
+  # this marker a green kipi/codex-approved is indistinguishable from a real
+  # second opinion, and the whole point of this engine is that it is not Claude.
+  [ "$DEGRADED" = "1" ] && desc="DEGRADED (codex down, Opus fallback): $desc"
+  # A delta approval covers the commits since the base, not the whole PR; the
+  # required check says so rather than reading like a full read (ASK-3884).
+  [ -n "${REVIEW_BASE:-}" ] && desc="delta ${REVIEW_BASE:0:8}..${sha:0:8}: $desc"
+  desc="$(printf '%.140s' "$desc")"
+  # STATUS_REPO_PATH, not {owner}/{repo}: `gh api` resolves those placeholders
+  # from the CWD repo and accepts no -R, so an unattended run posted
+  # kipi/reviewer-approved onto the home repo for a review of another one.
+  local args=(api -X POST "repos/$STATUS_REPO_PATH/statuses/$sha"
+              -f "state=$state" -f "context=$context" -f "description=$desc")
+  # Link only a real URL. The PR comment just above is what --post creates; when
+  # that failed there is nothing to link, and a local file path is not a URL.
+  case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
+  # WHO WRITES THE GATE (ASK-362 stage 2): reviewer_status_run is the one rule,
+  # shared with receipt-carry-approval.sh's carry_post. Configured-but-empty
+  # returns REVIEWER_TOKEN_REFUSED and posts nothing; an absent status holds the
+  # PR, which is the safe side.
+  local rc=0 err
+  err="$(reviewer_status_run gh "${args[@]}" 2>&1 >/dev/null)" || rc=$?
+  # :-3, not bare: a missing lib must not kill the agent under set -u at the
+  # one step that writes the gate (PR #431 round 2). It then fails the post loudly.
+  if [ "$rc" = "${REVIEWER_TOKEN_REFUSED:-3}" ]; then
+    printf '  %s\n' "$err" >&2
+    echo "  NO commit status posted on $sha" >&2
+    return 0
+  fi
+  if [ "$rc" = 0 ]; then
+    echo "  commit status posted: $context=$state on $sha"
+  else
+    # gh's own reason, already captured in $err: an expired reviewer token and a
+    # network blip need different fixes, and "NO gate moved" alone names neither
+    # (PR #431 review nit).
+    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved. gh: $(printf '%s' "${err:-printed no reason}" | tr '\n' ' ' | cut -c1-300)" >&2
+  fi
+}
+
 # THE ROUND CAP. Every call below is a full paid model run, and nothing bounded
 # how many one PR could take: 4 to 7 rounds was routine and one PR took 16. The
 # round counter already existed but only fed a prompt hint, so the loop that
@@ -537,6 +614,37 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
   [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped #$REOPEN_OF; use cap-ladder.py. Override: delete $(basename "$_m")"
   CAP_MSG=${CAP_MSG:0:140}  # GitHub refuses a status description over 140 chars; CAP_MSG is what the pending status posts (P35)
   [ -z "$REOPEN_OF" ] || CAP_NOTE="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
+  # THE CAP DOES NOT HOLD A PR IT ALREADY APPROVED (ASK-5605). Consulting #644
+  # and #645 were approved at round 3 by dry runs, so kipi/reviewer-approved was
+  # never posted; every later --post hit this cap and cap-ladder.py does not take
+  # an approved PR. Nothing moved them. When THIS engine's record is a usable
+  # approval of the PR's CURRENT head, --post posts that verdict through
+  # post_reviewer_status (the one writer of the gate) and stops. No model call.
+  # Anything else (a moved head, an unusable or non-approving record, a reopen,
+  # no --post) falls through to the refusal below unchanged.
+  if [ -z "$REOPEN_OF" ] && [ -n "$HEAD_SHA" ]; then
+    _cap_rec="$(verdict_record_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")"
+    _cap_fields="$(python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    print("\t".join(["1" if d.get("usable") is True else "0", d.get("verdict","") or "", d.get("head_sha","") or "", "1" if d.get("degraded") is True else "0", d.get("review_base","") or ""]))
+except Exception: print("0")' "$_cap_rec" 2>/dev/null || echo 0)"
+    IFS=$'\t' read -r _cap_usable _cap_verdict _cap_head _cap_degraded _cap_base <<<"$_cap_fields"
+    case "$_cap_verdict" in "APPROVE"|"APPROVE WITH NITS") _cap_approves=1 ;; *) _cap_approves=0 ;; esac
+    if [ "${_cap_usable:-0}" = "1" ] && [ "$_cap_approves" = "1" ] && [ "${_cap_head:-}" = "$HEAD_SHA" ]; then
+      echo "  cap reached ($PRIOR_ROUNDS $ENGINE rounds), but the recorded verdict for PR #$PR is a usable $_cap_verdict on the current head ${HEAD_SHA:0:12}. No model call made."
+      if [ "$POST" = "1" ]; then
+        # The record's own provenance rides into the status description, as it
+        # did when that round would have posted it.
+        DEGRADED="${_cap_degraded:-0}"; REVIEW_BASE="${_cap_base:-}"
+        echo "  posting the recorded verdict ($_cap_verdict, record $(basename "$_cap_rec")) as $STATUS_CONTEXT"
+        post_reviewer_status "$HEAD_SHA" "$_cap_verdict" ""
+      else
+        echo "  dry run: --post would post the recorded verdict ($_cap_verdict) as $STATUS_CONTEXT on ${HEAD_SHA:0:12}"
+      fi
+      exit 0
+    fi
+  fi
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_NOTE. No model call made."
   if [ "$POST" = "1" ]; then
     # One comment per PR, not one per refused call: the loop may keep calling.
@@ -2202,79 +2310,6 @@ EOF
     echo "  UNROUTED: the $MINOR_COUNT minor(s) above got a terminal APPROVE WITH NITS, so the rework loop stops here. The spillover ledger refuses a minor by policy -- it is fixed in this change or rejected with a reason (no-orphan-findings.md) -- so nothing files them. They are on PR #$PR and in the FINDINGS block on $ISSUE. Owner for the fix-or-reject routing: ASK-1940." >&2
   fi
 fi
-
-# The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
-#
-# WHY THIS EXISTS: the verdict record above is a LOCAL file. GitHub cannot see
-# it, so no platform mechanism can gate on it, so every approved PR ends its
-# life waiting on a human. Every prior-art integrator (merge queue, Bors,
-# Mergify, Kodiak) has one shape: every precondition is a required status check
-# and the platform does the merging. pr-receipt-gate.py is already a CI step;
-# this was the one piece still stuck on disk.
-#
-# WHY A STATUS AND NOT A PR REVIEW: a commit status needs no second identity. A
-# PR *review* would deadlock -- this agent runs as the account that authors
-# these PRs, and GitHub forbids self-approval. Proven live on PR #23, 2026-07-27.
-#
-# ABSENT IS NOT APPROVED, and that is the point. A reviewer that fails or times
-# out exits well above this, before the verdict is even computed, so no status is
-# posted at all. Once this context becomes a REQUIRED check, "absent" is what
-# holds the PR -- the safe direction. Nothing on an error path here invents one.
-post_reviewer_status() {
-  local sha="$1" verdict="$2" target="$3"
-  # The context is the ENGINE's slot: kipi/reviewer-approved for claude,
-  # kipi/codex-approved for the independent second opinion. Two contexts, one
-  # writer each, so a gate can require either or both without either engine
-  # being able to answer for the other.
-  local context="$STATUS_CONTEXT" state="failure" desc
-  # ONE reader of the verdict. $VERDICT is the derived-over-stated value already
-  # written to the record; re-grepping the review prose here would be a second
-  # reader with its own semantics, which is the defect class this repo keeps
-  # finding. Anything that is not an approval -- including an unstated verdict --
-  # is a failure, so an unparseable review cannot pass a gate by accident.
-  case "$verdict" in
-    "APPROVE"|"APPROVE WITH NITS") state="success" ;;
-  esac
-  desc="${verdict:-unstated: no verdict parsed from the review}"
-  # SAY IT IN THE SLOT ITSELF. The page fires once on the transition and is gone;
-  # the status description is what a human reads on the PR weeks later. Without
-  # this marker a green kipi/codex-approved is indistinguishable from a real
-  # second opinion, and the whole point of this engine is that it is not Claude.
-  [ "$DEGRADED" = "1" ] && desc="DEGRADED (codex down, Opus fallback): $desc"
-  # A delta approval covers the commits since the base, not the whole PR; the
-  # required check says so rather than reading like a full read (ASK-3884).
-  [ -n "${REVIEW_BASE:-}" ] && desc="delta ${REVIEW_BASE:0:8}..${sha:0:8}: $desc"
-  desc="$(printf '%.140s' "$desc")"
-  # STATUS_REPO_PATH, not {owner}/{repo}: `gh api` resolves those placeholders
-  # from the CWD repo and accepts no -R, so an unattended run posted
-  # kipi/reviewer-approved onto the home repo for a review of another one.
-  local args=(api -X POST "repos/$STATUS_REPO_PATH/statuses/$sha"
-              -f "state=$state" -f "context=$context" -f "description=$desc")
-  # Link only a real URL. The PR comment just above is what --post creates; when
-  # that failed there is nothing to link, and a local file path is not a URL.
-  case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
-  # WHO WRITES THE GATE (ASK-362 stage 2): reviewer_status_run is the one rule,
-  # shared with receipt-carry-approval.sh's carry_post. Configured-but-empty
-  # returns REVIEWER_TOKEN_REFUSED and posts nothing; an absent status holds the
-  # PR, which is the safe side.
-  local rc=0 err
-  err="$(reviewer_status_run gh "${args[@]}" 2>&1 >/dev/null)" || rc=$?
-  # :-3, not bare: a missing lib must not kill the agent under set -u at the
-  # one step that writes the gate (PR #431 round 2). It then fails the post loudly.
-  if [ "$rc" = "${REVIEWER_TOKEN_REFUSED:-3}" ]; then
-    printf '  %s\n' "$err" >&2
-    echo "  NO commit status posted on $sha" >&2
-    return 0
-  fi
-  if [ "$rc" = 0 ]; then
-    echo "  commit status posted: $context=$state on $sha"
-  else
-    # gh's own reason, already captured in $err: an expired reviewer token and a
-    # network blip need different fixes, and "NO gate moved" alone names neither
-    # (PR #431 review nit).
-    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved. gh: $(printf '%s' "${err:-printed no reason}" | tr '\n' ' ' | cut -c1-300)" >&2
-  fi
-}
 
 if [ "$POST" = "1" ]; then
   COMMENT_URL=""
