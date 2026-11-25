@@ -40,6 +40,9 @@ new gate: one call site tag, one subprocess, one test file.
 
 ## Tier A — automatic (no action required from you)
 
+Rule-ID: RULE-2026-11-25-TIERA
+Enforced by: q-system/.q-system/scripts/test_enforcement_claim_lint.py
+
 `token-guard.py` requests the triage on three stuck refusals. The refusal goes
 out immediately and unchanged, carrying a one-line note that a triage was
 requested; the answer arrives on a LATER tool call as a `FABLE TRIAGE` section
@@ -50,7 +53,7 @@ comes first). No action required from you either way.
 events in both `.claude/settings.json` and `settings-template.json`. Measured
 live 2026-08-03: a hook that overruns its configured timeout is killed and its
 exit 2 is **discarded**, so the tool call it meant to refuse simply proceeds
-(0s hook exits 2 -> blocked; 8s hook exits 2 -> ran). Waiting on a model inside
+(0s hook exits 2 -> blocked; 8s hook exits 2 -> ran; kind: observation). Waiting on a model inside
 the hook would therefore not delay the refusal, it would spend it. Hence the
 detached spawn: the block can never be traded for the triage.
 

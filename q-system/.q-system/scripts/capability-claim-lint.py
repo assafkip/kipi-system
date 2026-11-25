@@ -180,16 +180,57 @@ def message(path: str, bad: list[tuple[int, str]]) -> str:
 # ---------------------------------------------------------------------------
 import datetime
 import glob
+import hashlib
+import subprocess
 
-MECHANISM_RE = re.compile(
-    r"`([^`]+)`[^.;:`]{0,40}?\b(?:fails|blocks|refuses|denies|rejects"
-    r"|exits\s+(?:1|2|non-zero|nonzero))\b",
-    re.IGNORECASE,
-)
+MECHANISM_VERB = (r"\b(?:fails|blocks|refuses|denies|rejects"
+                  r"|exits\s+(?:1|2|non-zero|nonzero))\b")
+MECHANISM_RE = re.compile(r"`([^`]+)`[^.;:`]{0,40}?" + MECHANISM_VERB, re.IGNORECASE)
+# Review round 1 (PR #884): the scar sentence with its backticks removed ("gates
+# run fails while any item is open") walked past the backtick-only pattern. A
+# plain-prose subject is the up-to-three words before the verb.
+PLAIN_MECHANISM_RE = re.compile(
+    r"((?:[\w/-]+(?:\.[\w-]+)*\s+){0,2}[\w/-]+(?:\.[\w-]+)*)\s+" + MECHANISM_VERB,
+    re.IGNORECASE)
+# A plain subject counts only when it names a mechanism: a noun from this set, a
+# pronoun standing for one, or a tool-shaped token (dash, dot or slash). Without
+# this, "Common blocks" and "a page that fails the gate" read as claims.
+MECH_NOUNS = {"hook", "hooks", "lint", "linter", "gate", "gates", "check", "guard",
+              "validator", "script", "test", "command", "job", "workflow", "ci",
+              "run", "it", "this", "detector", "ratchet", "floor", "harness"}
+ADVERBS = {"also", "only", "still", "now", "then", "always", "already", "simply"}
+PRONOUNS = {"it", "this"}
+# A verb under a negation or a condition claims nothing runs: "never blocks",
+# "does not fail", "if the push fails".
+NOT_A_CLAIM_RE = re.compile(
+    r"\b(?:no|nothing|never|not|cannot|can't|won't|doesn't|without|neither|nor"
+    r"|if|when|unless|whether|until|until)\b[^.;:]*$", re.IGNORECASE)
 BROAD_RE = re.compile(
-    r"\b(?:must|never|always|blocks|refuses|bounded\s+by\s+code)\b",
+    r"\b(?:must|never|always|blocks|refuses|fails|denies|rejects"
+    r"|bounded\s+by\s+code)\b",
     re.IGNORECASE,
 )
+
+
+def mechanism_subject(line: str) -> str | None:
+    """The subject of a positive mechanism claim on this line, or None."""
+    m = MECHANISM_RE.search(line)
+    if m and not NOT_A_CLAIM_RE.search(line[: m.start()]):
+        return m.group(1)
+    for p in PLAIN_MECHANISM_RE.finditer(line):
+        words = p.group(1).split()
+        while len(words) > 1 and words[-1].lower() in ADVERBS:
+            words.pop()  # "the lint hook also blocks": the subject is "lint hook"
+        last = words[-1].lower()
+        if last in ("that", "which", "who") or len(words) > 1 and words[-2].lower() in (
+                "that", "which", "who"):
+            continue  # a relative clause: "a step that fails" describes, not claims
+        if not (last in MECH_NOUNS or re.search(r"[-./]", last)):
+            continue
+        if NOT_A_CLAIM_RE.search(line[: p.start(1)] + p.group(1)):
+            continue
+        return " ".join(words)
+    return None
 HELD_RE = re.compile(r"held_by:\s*`?([^\s`,;)]+)`?")
 TICKET_RE = re.compile(r"ticket:\s*`?([A-Z]+-\d+)")
 EXPIRES_RE = re.compile(r"expires:\s*`?(\d{4}-\d{2}-\d{2})")
@@ -198,7 +239,7 @@ EXEC_EXT = (".py", ".sh", ".bash", ".zsh", ".mjs", ".cjs", ".js", ".ts")
 TEST_NAME_RE = re.compile(r"(?:^|/)(?:test_[^/]+\.py|[^/]+_test\.py|test-[^/]+\.sh)$")
 
 
-def _config_text(root: Path) -> str:
+def _config_text(root: Path, user_settings: bool = False) -> str:
     """Every file whose mention of a script means it runs: hook settings,
     lefthook, CI, launchd units, plugin hooks, and the `kipi` CLI with the
     harness it calls. Read once per run."""
@@ -216,27 +257,32 @@ def _config_text(root: Path) -> str:
             except OSError:
                 pass
     # A memory note's holder is usually a global hook, wired in the user's
-    # settings rather than any repo's.
-    try:
-        chunks.append((Path.home() / ".claude/settings.json").read_text(
-            encoding="utf-8", errors="ignore"))
-    except OSError:
-        pass
+    # settings rather than any repo's. Only the memory hook asks for it: review
+    # round 1 found --all green on the laptop and red in CI for a holder wired
+    # only in ~/.claude/settings.json.
+    if user_settings:
+        try:
+            chunks.append((Path.home() / ".claude/settings.json").read_text(
+                encoding="utf-8", errors="ignore"))
+        except OSError:
+            pass
     return "\n".join(chunks)
 
 
 class Holders:
     """Resolves a name to a file under root and says whether it is wired."""
 
-    def __init__(self, root: Path, today: datetime.date | None = None):
+    def __init__(self, root: Path, today: datetime.date | None = None,
+                 user_settings: bool = False):
         self.root = root
+        self.user_settings = user_settings
         self.today = today or datetime.date.today()
         self._cfg: str | None = None
 
     @property
     def cfg(self) -> str:
         if self._cfg is None:
-            self._cfg = _config_text(self.root)
+            self._cfg = _config_text(self.root, self.user_settings)
         return self._cfg
 
     def resolve(self, name: str) -> Path | None:
@@ -278,11 +324,33 @@ class Holders:
     def wired(self, path: Path) -> bool:
         return path.name in self.cfg
 
+    def test_runs(self, path: Path) -> bool:
+        """A test holds a claim only if it has a test in it and something runs
+        it: a config names it, or it is a tracked file whose suite CI collects.
+        Review round 1: a 0-byte test_x.py held any claim."""
+        try:
+            src = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        if not re.search(r"^\s*def\s+test_|^\s*check\(|^if __name__", src, re.M):
+            return False
+        if self.wired(path):
+            return True
+        full = path.resolve()
+        r = subprocess.run(["git", "-C", str(full.parent), "ls-files", "--error-unmatch",
+                            str(full)], capture_output=True, text=True, check=False)
+        return r.returncode == 0
+
     def holder_ok(self, name: str) -> tuple[bool, str]:
         path = self.resolve(name)
         if path is None:
             return False, f"held_by `{name}` resolves to no file"
-        if TEST_NAME_RE.search(str(path)) or self.wired(path):
+        if TEST_NAME_RE.search(str(path)):
+            if self.test_runs(path):
+                return True, ""
+            return False, (f"held_by `{name}` is a test with no test in it, or one "
+                           "nothing tracks or runs")
+        if self.wired(path):
             return True, ""
         return False, f"held_by `{name}` exists but nothing runs it (no config names it)"
 
@@ -332,7 +400,7 @@ def enforcement_findings(body: str, h: Holders) -> tuple[list[tuple[int, str, st
     # or a heading starts a new block. Scar: with a +/-1 line window,
     # no-orphan-findings.md:37 was "held" by the unrelated
     # spillover-linear-check.py bullet below it.
-    block_of, start = {}, 0
+    block_of, prev_of, start, last_text = {}, {}, 0, ""
     for i, line in enumerate(lines + [""]):
         new = (not line.strip() or line.lstrip().startswith("#")
                or re.match(r"\s*(?:[-*+]|\d+\.)\s", line))
@@ -340,6 +408,9 @@ def enforcement_findings(body: str, h: Holders) -> tuple[list[tuple[int, str, st
             text = "\n".join(lines[start:i])
             for j in range(start, i):
                 block_of[j] = text
+                prev_of[j] = last_text
+            if text.strip():
+                last_text = text
             start = i
     for i, line in enumerate(lines):
         if FENCE_RE.match(line):
@@ -355,10 +426,13 @@ def enforcement_findings(body: str, h: Holders) -> tuple[list[tuple[int, str, st
         verdict, _ = tag_verdict(ctx, h)
         if verdict == "broken":
             verdict = "missing"  # reported on the line that carries the bad tag
-        m = MECHANISM_RE.search(line)
-        if m and verdict == "missing" and not h.names_wired_executable(ctx):
+        subj = mechanism_subject(line)
+        if subj and subj.split()[-1].lower() in PRONOUNS:
+            # "It blocks ..." stands for the enforcer the paragraph above named.
+            ctx = prev_of.get(i, "") + "\n" + ctx
+        if subj and verdict == "missing" and not h.names_wired_executable(ctx):
             out.append((i + 1, line.strip(),
-                        f"names `{m.group(1)}` as the mechanism; it resolves to no "
+                        f"names `{subj}` as the mechanism; it resolves to no "
                         "wired executable"))
             continue
         if BROAD_RE.search(line):
@@ -371,15 +445,74 @@ def enforcement_findings(body: str, h: Holders) -> tuple[list[tuple[int, str, st
 DIRECTIVE_RE = re.compile(r"\b(?:must|never|always|before\s+you)\b", re.IGNORECASE)
 
 
-def memory_note_verdict(text: str, root: Path) -> str | None:
+# THE EXISTING CORPUS IS DEBT, NOT A TARGET (review round 1 on PR #884). Measured
+# 2026-11-25: 689 of 964 auto-memory notes say must/never/always with no holder,
+# so a refusal on every write would have refused most memory writes fleet-wide,
+# and a gate red on its whole population gets switched off. Same shape as
+# rule_gate's debt.md: the notes as they stood when the baseline was taken are
+# grandfathered by content hash. A new note, or an old note whose content
+# changed, must carry a holder. The baseline only shrinks in effect: it is
+# written once and never rewritten.
+def memory_baseline_path() -> Path:
+    env = os.environ.get("KIPI_MEMORY_CLAIM_BASELINE")
+    if env:
+        return Path(env)
+    return Path.home() / ".config/kipi/memory-claim-baseline.json"
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
+
+
+def memory_baseline(exclude: str | None = None) -> dict:
+    """{realpath: sha256} of every auto-memory note at first use. The one writer:
+    created with O_EXCL, so two hooks racing on the first write cannot both
+    write it, and an existing baseline is never rewritten. `exclude` is the note
+    being written right now: it is judged, never grandfathered by its own write."""
+    bp = memory_baseline_path()
+    try:
+        return json.loads(bp.read_text(encoding="utf-8")).get("notes", {})
+    except (OSError, ValueError):
+        pass
+    notes = {}
+    skip = os.path.realpath(exclude) if exclude else None
+    for f in glob.glob(str(Path.home() / ".claude/projects/*/memory/*.md")):
+        if f.endswith("/MEMORY.md") or os.path.realpath(f) == skip:
+            continue
+        try:
+            notes[os.path.realpath(f)] = _sha(Path(f).read_text(encoding="utf-8",
+                                                                 errors="ignore"))
+        except OSError:
+            pass
+    data = {"created": datetime.date.today().isoformat(), "ticket": "ASK-3818",
+            "notes": notes}
+    try:
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(bp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh)
+    except FileExistsError:
+        try:
+            return json.loads(bp.read_text(encoding="utf-8")).get("notes", {})
+        except (OSError, ValueError):
+            pass
+    except OSError:
+        pass
+    return notes
+
+
+def memory_note_verdict(text: str, root: Path, path: str | None = None) -> str | None:
     """None when a memory note passes; the refusal reason otherwise (RCA 696,
     consulting rca-enforce-in-code-ends-as-prose action 2). A note that says
     must/never/always/before-you is a rule, and a rule held by nothing is the
-    prose this ticket exists to stop."""
+    prose this ticket exists to stop. A note unchanged since the baseline passes."""
     m = DIRECTIVE_RE.search(text)
     if not m:
         return None
-    verdict, why = tag_verdict(text, Holders(root))
+    if path is not None:
+        if memory_baseline(exclude=path).get(os.path.realpath(path)) == _sha(text):
+            return None
+    verdict, why = tag_verdict(text, Holders(root, user_settings=True))
     if verdict in ("held", "ticketed", "observation"):
         return None
     if verdict == "broken":
@@ -489,8 +622,11 @@ def run_census(path: Path, record_re: str, root: Path | None, as_json: bool) -> 
 # advisory whatever its rule says. The founder's 2026-11-06 count was 16 files
 # in ~/.claude/hooks: 3 retired, 2 advisory, 3 deny; nothing printed it.
 ADVISORY_CMD_RE = re.compile(r"^\s*test\s+-[fex]\s.*&&|\|\|\s*true\s*$")
-DENY_RE = re.compile(r"exit\s+2\b|sys\.exit\(\s*2\s*\)|\"deny\"|'deny'"
-                     r"|\"decision\"\s*:\s*\"block\"|permissionDecision")
+# Review round 1: the bare key `permissionDecision` counted auto-approve-git.sh
+# (which emits "allow") as a deny hook. Classify by the decision VALUE.
+DENY_RE = re.compile(r"exit\s+2\b|sys\.exit\(\s*2\s*\)"
+                     r"|[\"']?permissionDecision[\"']?\s*[:=]\s*\\?[\"']deny"
+                     r"|[\"']?decision[\"']?\s*[:=]\s*\\?[\"']block")
 RETIRED_RE = re.compile(r"\.(?:bak|orig|old|disabled)(?:\.|$)|~$")
 
 

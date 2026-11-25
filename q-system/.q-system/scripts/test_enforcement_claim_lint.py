@@ -12,6 +12,9 @@ live here because rule_gate.py (RULE-2026-11-08-CODE) wants each section's
 enforcer to name it:
   RULE-2026-11-25-BACKSTOP  no-orphan-findings.md, "Deterministic backstops"
   RULE-2026-11-25-WIDEN     instrument-discipline.md, "Why it guards /output/ now"
+  RULE-2026-11-25-CALLER    repair-first-generation.md, "The caller's obligation"
+  RULE-2026-11-25-FABLEINV  fable-discipline-auto-invoke.md (the whole file)
+  RULE-2026-11-25-TIERA     fable-escalation.md, "Tier A"
 
 Everything runs in temp dirs with a temp HOME. Run: python3 test_enforcement_claim_lint.py
 """
@@ -104,9 +107,18 @@ def test_wired_subject_holds_unwired_does_not():
 
 def test_tags():
     held = tree("## B\n\n" + GATES_LINE.rstrip("\n") + " held_by: tests/test_gate.py\n",
-                {"tests/test_gate.py": "def test_x(): pass\n"})
+                {"tests/test_gate.py": "def test_x(): pass\n",
+                 "lefthook.yml": "t:\n  run: python3 tests/test_gate.py\n"})
     rc, out = run([str(LINT), "--all", "--root", str(held)])
-    check("held_by naming an existing test passes", rc == 0, out)
+    check("held_by naming a run test passes", rc == 0, out)
+
+    # Review round 1: a 0-byte test_*.py held any claim.
+    for body, name in (("", "an empty test file"),
+                       ("def test_x(): pass\n", "an untracked, unrun test")):
+        t = tree("## B\n\n" + GATES_LINE.rstrip("\n") + " held_by: tests/test_gate.py\n",
+                 {"tests/test_gate.py": body})
+        rc, out = run([str(LINT), "--all", "--root", str(t)])
+        check(f"held_by naming {name} is refused", rc == 2, out)
 
     ghost = tree("## B\n\n" + GATES_LINE.rstrip("\n") + " held_by: tests/test_ghost.py\n")
     rc, out = run([str(LINT), "--all", "--root", str(ghost)])
@@ -128,6 +140,45 @@ def test_tags():
         check(name, rc == want, out)
 
 
+def test_plain_prose_claims():
+    # Review round 1: the scar sentence with its backticks removed walked past.
+    root = tree("## B\n\n- gates run fails while any item is open.\n")
+    rc, out = run([str(LINT), "--all", "--root", str(root)])
+    check("the scar sentence without backticks is red", rc == 2, out)
+    root = tree("## B\n\n- The fable-discipline lint hook also blocks deferral language.\n")
+    rc, out = run([str(LINT), "--all", "--root", str(root)])
+    check("a plain 'X hook also blocks' claim is red", rc == 2, out)
+    for line, name in (("Common blocks and what to do:", "a noun 'blocks'"),
+                       ("A repair step that fails must be loud.", "a relative clause"),
+                       ("If the push fails, retry it.", "a condition"),
+                       ("The hook never blocks.", "a negation")):
+        root = tree("## B\n\n" + line + "\n")
+        rc, out = run([str(LINT), "--all", "--root", str(root)])
+        check(f"{name} is not a mechanism claim", rc == 0, out)
+
+
+def test_pronoun_takes_the_paragraph_above():
+    wired = {"lefthook.yml": "run: python3 null-lint.py\n", "null-lint.py": "x\n"}
+    root = tree("## B\n\n`null-lint.py` runs on every write.\n\nIt blocks a null claim.\n",
+                wired)
+    rc, out = run([str(LINT), "--all", "--root", str(root)])
+    check("'It blocks' is held by the wired script the paragraph above names", rc == 0, out)
+    root = tree("## B\n\nSome prose.\n\nIt blocks a null claim.\n", wired)
+    rc, out = run([str(LINT), "--all", "--root", str(root)])
+    check("'It blocks' with no enforcer above is red", rc == 2, out)
+
+
+def test_user_settings_do_not_hold_in_all_mode():
+    # Review round 1: --all read ~/.claude/settings.json, so a holder wired only
+    # there passed on the laptop and failed in CI.
+    root = tree("## B\n\n- `glob-hook.py` blocks the write.\n", {"glob-hook.py": "x\n"})
+    home = Path(tempfile.mkdtemp(prefix="ecl-us-"))
+    (home / ".claude").mkdir()
+    (home / ".claude/settings.json").write_text('{"c": "glob-hook.py"}')
+    rc, out = run([str(LINT), "--all", "--root", str(root)], env_extra={"HOME": str(home)})
+    check("--all ignores a holder wired only in ~/.claude/settings.json", rc == 2, out)
+
+
 def test_census_reader():
     body = ("# Decisions\n\n"
             "- **DEC-1 [USER-DIRECTED]: never send mail unattended.**\n"
@@ -135,7 +186,8 @@ def test_census_reader():
             "- **DEC-2: pings are rejected.** ticket: ASK-9 expires: 2999-01-01\n"
             "- **DEC-3: a measured fact.** kind: observation\n"
             "- **DEC-4: no Gmail drafts, PERMANENT.**\n")
-    root = tree("## x\n", {"crm.md": body, "tests/test_send.py": "x\n"})
+    root = tree("## x\n", {"crm.md": body, "tests/test_send.py": "def test_x(): pass\n",
+                            "lefthook.yml": "run: python3 tests/test_send.py\n"})
     (root / ".git").mkdir()
     rr = r"^\s*[-*]\s*\**DEC-\d+"
     rc, out = run([str(LINT), "--census", str(root / "crm.md"), "--record-re", rr, "--json"])
@@ -166,10 +218,14 @@ def test_hook_census():
     (hooks / "deny.sh").write_text("#!/bin/sh\nexit 2\n")
     (hooks / "soft.sh").write_text("#!/bin/sh\nexit 2\n")
     (hooks / "talk.sh").write_text("#!/bin/sh\necho hi\n")
+    (hooks / "allow.sh").write_text('echo \'{"permissionDecision": "allow"}\'\n')
+    (hooks / "denyjson.sh").write_text('echo \'{"permissionDecision": "deny"}\'\n')
     (hooks / "old.sh.bak").write_text("exit 2\n")
     (hooks / "orphan.sh").write_text("exit 2\n")
     settings = {"hooks": {"PreToolUse": [{"hooks": [
         {"type": "command", "command": "bash ~/.claude/hooks/deny.sh"},
+        {"type": "command", "command": "bash ~/.claude/hooks/allow.sh"},
+        {"type": "command", "command": "bash ~/.claude/hooks/denyjson.sh"},
         {"type": "command", "command": "bash ~/.claude/hooks/soft.sh || true"},
         {"type": "command", "command": "test -f ~/.claude/hooks/talk.sh && bash ~/.claude/hooks/talk.sh"},
     ]}]}}
@@ -180,11 +236,12 @@ def test_hook_census():
     cls = {f["file"]: f["class"] for f in rep.get("files", [])}
     check("hook census classifies deny/advisory/retired",
           cls == {"deny.sh": "deny", "soft.sh": "advisory", "talk.sh": "advisory",
-                  "old.sh.bak": "retired", "orphan.sh": "retired"}, cls)
+                  "old.sh.bak": "retired", "orphan.sh": "retired",
+                  "allow.sh": "advisory", "denyjson.sh": "deny"}, cls)
     check("hook census counts advisory entries", rep.get("advisory_entries") == 2, rep)
     rc, out = run([str(LINT), "--hook-census", "--hooks-dir", str(hooks), "--root", str(home)])
     check("text census prints the advisory count line",
-          "advisory hook entries: 2 of 3" in out, out)
+          "advisory hook entries: 2 of 5" in out, out)
 
 
 def test_memory_note_refusal():
@@ -199,7 +256,22 @@ def test_memory_note_refusal():
                                                            "CLAUDE_PROJECT_DIR": str(home)})
 
     fm = "---\nname: x\ndescription: y\nmetadata:\n  type: feedback\n---\n"
+    # Review round 1: 689 of 964 existing notes would have been refused. A note
+    # that existed when the baseline was taken passes while unchanged.
+    old = note.parent / "feedback_old.md"
+    old_text = fm + "Always run the suite before pushing.\n"
+    old.write_text(old_text)
     rc, out = write(fm + "Never push on Fridays.\n")
+    base = home / ".config/kipi/memory-claim-baseline.json"
+    check("the first write records the baseline", base.is_file(), out)
+    payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(old)}})
+    rc2, out2 = run([str(MEMV)], stdin=payload, env_extra={"HOME": str(home),
+                                                            "CLAUDE_PROJECT_DIR": str(home)})
+    check("an old untagged note, unchanged, passes", rc2 == 0, out2)
+    old.write_text(old_text + "Also on Mondays.\n")
+    rc2, out2 = run([str(MEMV)], stdin=payload, env_extra={"HOME": str(home),
+                                                            "CLAUDE_PROJECT_DIR": str(home)})
+    check("the same old note, changed, is refused", rc2 == 2 and "ASK-3818" in out2, out2)
     check("a 'never' memory note with no holder is refused", rc == 2 and "ASK-3818" in out, out)
     rc, out = write(fm + "Never push on Fridays.\nkind: observation\n")
     check("the same note as kind: observation passes", rc == 0, out)
@@ -210,13 +282,18 @@ def test_memory_note_refusal():
 
 
 def test_real_repo_is_clean():
-    # Pins RULE-2026-11-25-BACKSTOP and RULE-2026-11-25-WIDEN:
+    # Pins RULE-2026-11-25-BACKSTOP, -WIDEN, -CALLER, -FABLEINV and -TIERA:
     # the corrected lines carry their holders, and the repo's own rules lint clean.
     rc, out = run([str(LINT), "--all", "--root", str(REPO)])
     check("this repo's rule files carry no unheld mechanism claim", rc == 0, out)
     line37 = (REPO / ".claude/rules/no-orphan-findings.md").read_text()
     check("no-orphan-findings no longer claims gates run fails on ANY open item",
           "fails while any item is open" not in line37)
+    # Review round 1: an inherited blocker DOES turn gates run red, and the
+    # sentence must say so, held by the test that seeds an inherited blocker.
+    check("the backstop line states the inherited-blocker floor",
+          "inherited item only when it is a `blocker`" in line37
+          and "test_spillover_combined_rule.py" in line37)
 
 
 if __name__ == "__main__":

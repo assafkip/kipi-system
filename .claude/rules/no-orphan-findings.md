@@ -38,10 +38,12 @@ Enforced by: q-system/.q-system/scripts/test_enforcement_claim_lint.py
   held_by: plugins/prd-os/tests/test_spillover_minor_tier.py
 - The fable-discipline lint blocks deferral language written into CODE without a
   capture (`# spillover-skip` acks an already-captured line).
-- `prd_runner.py gates run` fails while an open item is attributable to the run's
-  scope: the active issue or PRD, or every open item when no scope is active. Items
-  inherited from other scopes are counted and printed, not blocking (the enforcement
-  of last resort). held_by: plugins/prd-os/tests/test_spillover_gate_scope.py
+  held_by: plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py
+- `prd_runner.py gates run` fails on an open `blocker`, `major` or `high` item
+  that the run's scope opened (the active issue or PRD, or any item when no scope
+  is active), and on an inherited item only when it is a `blocker`. Minor items and
+  other inherited items are counted and printed, not blocking (the enforcement of
+  last resort). held_by: plugins/prd-os/tests/test_spillover_combined_rule.py
 - `spillover-linear-check.py` (daily launchd) retries failed Linear filings, alerts Sana once; never blocks.
 
 ## Reporting
