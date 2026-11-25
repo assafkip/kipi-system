@@ -1589,6 +1589,52 @@ abandon_instance() {
   return 0
 }
 
+# Stand-ins for tracked escaping links in the dry-run model (ASK-4969).
+# standin_apply repoints each listed link at a scratch directory beside the
+# model, so a sync write through it never reaches what the link points at in
+# production. It records each link's ORIGINAL text in standin-map, for two
+# readers (PR #881 review round 1):
+#   - worktree_digest hashes the original text, so the modeled final state is
+#     the same run to run and equals the real one (finding 2: a per-run scratch
+#     path in the digest made every dry run of the instance differ);
+#   - standin_restore puts the original back around the model's git history
+#     ops (finding 3: --assume-unchanged hides the repoint from git status but
+#     not from checkout, so the direct-clone rebase refused on every run). Git
+#     replaces a link, never writes through one, so the original is safe there.
+# "initial" requires every listed path to still be a link; a re-apply after the
+# history ops skips a path git has turned into something else.
+standin_apply() {
+  local model="$1" mode="${2:-again}" rel link orig n=0
+  : > "$DRY_MODEL_ROOT/standin-map" || return 1
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    link="$model/$rel"
+    if [ ! -L "$link" ]; then
+      [ "$mode" = "initial" ] && return 1
+      continue
+    fi
+    n=$((n + 1))
+    orig="$(readlink "$link")" || return 1
+    printf '%s\t%s\n' "$rel" "$orig" >> "$DRY_MODEL_ROOT/standin-map" || return 1
+    mkdir -p "$DRY_MODEL_ROOT/standins/$n" || return 1
+    rm -f -- "$link" || return 1
+    ln -s "$DRY_MODEL_ROOT/standins/$n" "$link" || return 1
+    git -C "$model" update-index --assume-unchanged -- "$rel" || return 1
+  done < "$DRY_MODEL_ROOT/standin-links"
+  MODEL_STANDIN_LINKS=$n
+}
+
+standin_restore() {
+  local model="$1" rel orig
+  [ -s "$DRY_MODEL_ROOT/standin-map" ] || return 0
+  while IFS=$'\t' read -r rel orig; do
+    [ -n "$rel" ] && [ -L "$model/$rel" ] || continue
+    git -C "$model" update-index --no-assume-unchanged -- "$rel" || return 1
+    rm -f -- "$model/$rel" || return 1
+    ln -s "$orig" "$model/$rel" || return 1
+  done < "$DRY_MODEL_ROOT/standin-map"
+}
+
 worktree_digest() {
   python3 - "$1" <<'PY'
 import hashlib
@@ -1599,6 +1645,15 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 digest = hashlib.sha256()
+# Dry-run stand-ins hash as the link text production holds (ASK-4969).
+original_link = {}
+standin_map = os.environ.get("KIPI_STANDIN_MAP", "")
+if standin_map and os.path.isfile(standin_map):
+    with open(standin_map, encoding="utf-8", errors="surrogateescape") as stream:
+        for line in stream:
+            rel, _, orig = line.rstrip("\n").partition("\t")
+            if rel:
+                original_link[rel] = orig
 for current, directories, files in os.walk(root, followlinks=False):
     directories[:] = sorted(name for name in directories if name != ".git")
     for name in sorted(directories + files):
@@ -1610,7 +1665,7 @@ for current, directories, files in os.walk(root, followlinks=False):
         digest.update(relative.encode("utf-8", "surrogateescape") + b"\0")
         digest.update(f"{stat.S_IFMT(metadata.st_mode):o}:{stat.S_IMODE(metadata.st_mode):o}".encode() + b"\0")
         if stat.S_ISLNK(metadata.st_mode):
-            digest.update(os.readlink(candidate).encode("utf-8", "surrogateescape"))
+            digest.update(original_link.get(relative, os.readlink(candidate)).encode("utf-8", "surrogateescape"))
         elif stat.S_ISREG(metadata.st_mode):
             with candidate.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -2575,21 +2630,22 @@ def left_out(candidate):
 
 def stood_in(candidate):
     """True for a TRACKED link, which the model keeps at its path but repoints at
-    an empty directory inside the model, so a write through it stays there.
+    a scratch directory beside the model, so a write through it stays there.
 
     Scar ASK-4969 (measured 2026-11-25): a client instance tracks a case
     folder's link into a cloud drive, so it is repo content the model cannot
     leave out (left_out above), and refusing it blocked every dry run of the
     instance. An untracked, unignored escaping link still refuses: it is a stray
     the instance should commit or ignore, not content the sync has to model.
-    Same pattern-character rule as left_out, so the stand-in hits one path only.
+    Same pattern-character rule as left_out, plus --literal-pathspecs so a name
+    like ":(icase)a" asks about itself, not a pathspec match (PR #881 finding 4).
     """
     rel = str(candidate.relative_to(root))
     if any(ch in rel for ch in "*?[\\\n"):
         return False
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", rel],
+            ["git", "--literal-pathspecs", "-C", str(root), "ls-files", "--error-unmatch", "--", rel],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         return False
@@ -2747,32 +2803,13 @@ PY
       fi
     fi
     # Stand-ins for tracked escaping links (ASK-4969). The copy above holds the
-    # link as a link, still pointing at PRODUCTION; repoint it at an empty
-    # directory inside the model before any sync step runs, and mark it
-    # assume-unchanged so the model's git does not report the repointed bytes as
-    # an instance change. rm without -r removes the link only, never its target.
-    MODEL_STANDIN_LINKS=0
-    MODEL_STANDIN_FAILED=0
+    # link as a link, still pointing at PRODUCTION; standin_apply repoints it
+    # before any sync step runs. See standin_apply for why the map exists.
     if [ -s "$DRY_MODEL_ROOT/standin-links" ]; then
-      while IFS= read -r standin_rel; do
-        [ -n "$standin_rel" ] || continue
-        MODEL_STANDIN_LINKS=$((MODEL_STANDIN_LINKS + 1))
-        standin_dir="$DRY_MODEL_ROOT/standins/$MODEL_STANDIN_LINKS"
-        standin_link="$DRY_MODEL_ROOT/instance/$standin_rel"
-        if [ ! -L "$standin_link" ] ||
-            ! mkdir -p "$standin_dir" ||
-            ! rm -f -- "$standin_link" ||
-            ! ln -s "$standin_dir" "$standin_link" ||
-            ! git -C "$DRY_MODEL_ROOT/instance" update-index \
-              --assume-unchanged -- "$standin_rel"; then
-          MODEL_STANDIN_FAILED=1
-          break
-        fi
-      done < "$DRY_MODEL_ROOT/standin-links"
-      if [ "$MODEL_STANDIN_FAILED" != "0" ]; then
+      if ! standin_apply "$DRY_MODEL_ROOT/instance" initial; then
         abandon_instance "  ERROR: could not stand in for a tracked symlink in the dry-run model" && continue
       fi
-      echo "  dry-run model: stood in for $MODEL_STANDIN_LINKS tracked symlink(s) that leave the instance (writes land in the model)"
+      echo "  dry-run model: stood in for $MODEL_STANDIN_LINKS tracked symlink(s) that leave the instance (writes behind them land in a scratch directory and are not previewed)"
     fi
     path="$DRY_MODEL_ROOT/instance"
     if [ "$itype" = "direct-clone" ]; then
@@ -3412,6 +3449,9 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
       if ! git fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null; then
         abandon_instance "  ERROR: fetch failed" && continue
       fi
+      if [ "$MODEL_RUN" = "1" ] && ! standin_restore "$path"; then
+        abandon_instance "  ERROR: could not restore stand-in symlinks for the model's history ops" && continue
+      fi
       if git pull --rebase origin "$SKELETON_BRANCH" 2>&1; then
         echo "  OK"
         PASS=$((PASS + 1))
@@ -3427,6 +3467,10 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
           # No abandon: fall through so the config sync still runs.
           count_instance_failure
         fi
+      fi
+      if [ "$MODEL_RUN" = "1" ] && [ -s "$DRY_MODEL_ROOT/standin-map" ] &&
+          ! standin_apply "$path" again; then
+        abandon_instance "  ERROR: could not re-apply stand-in symlinks after the model's history ops" && continue
       fi
     fi
   else
@@ -3827,7 +3871,7 @@ print("\n".join(mod.EXTRA_WATCHED))
   if [ "$MODEL_RUN" = "1" ]; then
     MODELED_DIFF="$(git -C "$path" diff --name-status "$ORIGINAL_HEAD" HEAD --)"
     MODELED_TREE="$(git -C "$path" rev-parse 'HEAD^{tree}')"
-    MODELED_STATE="$(worktree_digest "$path")"
+    MODELED_STATE="$(KIPI_STANDIN_MAP="$DRY_MODEL_ROOT/standin-map" worktree_digest "$path")"
     if [ -n "$MODELED_DIFF" ]; then
       echo "  Changes vs skeleton (modeled final state):"
     else

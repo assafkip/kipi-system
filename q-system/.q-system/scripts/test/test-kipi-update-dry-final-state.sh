@@ -220,6 +220,19 @@ git clone -q "$DIRECT_ORIGIN" "$DIRECT_INSTANCE"
   cd "$DIRECT_INSTANCE"
   git remote set-url origin ../direct-origin.git
 )
+# ASK-4969 / PR #881 review round 1: a TRACKED escaping directory symlink in an
+# unpushed local commit. The dry run stands in for it; the model's rebase must
+# still run (findings 3) and the modeled digest must equal the real final state
+# and repeat run to run (finding 2). Not under a synced prefix, so the real run
+# below never writes behind it.
+mkdir -p "$WORK/outside-drive"
+printf 'outside bytes\n' > "$WORK/outside-drive/keep.txt"
+(
+  cd "$DIRECT_INSTANCE"
+  ln -s "$WORK/outside-drive" drive
+  git_test add drive
+  git_test commit -qm tracked-escaping-link
+)
 (
   cd "$DIRECT_SEED"
   printf 'new direct content\n' > direct.txt
@@ -241,6 +254,17 @@ DIRECT_BEFORE_STATUS="$(git -C "$DIRECT_INSTANCE" status --porcelain=v1)"
 DIRECT_BEFORE_STATE="$(worktree_digest "$DIRECT_INSTANCE")"
 DIRECT_BEFORE_REFS="$(git -C "$DIRECT_INSTANCE" show-ref | sort)"
 DRY_OUTPUT="$(TMPDIR="$TEST_TMP" bash "$SKELETON/kipi-update.sh" --dry-run)"
+echo "$DRY_OUTPUT" | grep -q "stood in for 1 tracked symlink" ||
+  fail "dry run did not stand in for the direct clone's tracked escaping link"
+if echo "$DRY_OUTPUT" | grep -q "rebase failed"; then
+  fail "the stand-in broke the model's rebase of the direct clone"
+fi
+DRY_OUTPUT_AGAIN="$(TMPDIR="$TEST_TMP" bash "$SKELETON/kipi-update.sh" --dry-run)"
+[ "$(modeled_value "$DRY_OUTPUT" MODELED_FINAL_STATE_SHA256 direct)" = \
+    "$(modeled_value "$DRY_OUTPUT_AGAIN" MODELED_FINAL_STATE_SHA256 direct)" ] ||
+  fail "two dry runs of an unchanged direct clone modeled different final states"
+[ "$(cat "$WORK/outside-drive/keep.txt")" = "outside bytes" ] ||
+  fail "the dry run wrote behind the direct clone's tracked escaping link"
 
 [ "$(git -C "$INSTANCE" rev-parse HEAD)" = "$BEFORE_HEAD" ] ||
   fail "dry run changed instance HEAD"

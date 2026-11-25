@@ -372,7 +372,7 @@ echo "$OUT6D3" | grep -q "left out 2 gitignored symlink" || \
 [ "$BEFORE6D3" = "$(snapshot_out6)" ] || \
   fail "the dry run wrote through an ignored .claude symlink into the directory outside the instance"
 rm "$I6/.claude"
-echo "PASS: a gitignored escaping symlink is left out of the model, a tracked one is modeled by a stand-in, and no target is written (ASK-3887, ASK-4969)"
+echo "PASS: a gitignored escaping symlink is left out of the model, a tracked one is modeled by a stand-in, and neither directory target is written (ASK-3887, ASK-4969)"
 
 # --- the dry-run model must not copy nested repositories --------------------
 # The model is built with `rsync -a --delete --exclude=.git` of the WHOLE
