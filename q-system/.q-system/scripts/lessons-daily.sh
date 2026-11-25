@@ -415,7 +415,7 @@ sync_skel_to_main() {
     printf '%s\n' "$HOLD_OUT" >> "$LOG"
     # A reverted live memory file must reach Sana's queue, not only this log.
     bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" \
-      "lessons-daily: skeleton memory held before fast-forward, copies in .git/kipi-memory-held: $(printf '%s' "$HOLD_OUT" | tr '\n' ' ' | cut -c1-300)" >> "$LOG" 2>&1 || true
+      "lessons-daily: skeleton files held before fast-forward (memory, or content origin already carries), copies in .git/kipi-memory-held: $(printf '%s' "$HOLD_OUT" | tr '\n' ' ' | cut -c1-300)" >> "$LOG" 2>&1 || true
   fi
   git -C "$SKEL" merge --ff-only -q origin/main >> "$LOG" 2>&1 \
     || echo "$(TS) fast-forward of skeleton main refused (see above)" >> "$LOG"

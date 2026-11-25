@@ -92,6 +92,8 @@ test_fleet_unblock.py
 # the repo root. A file entry, because q-system/hooks/test/ holds one python test
 # file and one shell script.
 q-system/hooks/test/test_auto_commit_run_marker.py
+# ASK-5583 (PR #879 review round 1, major): the owning end-to-end test of the skeleton hold.
+q-system/hooks/test/test_auto_commit_skeleton_memory.py
 #
 # THE REMAINING FIVE, each measured, none silently dropped.
 #

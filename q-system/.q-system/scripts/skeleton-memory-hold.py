@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Hold dirty skeleton memory files that origin/main also changed (ASK-3525).
+"""Hold dirty skeleton files that block the fast-forward to origin/main (ASK-3525, ASK-5583).
+
+Two kinds are held: memory and ledger files under PREFIXES that origin also changed,
+and, anywhere in the tree, a dirty file whose bytes already equal origin's (content
+auto-commit held and Sana then landed by PR, so the fast-forward writes the same bytes).
+Any other local edit is left exactly where it is.
 
 Pairs with q-system/hooks/auto-commit.py, which no longer commits session memory on
 the skeleton's default branch, so those files sit modified in the working tree.
@@ -34,20 +39,41 @@ def git(repo, *a):
     return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)
 
 
+def landed(repo, upstream, path):
+    """True when the working copy is byte-identical to upstream's: the fast-forward
+    writes the same bytes, so holding it loses nothing."""
+    up = subprocess.run(["git", "-C", repo, "show", f"{upstream}:{path}"], capture_output=True)
+    try:
+        with open(os.path.join(repo, path), "rb") as fh:
+            return up.returncode == 0 and fh.read() == up.stdout
+    except OSError:
+        return False
+
+
 def overlap(repo, upstream):
     """(path, status) pairs. -z because porcelain C-quotes names with spaces while
     diff --name-only does not, so the two sets never met (PR #760 round 2, finding 4)."""
     # Untracked too (codex P2, PR #760): auto-commit now leaves a NEW .prd-os file
     # uncommitted, and `merge --ff-only` refuses to overwrite an untracked path
     # that origin also adds, exactly as it refuses a modified tracked one.
+    # LANDED CONTENT TOO (ASK-5583, PR #879 review round 1, major): auto-commit now
+    # holds EVERY file on the skeleton's main and pages Sana to land the content by
+    # PR. Once that PR merges, origin carries the same path and the fast-forward
+    # refused, so the skeleton never caught up. Outside PREFIXES a path is held only
+    # when its bytes already equal origin's: that is the landed case, and any other
+    # local edit stays exactly where a human left it.
     dirty = {}
-    for e in git(repo, "status", "--porcelain", "-z", "--untracked-files=all",
-                 "--", *PREFIXES).stdout.split("\0"):
+    for e in git(repo, "status", "--porcelain", "-z", "--untracked-files=all").stdout.split("\0"):
         if len(e) > 3:
             dirty[e[3:]] = e[:2]
-    moved = {x for x in git(repo, "diff", "--name-only", "-z", "HEAD", upstream,
-                            "--", *PREFIXES).stdout.split("\0") if x}
-    return sorted((p, dirty[p]) for p in dirty if p in moved and not p.startswith(AUTHORED))
+    moved = {x for x in git(repo, "diff", "--name-only", "-z", "HEAD", upstream).stdout.split("\0") if x}
+    out = []
+    for p in sorted(dirty):
+        if p not in moved or p.startswith(AUTHORED):
+            continue
+        if p.startswith(PREFIXES) or landed(repo, upstream, p):
+            out.append((p, dirty[p]))
+    return out
 
 
 def main(argv=None):

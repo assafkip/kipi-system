@@ -623,3 +623,12 @@ Founder, 2026-11-13, verbatim: "remember - every decision needs to be anchored i
 - **Enforcement:** PARTIAL
 - **Held by:** `q-system/.q-system/scripts/fleet_door.py` `critical_ticket(ticket, gate_path)`, both explicit with no default, used by `fleet_api_key.py exec --ticket --focus-gate`. `pr-review-agent.sh` passes them as `fleet-claude.sh`'s own `--kipi-ticket` and `--kipi-focus-gate` flags on the reviewer call; nothing carries them in the env. Pinned by `q-system/.q-system/tests/test_fleet_door.py::TestACriticalTicketRunsOnThePlan`, `TestTheShimCarriesTheTicketAsFlags`, `TestTheReviewerProducesTheFlags` (runs pr-review-agent.sh's own routing block) and `TestNoTestCanReachTheLiveFocusGate`.
 - **Not yet:** ASK-5593 wires the worker's own work call (`linear-worker.sh`).
+
+### RULE-2026-11-19-A: At the review cap the next step is an RCA, never a new PR; loosen the rules that cost rework without adding safety
+- **Origin:** [CLAUDE-RECOMMENDED -> MODIFIED] (founder, 2026-11-19, verbatim: "Do option three, but also I need you to In force not being able to game the rule and instead of running a are RCA, you keep just opening a new PR, which is not what you're supposed to do. You're supposed to open an RCA. But again, you are doing way too much work for stuff that's already there and we're making minor changes")
+- **Decision:** A PR at the 3-round cap goes to cap-ladder.py (rung 1 is an RCA). Closing it and reopening from the same branch to reset the cap is refused in code. Option 3 also applies: the version bump moves to merge time (ASK-5470); a round where only main or the version moved does not count against the cap (ASK-5434); the token guard allows more calls mid-commit; the send-time voice check runs in report mode until its false-refusal rate on his real sent mail is near zero (ASK-5466); the #861 meaning-check follow-up is parked, and the merged meaning check stays. Changes stay minimal and reuse what already exists.
+- **Reason:** On 2026-11-18, five PRs were reopened to reset the cap (#610, #619, #839, #847, #856), and four caps came from version-bump collisions, not code.
+- **Date:** 2026-11-19
+- **Enforcement:** PARTIAL
+- **Held by:** nothing yet. ASK-5485 builds the reopen-refusal check in pr-review-agent.sh.
+- **Revisit:** When ASK-5485 merges.
