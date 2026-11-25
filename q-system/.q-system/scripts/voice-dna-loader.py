@@ -116,16 +116,32 @@ def resolve_path(relative_path):
     return None
 
 
+# THE LANE WRITES, THIS SESSION DOES NOT (ASK-5669, RULE-2026-11-18-WRITER-ENTRY).
+# Both payloads opened with "You MUST apply the voice DNA below before drafting any
+# text", an order to draft on every writing turn, while the founder's ruling is that
+# text in his voice comes from the writer lane (consulting PR #656 round 1). One
+# constant, so the two branches cannot drift apart; pinned by
+# test_voice_dna_loader_is_advisory.py::lane_problems on both branches.
+LANE_LINE = (
+    "[voice-dna-loader] Writing request detected. Text in his voice is written by the "
+    "writer lane, not by this session (RULE-2026-11-18-WRITER-ENTRY). From "
+    "~/projects/consulting/q-consult: a post, comment or reply is "
+    "`python3 -m pipeline.social idea --channel <channel> [--reply] \"<his idea>\"`, an "
+    "email is `python3 -m pipeline.draft_email --purpose \"<why>\" --client \"<to>\" "
+    "--context-file <notes>`. Show what the lane returns; do not rewrite it. Where no "
+    "lane exists, a working draft is labelled HAND-WRITTEN. The voice reference below "
+    "is the lane's anchor and your check on what it returns, not an instruction to "
+    "draft.\n\n"
+)
+
+
 def build_context(voice_dna_path, samples_path):
     parts = [
-        "[voice-dna-loader] Writing request detected. You MUST apply the founder's "
-        "voice DNA below before drafting any text another person will read. Do not "
-        "paraphrase the rules. Match the specific patterns documented: witness lines, "
-        "namer pattern, tester pattern, the 4-beat declarative WITH specifics (not "
-        "the cadence alone), show-don't-explain. If the draft has the shape of the "
-        "voice without the substance (scar, named thing, test, evidence), it reads "
-        "as AI cadence. The voice-lint PostToolUse hook will catch some violations "
-        "but not all. Subjective checks (specificity, scar, personality) are on you."
+        LANE_LINE,
+        "Voice reference: witness lines, namer pattern, tester pattern, the 4-beat "
+        "declarative WITH specifics (not the cadence alone), show-don't-explain. A text "
+        "with the shape of the voice and none of the substance (scar, named thing, "
+        "test, evidence) reads as AI cadence. voice-lint catches part of it."
     ]
     if voice_dna_path:
         voice_dna_content = voice_dna_path.read_text(encoding="utf-8")
@@ -184,7 +200,8 @@ def build_context_from_corpus():
     # that does the matching. Do not grow this into a second selector.
     picked = selector.select(rows, "x", 0, k=3)
     parts = [
-        "[voice-dna-loader] Writing request detected. The voice corpus is "
+        LANE_LINE,
+        "The voice corpus is "
         f"{voice_dir}. This hook reads that corpus only; the "
         "founder-voice/references copies are retired and are no longer loaded.\n\n"
         # NO COMMAND LINE HERE (ASK-1400, founder-directed 2026-09-10: "There

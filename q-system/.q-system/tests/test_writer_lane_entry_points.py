@@ -252,8 +252,12 @@ def tool_problems(insert):
     return out
 
 
+def _tool_edits():
+    return {e["file"]: e for e in _inserts(PROP_TOOLS) if "tools:" in e["insert"]}
+
+
 def test_amber_and_cole_get_an_explicit_tool_list_without_raw_senders():
-    edits = {e["file"]: e for e in _inserts(PROP_TOOLS)}
+    edits = _tool_edits()
     assert set(edits) == TOOLS_AGENTS
     for f, e in edits.items():
         assert tool_problems(e["insert"]) == [], (f, tool_problems(e["insert"]))
@@ -270,10 +274,62 @@ def test_a_raw_sender_or_a_missing_list_is_caught():
 
 
 def test_amber_gets_tools_after_her_inert_skill_key():
-    e = [e for e in _inserts(PROP_TOOLS) if e["file"].endswith("amber.md")][0]
+    e = _tool_edits()[".claude/agents/amber.md"]
     # replace is refused outside .claude/rules, so the tools: line goes right after the inert key
     assert e["op"] == "insert_after" and e["anchor"].startswith("allowed-tools:")
 
 
 def test_ryan_is_not_narrowed_here():
     assert ".claude/agents/ryan.md" not in {e["file"] for e in _inserts(PROP_TOOLS)}
+
+
+# THE PREAMBLE CARRIES ITS RULE-ID (2026-11-25). rule_gate.py reads a file's frontmatter and
+# the lines before its first heading as one section, so the tools: line made a changed
+# section with no Rule-ID, and the gate reverted it on the first apply (quarantine copies
+# 20261125T011932-*amber.md.md and *cole.md.md). Each agent gets its own id, because the gate
+# refuses one id on two different bodies. This file is the enforcer both ids name, so it
+# must contain them: RULE-2026-11-25-AMBER-TOOLS, RULE-2026-11-25-COLE-TOOLS.
+TOOLS_IDS = {".claude/agents/amber.md": "RULE-2026-11-25-AMBER-TOOLS",
+             ".claude/agents/cole.md": "RULE-2026-11-25-COLE-TOOLS"}
+ENFORCER = "~/.local/state/kipi/dispatch/kipi-system/q-system/.q-system/tests/test_writer_lane_entry_points.py"
+
+
+def id_problems(edits):
+    out = []
+    for f, rid in TOOLS_IDS.items():
+        mine = [e for e in edits if e["file"] == f and "Rule-ID:" in e["insert"]]
+        if len(mine) != 1:
+            out.append(f"{f}: {len(mine)} Rule-ID edits")
+            continue
+        e = mine[0]
+        if f"Rule-ID: {rid}\n" not in e["insert"] or f"Enforced by: {ENFORCER}\n" not in e["insert"]:
+            out.append(f"{f}: wrong Rule-ID or enforcer")
+        heading = "# " + Path(f).stem.capitalize() + "\n"
+        if e["op"] != "insert_before" or e["anchor"] != heading:
+            out.append(f"{f}: not inserted before its first heading {heading!r}")
+    return out
+
+
+def test_each_changed_preamble_carries_its_own_rule_id():
+    assert id_problems(_inserts(PROP_TOOLS)) == [], id_problems(_inserts(PROP_TOOLS))
+
+
+def test_a_missing_or_misplaced_rule_id_is_caught():
+    edits = [e for e in _inserts(PROP_TOOLS) if "Rule-ID:" not in e["insert"]]
+    assert id_problems(edits) != []
+    moved = [dict(e, anchor="model: opus\n") if "Rule-ID:" in e["insert"] else e
+             for e in _inserts(PROP_TOOLS)]
+    assert id_problems(moved) != []
+
+
+def test_this_file_names_both_ids_and_the_enforcer_path_is_this_file():
+    me = Path(__file__).read_text()
+    assert all(rid in me for rid in TOOLS_IDS.values())
+    assert ENFORCER.endswith("q-system/.q-system/tests/" + Path(__file__).name)
+
+
+def test_the_tools_proposal_is_additive_only():
+    """PR #878 review, minor: the tools proposal sat outside the additive-op pin."""
+    for e in _inserts(PROP_TOOLS):
+        assert e["op"] in ("insert_after", "insert_before"), e
+        assert e["anchor"].strip(), e
