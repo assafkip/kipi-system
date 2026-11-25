@@ -346,3 +346,37 @@ def test_no_valid_override_keeps_the_ceiling(session_id, tmp_path, body):
     result = run_guard(pre_tool_use(session_id), env_overrides=_instance(tmp_path, body))
     assert result.returncode == 2, result.stderr
     assert "50 tool calls" in result.stderr
+
+
+def _git_spy(tmp_path):
+    """A fake git first on PATH that records every call, so a test can see the probe."""
+    bindir = tmp_path / "spybin"
+    bindir.mkdir()
+    log = tmp_path / "git-calls.log"
+    spy = bindir / "git"
+    spy.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nexit 1\n')
+    spy.chmod(0o755)
+    return {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}, log
+
+
+# Codex review of #883: with the ceiling off, every call past the warning count still
+# ran `git log` (3s cap) for a check that could no longer refuse anything.
+def test_override_off_skips_the_commit_probe(session_id, tmp_path):
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    env = _instance(tmp_path, json.dumps({"volume_ceiling": "off"}))
+    path_env, log = _git_spy(tmp_path)
+    env.update(path_env)
+    result = run_guard(pre_tool_use(session_id), env_overrides=env)
+    assert result.returncode == 0, result.stderr
+    assert not log.exists(), f"probe ran with the ceiling off: {log.read_text()}"
+
+
+def test_ceiling_on_still_pays_for_the_commit_probe(session_id, tmp_path):
+    # The control: the spy must see the probe when the ceiling is live, or the
+    # test above proves nothing.
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    env = _instance(tmp_path, None)
+    path_env, log = _git_spy(tmp_path)
+    env.update(path_env)
+    run_guard(pre_tool_use(session_id), env_overrides=env)
+    assert log.exists() and "log" in log.read_text()
