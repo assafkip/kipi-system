@@ -317,20 +317,49 @@ echo "$OUT6D" | grep -q "left out 1 gitignored symlink" || \
   fail "the dry run wrote into the target of a gitignored escaping symlink"
 [ -L "$I6/vendor/original" ] || fail "the dry run removed the instance's ignored symlink"
 
-# case D2: ignored by .gitignore but TRACKED (git add -f) is repo content, refused.
+# case D2 (ASK-4969): a TRACKED escaping directory symlink is repo content, so the
+# model cannot leave it out, and refusing it made the instance unmodelable for good.
+# Measured 2026-11-25: a client instance tracks a case folder's link into a cloud
+# drive, and every kipi update --dry stopped on it. The model now holds a stand-in:
+# the same path, pointing at an empty directory inside the disposable model, so a
+# write through it lands in the model. The outside target must stay byte-identical
+# and the production link must stay as it was.
 ln -s "$OUT6DIR/clientrepo" "$I6/forced-link"
 ( cd "$I6" && G add -f forced-link && G commit -qm forced )
 OUT6D2="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
-echo "$OUT6D2" | grep -q "unsafe directory symlink escapes the disposable model: forced-link" || \
-  fail "a TRACKED escaping directory symlink was left out instead of refused: $OUT6D2"
-[ "$BEFORE6D" = "$(snapshot_out6)" ] || fail "the refused dry run wrote into the symlink target"
+echo "$OUT6D2" | grep -q "unsafe" && \
+  fail "a TRACKED escaping directory symlink still blocked dry-run modeling: $OUT6D2"
+echo "$OUT6D2" | grep -q "stood in for 1 tracked symlink" || \
+  fail "the dry run did not say it modeled the tracked symlink with a stand-in: $OUT6D2"
+echo "$OUT6D2" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model for an instance with a tracked escaping symlink: $OUT6D2"
+[ "$BEFORE6D" = "$(snapshot_out6)" ] || fail "the dry run wrote into the tracked symlink's target"
+[ "$(readlink "$I6/forced-link")" = "$OUT6DIR/clientrepo" ] || \
+  fail "the dry run changed the production tracked symlink"
+
+# case D2b: the stand-in is what keeps the target safe, so prove it on a path the
+# model's sync DOES write. A TRACKED .claude -> outside directory: the config sync
+# mkdirs agents/, rules/ and output-styles/ under .claude. Through the real link
+# that is the outside directory; through the stand-in it is the model.
+( cd "$I6" && G rm -q --cached forced-link && G commit -qm unforce )
+rm "$I6/forced-link"
+mkdir -p "$OUT6DIR/trackedclaude"
+printf '{}\n' > "$OUT6DIR/trackedclaude/settings.json"
+ln -s "$OUT6DIR/trackedclaude" "$I6/.claude"
+( cd "$I6" && G add -f .claude && G commit -qm tracked-claude )
+BEFORE6D2B="$(snapshot_out6)"
+OUT6D2B="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6D2B" | grep -q "stood in for 1 tracked symlink" || \
+  fail "the dry run did not stand in for a tracked .claude symlink: $OUT6D2B"
+[ "$BEFORE6D2B" = "$(snapshot_out6)" ] || \
+  fail "the dry run wrote through a tracked .claude symlink into the directory outside the instance"
+( cd "$I6" && G rm -q --cached .claude && G commit -qm untrack-claude )
+rm "$I6/.claude"
 
 # case D3: the exclude is what keeps the target safe, so prove it on a path the
 # model's sync DOES write. An ignored .claude -> outside directory: copied into
 # the model, the config sync would mkdir agents/, rules/ and output-styles/
 # through it, into the outside directory. Left out, the model has no .claude.
-( cd "$I6" && G rm -q --cached forced-link && G commit -qm unforce )
-rm "$I6/forced-link"
 mkdir -p "$OUT6DIR/claudedir"
 printf '{}\n' > "$OUT6DIR/claudedir/settings.json"
 printf 'vendor/original\n.claude\n' > "$I6/.gitignore"
@@ -343,7 +372,7 @@ echo "$OUT6D3" | grep -q "left out 2 gitignored symlink" || \
 [ "$BEFORE6D3" = "$(snapshot_out6)" ] || \
   fail "the dry run wrote through an ignored .claude symlink into the directory outside the instance"
 rm "$I6/.claude"
-echo "PASS: a gitignored escaping symlink is left out of the model and its target untouched; a tracked one refuses (ASK-3887)"
+echo "PASS: a gitignored escaping symlink is left out of the model, a tracked one is modeled by a stand-in, and neither directory target is written (ASK-3887, ASK-4969)"
 
 # --- the dry-run model must not copy nested repositories --------------------
 # The model is built with `rsync -a --delete --exclude=.git` of the WHOLE
