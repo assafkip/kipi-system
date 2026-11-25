@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test_voice_dna_loader_is_advisory.py",
+ "runner": "pytest"
+}

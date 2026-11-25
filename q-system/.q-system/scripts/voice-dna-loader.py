@@ -9,6 +9,10 @@ canonical voice-dna.md + writing-samples.md from the kipi-core founder-voice
 skill. Injects both as additionalContext so Claude literally cannot draft
 without seeing the voice profile.
 
+Advisory supply, not the voice loop (ASK-5398 ruling, inventory row H-voice-dna-loader):
+it only adds context and exits 0 on every path, and no exit counts it as a voice check.
+The voice loop is the full path, voice_full_gate.py (gate_draft --full).
+
 This is the deterministic counterpart to the voice-lint PostToolUse hook.
 Lint catches deterministic violations after the write. Loader makes sure the
 positive voice anchor is in context before the write.

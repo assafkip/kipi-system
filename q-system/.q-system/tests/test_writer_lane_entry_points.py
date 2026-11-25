@@ -46,7 +46,12 @@ HOME_FILES = {
 
 MARKERS = {
     "rule id": f"Rule-ID: {RULE_ID}",
-    "enforcer": "Enforced by: ~/projects/kipi-system/" + SELF,
+    # The pinned dispatch checkout, not the shared one (2026-11-25). Why: rule_gate requires the
+    # enforcer to exist on disk, and the shared checkout ~/projects/kipi-system sat ahead 3 and
+    # behind 31 of origin/main, so lessons-daily refused its fast-forward and this test never
+    # reached it: the home proposal could not be applied without rule_gate reverting it.
+    # kipi-dispatch-pinned.sh advances the pinned checkout in place on every run.
+    "enforcer": "Enforced by: ~/.local/state/kipi/dispatch/kipi-system/" + SELF,
     "social lane": "python3 -m pipeline.social idea",
     "email lane": "python3 -m pipeline.draft_email",
     "hand receipt": "`hand`",
@@ -188,3 +193,57 @@ def test_every_disposition_names_a_real_file_and_a_reason():
     for rel, why in DISPOSED.items():
         assert (REPO / rel).is_file(), rel
         assert len(why) > 20, rel
+
+
+# --- explicit tool lists (inventory rows AG-amber, AG-cole, AG-ryan; 2026-11-25) -------------
+# Why: an agent with no tools: line inherits every tool, so the writer-lane section above was
+# prose standing between the agent and every sender it could reach. amber.md carried an
+# allowed-tools: line, which is a skill key: the agent roster still listed her as "All tools".
+# Measured 2026-11-25 with a probe agent: `tools: Read, mcp__linear` gave Read plus the linear
+# server's tools and nothing else, so a server-level name works in an agent's tools: line.
+# A RAW sender here is a tool that puts text in front of another person and that neither
+# agent's job needs. The senders these two keep (Gmail drafts, the Chrome extension) sit inside
+# the user-level outbound matcher (consulting automation/outbound_gate.py), which refuses text
+# with no lane receipt.
+# Ryan is ruled out of this list on purpose: the founder gave him research reach on 2026-10-07
+# ("I want Ryan to do this research"), RULE-2026-11-17-LEAN-INVESTIGATORS pins which servers
+# he keeps, and every sender he can reach is inside that same outbound matcher.
+PROP_TOOLS = QS / "proposals" / "writer-lane-agent-tools.json"
+TOOLS_AGENTS = {".claude/agents/amber.md", ".claude/agents/cole.md"}
+RAW_SEND = ("mcp__publer", "mcp__claude_ai_Resend", "mcp__claude_ai_Slack", "mcp__plugin_slack_slack",
+            "mcp__computer-use", "mcp__base44", "mcp__claude_ai_Google_Docs", "mcp__claude_ai_Notion")
+
+
+def tool_problems(insert):
+    lines = [ln for ln in insert.splitlines() if ln.startswith("tools:")]
+    if len(lines) != 1:
+        return ["no single tools: line"]
+    names = [n.strip() for n in lines[0][len("tools:"):].split(",") if n.strip()]
+    out = ["raw sender " + n for n in names if any(n == r or n.startswith(r + "__") for r in RAW_SEND)]
+    out += ["wildcard " + n for n in names if "*" in n]
+    if "Bash" not in names or "Read" not in names:
+        out.append("no Bash or Read: the agent cannot run the writer lane")
+    return out
+
+
+def test_amber_and_cole_get_an_explicit_tool_list_without_raw_senders():
+    edits = {e["file"]: e for e in _inserts(PROP_TOOLS)}
+    assert set(edits) == TOOLS_AGENTS
+    for f, e in edits.items():
+        assert tool_problems(e["insert"]) == [], (f, tool_problems(e["insert"]))
+
+
+def test_a_raw_sender_or_a_missing_list_is_caught():
+    assert tool_problems("tools: Read, Bash, mcp__publer\n") == ["raw sender mcp__publer"]
+    assert tool_problems("tools: Read, Bash, mcp__claude_ai_Slack__slack_send_message\n") != []
+    assert tool_problems("model: opus\n") == ["no single tools: line"]
+    assert tool_problems("tools: Read, Bash, *\n") == ["wildcard *"]
+
+
+def test_amber_loses_the_skill_only_key():
+    e = [e for e in _inserts(PROP_TOOLS) if e["file"].endswith("amber.md")][0]
+    assert e["op"] == "replace" and e["anchor"].startswith("allowed-tools:")
+
+
+def test_ryan_is_not_narrowed_here():
+    assert ".claude/agents/ryan.md" not in {e["file"] for e in _inserts(PROP_TOOLS)}
