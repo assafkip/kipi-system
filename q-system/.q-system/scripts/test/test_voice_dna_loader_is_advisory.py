@@ -43,6 +43,8 @@ def test_the_block_detector_can_fire():
 def test_it_exits_zero_and_never_blocks_on_any_input(tmp_path):
     inputs = [
         "not json",
+        "[]",
+        "42",
         json.dumps({"prompt": ""}),
         json.dumps({"prompt": "what time is it"}),
         json.dumps({"prompt": "draft a linkedin post about detection debt"}),

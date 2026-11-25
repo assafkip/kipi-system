@@ -243,6 +243,8 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
+    if not isinstance(payload, dict):  # valid JSON that is not an object (PR #877 round 1, nit)
+        sys.exit(0)
     user_prompt = payload.get("prompt", "")
     if not user_prompt or not looks_like_writing_request(user_prompt):
         sys.exit(0)

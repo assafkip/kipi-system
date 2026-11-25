@@ -214,14 +214,38 @@ RAW_SEND = ("mcp__publer", "mcp__claude_ai_Resend", "mcp__claude_ai_Slack", "mcp
             "mcp__computer-use", "mcp__base44", "mcp__claude_ai_Google_Docs", "mcp__claude_ai_Notion")
 
 
+# A closed list silently drops a misspelled name (PR #877 round 1, minor): every name must be a
+# built-in tool or a server this machine connects. Measured 2026-11-25 (the session's MCP list).
+BUILTIN = {"Read", "Grep", "Glob", "Write", "Edit", "MultiEdit", "Bash", "Skill", "WebSearch",
+           "WebFetch", "TodoWrite", "Agent", "NotebookEdit"}
+KNOWN_SERVERS = {"linear", "ask-crm", "reddit", "claude_ai_Gmail", "claude-in-chrome",
+                 "plugin_posthog_posthog", "infohawk", "miyo", "notebooklm", "notion_api",
+                 "osint-infra", "perplexity-ask", "threat-intel"}
+
+
+def _known(name):
+    base = name.split("(", 1)[0]
+    if base in BUILTIN:
+        return True
+    if base.startswith("mcp__"):
+        return base[len("mcp__"):].split("__", 1)[0] in KNOWN_SERVERS
+    return False
+
+
 def tool_problems(insert):
     lines = [ln for ln in insert.splitlines() if ln.startswith("tools:")]
     if len(lines) != 1:
         return ["no single tools: line"]
     names = [n.strip() for n in lines[0][len("tools:"):].split(",") if n.strip()]
     out = ["raw sender " + n for n in names if any(n == r or n.startswith(r + "__") for r in RAW_SEND)]
-    out += ["wildcard " + n for n in names if "*" in n]
-    if "Bash" not in names or "Read" not in names:
+    # A scoped pattern such as Bash(python3:*) narrows reach and is fine (round 1, minor);
+    # only a bare wildcard, or one inside a tool name, widens it.
+    out += ["wildcard " + n for n in names if "*" in n.split("(", 1)[0]]
+    out += ["unknown tool " + n for n in names
+            if "*" not in n.split("(", 1)[0] and not _known(n)
+            and not any(n == r or n.startswith(r + "__") for r in RAW_SEND)]
+    base = {n.split("(", 1)[0] for n in names}
+    if "Bash" not in base or "Read" not in base:
         out.append("no Bash or Read: the agent cannot run the writer lane")
     return out
 
@@ -238,11 +262,15 @@ def test_a_raw_sender_or_a_missing_list_is_caught():
     assert tool_problems("tools: Read, Bash, mcp__claude_ai_Slack__slack_send_message\n") != []
     assert tool_problems("model: opus\n") == ["no single tools: line"]
     assert tool_problems("tools: Read, Bash, *\n") == ["wildcard *"]
+    assert tool_problems("tools: Read, Bash(python3:*)\n") == []
+    assert tool_problems("tools: Read, Bash, mcp__lineer\n") == ["unknown tool mcp__lineer"]
+    assert tool_problems("tools: Read, Bash, Raed\n") == ["unknown tool Raed"]
 
 
 def test_amber_loses_the_skill_only_key():
     e = [e for e in _inserts(PROP_TOOLS) if e["file"].endswith("amber.md")][0]
-    assert e["op"] == "replace" and e["anchor"].startswith("allowed-tools:")
+    # replace is refused outside .claude/rules, so the tools: line goes right after the inert key
+    assert e["op"] == "insert_after" and e["anchor"].startswith("allowed-tools:")
 
 
 def test_ryan_is_not_narrowed_here():
