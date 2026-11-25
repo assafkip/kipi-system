@@ -212,10 +212,18 @@ BROAD_RE = re.compile(
 )
 
 
+# What follows the verb can cancel the claim too (review round 2): "rejects
+# nothing", "fails to load", "fails about once a week" claim nothing blocks.
+AFTER_VERB_NOT_A_CLAIM_RE = re.compile(
+    r"^\s*(?:nothing|no\b|to\b|about\b|once\b|sometimes\b|occasionally\b"
+    r"|silently\b|open\b)", re.IGNORECASE)
+
+
 def mechanism_subject(line: str) -> str | None:
     """The subject of a positive mechanism claim on this line, or None."""
     m = MECHANISM_RE.search(line)
-    if m and not NOT_A_CLAIM_RE.search(line[: m.start()]):
+    if (m and not NOT_A_CLAIM_RE.search(line[: m.start()])
+            and not AFTER_VERB_NOT_A_CLAIM_RE.search(line[m.end():])):
         return m.group(1)
     for p in PLAIN_MECHANISM_RE.finditer(line):
         words = p.group(1).split()
@@ -228,6 +236,8 @@ def mechanism_subject(line: str) -> str | None:
         if not (last in MECH_NOUNS or re.search(r"[-./]", last)):
             continue
         if NOT_A_CLAIM_RE.search(line[: p.start(1)] + p.group(1)):
+            continue
+        if AFTER_VERB_NOT_A_CLAIM_RE.search(line[p.end():]):
             continue
         return " ".join(words)
     return None
@@ -332,10 +342,16 @@ class Holders:
             src = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             return False
-        if not re.search(r"^\s*def\s+test_|^\s*check\(|^if __name__", src, re.M):
+        if not src.strip():
             return False
+        # Review round 2: a wired test-*.sh was refused because only Python
+        # idioms were probed. Wiring is checked first; the idiom probe applies
+        # only to a Python test that nothing names.
         if self.wired(path):
             return True
+        if path.suffix == ".py" and not re.search(
+                r"^\s*def\s+test_|^\s*check\(|^if __name__", src, re.M):
+            return False
         full = path.resolve()
         r = subprocess.run(["git", "-C", str(full.parent), "ls-files", "--error-unmatch",
                             str(full)], capture_output=True, text=True, check=False)

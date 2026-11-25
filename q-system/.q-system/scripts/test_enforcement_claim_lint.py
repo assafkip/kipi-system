@@ -151,7 +151,9 @@ def test_plain_prose_claims():
     for line, name in (("Common blocks and what to do:", "a noun 'blocks'"),
                        ("A repair step that fails must be loud.", "a relative clause"),
                        ("If the push fails, retry it.", "a condition"),
-                       ("The hook never blocks.", "a negation")):
+                       ("The hook never blocks.", "a negation"),
+                       ("The ratchet rejects nothing it has seen.", "'rejects nothing'"),
+                       ("The ci job fails to start on forks.", "'fails to'")):
         root = tree("## B\n\n" + line + "\n")
         rc, out = run([str(LINT), "--all", "--root", str(root)])
         check(f"{name} is not a mechanism claim", rc == 0, out)
@@ -177,6 +179,14 @@ def test_user_settings_do_not_hold_in_all_mode():
     (home / ".claude/settings.json").write_text('{"c": "glob-hook.py"}')
     rc, out = run([str(LINT), "--all", "--root", str(root)], env_extra={"HOME": str(home)})
     check("--all ignores a holder wired only in ~/.claude/settings.json", rc == 2, out)
+
+
+def test_wired_shell_test_holds():
+    root = tree("## B\n\n- `gates run` fails on an open item. held_by: tests/test-gate.sh\n",
+                {"tests/test-gate.sh": "#!/bin/sh\nexit 0\n",
+                 "lefthook.yml": "run: bash tests/test-gate.sh\n"})
+    rc, out = run([str(LINT), "--all", "--root", str(root)])
+    check("a wired test-*.sh holder passes", rc == 0, out)
 
 
 def test_census_reader():
