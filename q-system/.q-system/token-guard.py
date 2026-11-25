@@ -425,6 +425,24 @@ def check_exact_retry(tool_name, tool_input, cache):
     return None
 
 
+# Founder, 2026-11-19 (case-057), verbatim: "Remove the 50 tool guard for 4 points".
+# The 4 Points instance holds that ruling in q-investigate/.guard-overrides.json, a
+# file the skeleton never ships, so only that instance reads "off". The helper first
+# lived only in the instance's q-system copy, which every sync overwrites (ASK-5487).
+# It still matters after the 2026-11-21 fleet default went off: setting
+# KIPI_TOKEN_GUARD_VOLUME_CEILING=1 turns the ceiling back on everywhere else.
+# Unreadable or malformed means no override, so the ceiling keeps its setting.
+def _volume_ceiling_off():
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    path = os.path.join(root, "q-investigate", ".guard-overrides.json")
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("volume_ceiling") == "off"
+
+
 def check_volume(cache):
     """Block at ceiling, warn at warning threshold. Both are OFF unless
     KIPI_TOKEN_GUARD_VOLUME_CEILING=1 (founder 2026-11-21: "remove the 50 tool call block").
@@ -437,7 +455,7 @@ def check_volume(cache):
     # token suck". The ceiling stalled every agent that could only commit through REPL
     # (the block refused the exempt commit too). The volume check is off; the retry,
     # edit-spiral, agent and MCP checks stay.
-    if not VOLUME_CEILING_ENABLED:
+    if not VOLUME_CEILING_ENABLED or _volume_ceiling_off():
         return None
     calls = cache.get("tool_calls_since_user", 0)
     if calls >= VOLUME_CEILING:

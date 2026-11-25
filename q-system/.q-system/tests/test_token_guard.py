@@ -315,3 +315,34 @@ def test_a_foreign_runtime_is_a_no_op(session_id):
     inert = run_guard(pre_tool_use(session_id), env_overrides={"CLAUDECODE": ""})
     assert inert.returncode == 0, "a foreign runtime must never be blocked"
     assert inert.stdout == "", "a foreign runtime must not even emit context"
+
+
+# --- the per-instance switch: 4 Points keeps the ceiling off (ASK-5487) -------
+# Founder, 2026-11-19 (case-057), verbatim: "Remove the 50 tool guard for 4 points".
+# The instance carries it as q-investigate/.guard-overrides.json. The fleet default
+# went off on 2026-11-21, but KIPI_TOKEN_GUARD_VOLUME_CEILING=1 turns it back on,
+# and the 4 Points ruling must hold through that too. The helper first lived only in
+# the instance's q-system copy, which every skeleton sync overwrites.
+
+
+def _instance(tmp_path, body):
+    root = tmp_path / "instance"
+    (root / "q-investigate").mkdir(parents=True)
+    if body is not None:
+        (root / "q-investigate" / ".guard-overrides.json").write_text(body)
+    return {"CLAUDE_PROJECT_DIR": str(root)}
+
+
+def test_instance_override_keeps_the_ceiling_off(session_id, tmp_path):
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    env = _instance(tmp_path, json.dumps({"volume_ceiling": "off"}))
+    result = run_guard(pre_tool_use(session_id), env_overrides=env)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("body", [None, "{not json", json.dumps({"volume_ceiling": "on"}), json.dumps(["off"])])
+def test_no_valid_override_keeps_the_ceiling(session_id, tmp_path, body):
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    result = run_guard(pre_tool_use(session_id), env_overrides=_instance(tmp_path, body))
+    assert result.returncode == 2, result.stderr
+    assert "50 tool calls" in result.stderr
