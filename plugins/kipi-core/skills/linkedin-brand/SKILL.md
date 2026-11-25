@@ -10,7 +10,7 @@ This skill is the operating system for a founder's LinkedIn presence and broader
 ## Text in his voice: call the writer lane, never draft it
 
 Rule-ID: RULE-2026-11-18-WRITER-ENTRY
-Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_writer_lane_entry_points.py
+Enforced by: ~/.local/state/kipi/dispatch/kipi-system/q-system/.q-system/tests/test_writer_lane_entry_points.py
 
 Founder, 2026-11-16, verbatim: "If something is set to go through my voice in any way, it must go through the full voice loop."
 

@@ -1,0 +1,21 @@
+{
+ "schema_version": 1,
+ "slug": "writer-lane-agent-tools",
+ "reason": "Voice-loop inventory rows AG-amber and AG-cole (ASK-5359 closing action, RULE-2026-11-18-WRITER-ENTRY): each agent gets an explicit tools: line with the writer lane's Bash and no raw sender. amber.md's allowed-tools: is a skill key the agent loader ignores (the roster listed her as All tools); it stays, inert, because the applier allows replace only on rule files. Ryan is ruled out, see test_writer_lane_entry_points.py. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/writer-lane-agent-tools.json --root $HOME",
+ "edits": [
+  {
+   "file": ".claude/agents/amber.md",
+   "op": "insert_after",
+   "anchor": "allowed-tools: \"Read Grep Glob Write Edit Bash(python3:*) Bash(grep:*) Bash(ls:*) Bash(cat:*)\"\n",
+   "insert": "tools: Read, Grep, Glob, Write, Edit, Bash, Skill, WebSearch, WebFetch\n",
+   "reason": "Amber decides what goes out and when; Ryan and the lane write it. She needs no sender at all. Inserted after the inert allowed-tools: line; the applier allows replace only on .claude/rules."
+  },
+  {
+   "file": ".claude/agents/cole.md",
+   "op": "insert_after",
+   "anchor": "model: opus\nmemory: user\n",
+   "insert": "tools: Read, Grep, Glob, Write, Edit, Bash, Skill, WebSearch, WebFetch, TodoWrite, mcp__linear, mcp__ask-crm, mcp__reddit, mcp__claude_ai_Gmail, mcp__claude-in-chrome, mcp__plugin_posthog_posthog\n",
+   "reason": "Cole's documented tools (Chrome for DMs, PostHog, Gmail, the CRM, Linear) plus the lane's Bash. Publer, Resend, Slack and computer use are out. Gmail drafts and Chrome stay inside the user-level outbound matcher."
+  }
+ ]
+}

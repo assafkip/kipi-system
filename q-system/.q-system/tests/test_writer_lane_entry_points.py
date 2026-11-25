@@ -46,7 +46,12 @@ HOME_FILES = {
 
 MARKERS = {
     "rule id": f"Rule-ID: {RULE_ID}",
-    "enforcer": "Enforced by: ~/projects/kipi-system/" + SELF,
+    # The pinned dispatch checkout, not the shared one (2026-11-25). Why: rule_gate requires the
+    # enforcer to exist on disk, and the shared checkout ~/projects/kipi-system sat ahead 3 and
+    # behind 31 of origin/main, so lessons-daily refused its fast-forward and this test never
+    # reached it: the home proposal could not be applied without rule_gate reverting it.
+    # kipi-dispatch-pinned.sh advances the pinned checkout in place on every run.
+    "enforcer": "Enforced by: ~/.local/state/kipi/dispatch/kipi-system/" + SELF,
     "social lane": "python3 -m pipeline.social idea",
     "email lane": "python3 -m pipeline.draft_email",
     "hand receipt": "`hand`",
@@ -188,3 +193,87 @@ def test_every_disposition_names_a_real_file_and_a_reason():
     for rel, why in DISPOSED.items():
         assert (REPO / rel).is_file(), rel
         assert len(why) > 20, rel
+
+
+# --- explicit tool lists (inventory rows AG-amber, AG-cole, AG-ryan; 2026-11-25) -------------
+# Why: an agent with no tools: line inherits every tool, so the writer-lane section above was
+# prose standing between the agent and every sender it could reach. amber.md carried an
+# allowed-tools: line, which is a skill key: the agent roster still listed her as "All tools".
+# Measured 2026-11-25 with a probe agent: `tools: Read, mcp__linear` gave Read plus the linear
+# server's tools and nothing else, so a server-level name works in an agent's tools: line.
+# A RAW sender here is a tool that puts text in front of another person and that neither
+# agent's job needs. The senders these two keep (Gmail drafts, the Chrome extension) sit inside
+# the user-level outbound matcher (consulting automation/outbound_gate.py), which refuses text
+# with no lane receipt.
+# Ryan is ruled out of this list on purpose: the founder gave him research reach on 2026-10-07
+# ("I want Ryan to do this research"), RULE-2026-11-17-LEAN-INVESTIGATORS pins which servers
+# he keeps, and every sender he can reach is inside that same outbound matcher.
+PROP_TOOLS = QS / "proposals" / "writer-lane-agent-tools.json"
+TOOLS_AGENTS = {".claude/agents/amber.md", ".claude/agents/cole.md"}
+RAW_SEND = ("mcp__publer", "mcp__claude_ai_Resend", "mcp__claude_ai_Slack", "mcp__plugin_slack_slack",
+            "mcp__computer-use", "mcp__base44", "mcp__claude_ai_Google_Docs", "mcp__claude_ai_Notion",
+            # both Notion servers write pages another person reads (PR #877 round 2, minor)
+            "mcp__notion_api")
+
+
+# A closed list silently drops a misspelled name (PR #877 round 1, minor): every name must be a
+# built-in tool or a server this machine connects. Measured 2026-11-25 (the session's MCP list).
+BUILTIN = {"Read", "Grep", "Glob", "Write", "Edit", "MultiEdit", "Bash", "Skill", "WebSearch",
+           "WebFetch", "TodoWrite", "Agent", "NotebookEdit"}
+KNOWN_SERVERS = {"linear", "ask-crm", "reddit", "claude_ai_Gmail", "claude-in-chrome",
+                 "plugin_posthog_posthog", "infohawk", "miyo", "notebooklm", "notion_api",
+                 "osint-infra", "perplexity-ask", "threat-intel"}
+
+
+def _known(name):
+    base = name.split("(", 1)[0]
+    if base in BUILTIN:
+        return True
+    if base.startswith("mcp__"):
+        return base[len("mcp__"):].split("__", 1)[0] in KNOWN_SERVERS
+    return False
+
+
+def tool_problems(insert):
+    lines = [ln for ln in insert.splitlines() if ln.startswith("tools:")]
+    if len(lines) != 1:
+        return ["no single tools: line"]
+    names = [n.strip() for n in lines[0][len("tools:"):].split(",") if n.strip()]
+    out = ["raw sender " + n for n in names if any(n == r or n.startswith(r + "__") for r in RAW_SEND)]
+    # A scoped pattern such as Bash(python3:*) narrows reach and is fine (round 1, minor);
+    # only a bare wildcard, or one inside a tool name, widens it.
+    out += ["wildcard " + n for n in names if "*" in n.split("(", 1)[0]]
+    out += ["unknown tool " + n for n in names
+            if "*" not in n.split("(", 1)[0] and not _known(n)
+            and not any(n == r or n.startswith(r + "__") for r in RAW_SEND)]
+    base = {n.split("(", 1)[0] for n in names}
+    if "Bash" not in base or "Read" not in base:
+        out.append("no Bash or Read: the agent cannot run the writer lane")
+    return out
+
+
+def test_amber_and_cole_get_an_explicit_tool_list_without_raw_senders():
+    edits = {e["file"]: e for e in _inserts(PROP_TOOLS)}
+    assert set(edits) == TOOLS_AGENTS
+    for f, e in edits.items():
+        assert tool_problems(e["insert"]) == [], (f, tool_problems(e["insert"]))
+
+
+def test_a_raw_sender_or_a_missing_list_is_caught():
+    assert tool_problems("tools: Read, Bash, mcp__publer\n") == ["raw sender mcp__publer"]
+    assert tool_problems("tools: Read, Bash, mcp__claude_ai_Slack__slack_send_message\n") != []
+    assert tool_problems("model: opus\n") == ["no single tools: line"]
+    assert tool_problems("tools: Read, Bash, *\n") == ["wildcard *"]
+    assert tool_problems("tools: Read, Bash(python3:*)\n") == []
+    assert tool_problems("tools: Read, Bash, mcp__lineer\n") == ["unknown tool mcp__lineer"]
+    assert tool_problems("tools: Read, Bash, Raed\n") == ["unknown tool Raed"]
+
+
+def test_amber_gets_tools_after_her_inert_skill_key():
+    e = [e for e in _inserts(PROP_TOOLS) if e["file"].endswith("amber.md")][0]
+    # replace is refused outside .claude/rules, so the tools: line goes right after the inert key
+    assert e["op"] == "insert_after" and e["anchor"].startswith("allowed-tools:")
+
+
+def test_ryan_is_not_narrowed_here():
+    assert ".claude/agents/ryan.md" not in {e["file"] for e in _inserts(PROP_TOOLS)}
