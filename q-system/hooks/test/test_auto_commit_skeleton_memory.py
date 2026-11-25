@@ -21,6 +21,7 @@ import unittest
 
 HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "auto-commit.py")
 MEM = "q-system/memory/open-loops.json"
+BIG = "q-system/canonical/decisions.md"
 
 
 def git(repo, *args):
@@ -41,7 +42,8 @@ def make_repo(skeleton=True, branch="main"):
     git(repo, "config", "user.name", "test")
     hooks = tempfile.mkdtemp(prefix="no-hooks-")
     git(repo, "config", "core.hooksPath", hooks)
-    for rel, body in ((MEM, "[]\n"), ("q-system/canonical/c.md", "c\n")):
+    for rel, body in ((MEM, "[]\n"), ("q-system/canonical/c.md", "c\n"),
+                      (BIG, "".join(f"line {i}\n" for i in range(200)))):
         os.makedirs(os.path.join(repo, os.path.dirname(rel)), exist_ok=True)
         with open(os.path.join(repo, rel), "w") as f:
             f.write(body)
@@ -74,14 +76,27 @@ class SkeletonMemoryRouting(unittest.TestCase):
         self.assertIn(MEM, git(repo, "status", "--porcelain").stdout)
         self.assertIn("memory", r.stdout)  # one STDOUT line says why
 
-    def test_skeleton_main_still_commits_other_areas(self):
+    def test_skeleton_main_commits_no_other_area_either(self):
+        # ASK-5583: canonical and RCA commits stranded local main 3 ahead (ffc287ff,
+        # cb9c8846, 170d0ecd), so the skeleton's main takes no unattended commit at all.
         repo = make_repo()
+        before = head(repo)
         touch(repo, MEM, '["live"]\n')
         touch(repo, "q-system/canonical/c.md", "changed\n")
-        run_hook(repo)
-        files = git(repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
-        self.assertEqual(["q-system/canonical/c.md"], files)
-        self.assertIn(MEM, git(repo, "status", "--porcelain").stdout)
+        r = run_hook(repo)
+        self.assertEqual(before, head(repo), r.stdout + r.stderr)
+        status = git(repo, "status", "--porcelain").stdout
+        self.assertIn(MEM, status)
+        self.assertIn("q-system/canonical/c.md", status)
+        self.assertIn("held content q-system/canonical/c.md", r.stdout)
+
+    def test_the_shrink_check_still_runs_on_skeleton_main(self):
+        # PR #879 review round 1, major: the hold emptied the groups before the
+        # ASK-1515 shrink check read them, so a 198-line loss went unpaged.
+        repo = make_repo()
+        touch(repo, BIG, "line 0\nline 1\n")
+        r = run_hook(repo)
+        self.assertIn("REFUSED", r.stdout, r.stdout + r.stderr)
 
     def test_instance_still_commits_memory(self):  # control: behaviour unchanged
         repo = make_repo(skeleton=False)

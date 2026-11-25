@@ -1136,14 +1136,18 @@ def hold_skeleton_default_branch(groups):
         return groups
     held = [p for paths in groups.values() for p in paths]
     content = sorted(p for p in held if not p.startswith(SKELETON_MEMORY_PREFIXES))
-    if held:
-        print(f"auto-commit: skeleton default branch: {len(held)} file(s) left "
-              "uncommitted so local main stays at origin/main")
+    # One line per file, with its kind (PR #879 review, minor): for a memory-only hold
+    # this stdout line is the only record of what was left uncommitted.
+    for p in sorted(held):
+        kind = "memory/ledger" if p.startswith(SKELETON_MEMORY_PREFIXES) else "content"
+        print(f"auto-commit: skeleton default branch: held {kind} {p} "
+              "(uncommitted, so local main stays at origin/main)")
     if content:
         page_held_content(content)
     else:
         clear_held_content_marker()
     return {}
+
 
 def main():
     paused =git_operation_in_progress()
@@ -1220,13 +1224,17 @@ def _commit_main():
         return
 
     groups, unclassified = group_files(files)
-    groups = hold_skeleton_default_branch(groups)
+    # SHRINK CHECK BEFORE THE HOLD (PR #879 review, major). The hold empties the groups
+    # on the skeleton's main, and the shrink detector reads the groups, so a 198-line
+    # deletion of decisions.md there went unpaged. A held file is still at risk: the
+    # rollback that ASK-1515 exists to catch can sit in the tree until someone lands it.
     refusals = shrink_refusals([f for fl in groups.values() for f in fl])
     if refusals:
         report_refusal(refusals)
         report_skipped(unclassified)
         return
     clear_refusal_markers()
+    groups = hold_skeleton_default_branch(groups)
 
     if not groups:
         clear_commit_refusal_marker()

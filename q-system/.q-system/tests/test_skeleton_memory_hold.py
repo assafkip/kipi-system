@@ -122,5 +122,37 @@ class CallSite(unittest.TestCase):
         self.assertIn("slack-notify.sh", fn[:fn.index("merge --ff-only")])
 
 
+
+class LandedContent(unittest.TestCase):
+    """ASK-5583: content auto-commit held on the skeleton's main, then landed by PR."""
+    RCA = "q-system/output/rca/rca-x-2026-11-25.md"
+    CAN = "q-system/canonical/decisions.md"
+
+    def _origin_adds(self, s, rel, body):
+        d = os.path.dirname(s)
+        up = os.path.join(d, "w")
+        w(up, rel, body); g(up, "add", "-A"); g(up, "commit", "-qm", "land")
+        g(d, "-C", "o.git", "fetch", "-q", "../w", "main:main"); g(s, "fetch", "-q")
+
+    def test_landed_untracked_rca_is_held_and_fast_forward_succeeds(self):
+        s = fixture()
+        self._origin_adds(s, self.RCA, "rca\n")
+        w(s, self.RCA, "rca\n")
+        self.assertNotEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
+        r = hold(s)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertIn("held: " + self.RCA, r.stdout)
+        self.assertEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
+        self.assertEqual("rca\n", open(os.path.join(s, self.RCA)).read())
+
+    def test_a_local_edit_origin_does_not_carry_is_left_alone(self):
+        s = fixture()
+        self._origin_adds(s, self.CAN, "origin\n")
+        w(s, self.CAN, "a human's draft\n")
+        r = hold(s)
+        self.assertNotIn(self.CAN, r.stdout)
+        self.assertEqual("a human's draft\n", open(os.path.join(s, self.CAN)).read())
+
+
 if __name__ == "__main__":
     unittest.main()
