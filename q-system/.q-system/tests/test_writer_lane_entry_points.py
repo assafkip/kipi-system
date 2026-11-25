@@ -211,7 +211,9 @@ def test_every_disposition_names_a_real_file_and_a_reason():
 PROP_TOOLS = QS / "proposals" / "writer-lane-agent-tools.json"
 TOOLS_AGENTS = {".claude/agents/amber.md", ".claude/agents/cole.md"}
 RAW_SEND = ("mcp__publer", "mcp__claude_ai_Resend", "mcp__claude_ai_Slack", "mcp__plugin_slack_slack",
-            "mcp__computer-use", "mcp__base44", "mcp__claude_ai_Google_Docs", "mcp__claude_ai_Notion")
+            "mcp__computer-use", "mcp__base44", "mcp__claude_ai_Google_Docs", "mcp__claude_ai_Notion",
+            # both Notion servers write pages another person reads (PR #877 round 2, minor)
+            "mcp__notion_api")
 
 
 # A closed list silently drops a misspelled name (PR #877 round 1, minor): every name must be a
@@ -267,7 +269,7 @@ def test_a_raw_sender_or_a_missing_list_is_caught():
     assert tool_problems("tools: Read, Bash, Raed\n") == ["unknown tool Raed"]
 
 
-def test_amber_loses_the_skill_only_key():
+def test_amber_gets_tools_after_her_inert_skill_key():
     e = [e for e in _inserts(PROP_TOOLS) if e["file"].endswith("amber.md")][0]
     # replace is refused outside .claude/rules, so the tools: line goes right after the inert key
     assert e["op"] == "insert_after" and e["anchor"].startswith("allowed-tools:")
