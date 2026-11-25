@@ -2641,7 +2641,8 @@ def stood_in(candidate):
     like ":(icase)a" asks about itself, not a pathspec match (PR #881 finding 4).
     """
     rel = str(candidate.relative_to(root))
-    if any(ch in rel for ch in "*?[\\\n"):
+    # A tab too: standin-map is tab-delimited (PR #881 round 2, minor 2).
+    if any(ch in rel for ch in "*?[\\\n\t"):
         return False
     try:
         result = subprocess.run(
