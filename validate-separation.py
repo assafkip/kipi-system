@@ -1135,6 +1135,24 @@ def phase_1():
             # stops being mentioned stops being debt and becomes furniture.
             print(f"  {claim_out.splitlines()[-1]}")
 
+    # ASK-3818: the mechanism-claim half. A missing lint is a failure, for the
+    # same reason as above: this pass exists for rule files no hook mediated.
+    mech_lint = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts",
+                             "capability-claim-lint.py")
+    if not file_exists(mech_lint):
+        check("Enforcement-claim audit: capability-claim-lint.py present", False)
+        errors.append("q-system/.q-system/scripts/capability-claim-lint.py is missing, "
+                      "so no mechanism claim in .claude/rules was checked.")
+    else:
+        result = subprocess.run([sys.executable, mech_lint, "--all", "--root", SCRIPT_DIR],
+                                capture_output=True, text=True)
+        mech_out = (result.stdout + result.stderr).strip()
+        check("Enforcement-claim audit: every mechanism claim is held", result.returncode == 0)
+        if result.returncode != 0 and mech_out:
+            errors.append(mech_out)
+        elif mech_out:
+            print(f"  {mech_out.splitlines()[-1]}")
+
 
 def phase_2():
     phase_header(2, "KTLYST_strategy subtree")

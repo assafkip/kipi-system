@@ -344,6 +344,10 @@ PY
     # the real script and still assert nothing that could fail -- so this reports
     # and does not block. `|| true` keeps a finding from failing `kipi check`.
     python3 "$KIPI_HOME/reimplementing-test-lint.py" || true
+    # ASK-3818 (RCA 698): every hook in ~/.claude/hooks as deny, advisory or
+    # retired, and the count of hook entries that cannot block (`test -f &&` or
+    # `|| true`). A census, so it reports and never fails the check.
+    python3 "$KIPI_HOME/q-system/.q-system/scripts/capability-claim-lint.py" --hook-census --root "$CALLER_DIR" || true
     # ADVISORY, and PINNED at the measured backlog (ASK-627, sp-ebe6a2b5). The
     # notifier has a real exit contract and 44 call sites still ignore it, so a
     # caller can record a delivery that never happened. Pinning the count means
