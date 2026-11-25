@@ -1,5 +1,8 @@
 # Fable-Discipline Auto-Invocation (ENFORCED)
 
+Rule-ID: RULE-2026-11-25-FABLEINV
+Enforced by: q-system/.q-system/scripts/test_enforcement_claim_lint.py
+
 Invoke the `fable-discipline` skill — the **execution-discipline layer of the
 prd-os plugin** (merged 2026-07-04, one skill, two load paths: `/issue-start`
 loads it for PRD/DSSE work; this rule + the quick-plan fast path load it for
@@ -11,7 +14,7 @@ self-test, single-writer chokepoints, scar-anchored why-comments).
 | Trigger | Action |
 |---------|--------|
 | Building a feature, fixing a bug, writing a script | Read the fable-discipline SKILL.md (prd-os plugin), then follow its checklist |
-| Writing or editing tests | Same. The fable-discipline-lint hook also blocks tests that touch a live data path |
+| Writing or editing tests | Same. The fable-discipline-lint hook also blocks tests that touch a live data path (held_by: plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py) |
 | Hardening a data path, schema, or migration | Same. Single-writer + verify-against-a-copy rules apply |
 
 **Gate check (skip the skill for):** one-line config/value tweaks, typo fixes,

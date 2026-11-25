@@ -58,11 +58,15 @@ weakens the rule for every instance to fix one job.
 
 ## The caller's obligation
 
+Rule-ID: RULE-2026-11-25-CALLER
+Enforced by: q-system/.q-system/scripts/test_enforcement_claim_lint.py
+
 **Check the repair step's exit code.** A repair step that fails must be loud.
 
 `--fix` exits 0 whether or not anything needed repairing, because "nothing to fix"
 is success; a caller treating it as failure would hold every clean draft, which is
 the opposite of this rule. It exits 1 only on a real fault.
+held_by: q-system/.q-system/scripts/test_voice_lint_caps.py
 
 ## Scar
 

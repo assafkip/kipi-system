@@ -75,6 +75,9 @@ was read as clean: scar shape 5, committed while building this. Bypass per
 file: `instrument-lint-skip`. Engine test: `test_instrument_lint.py`.
 ## Why it guards `/output/` now, and what it refused (measured 2026-09-21)
 
+Rule-ID: RULE-2026-11-25-WIDEN
+Enforced by: q-system/.q-system/scripts/test_enforcement_claim_lint.py
+
 The first cut guarded two directories. That is this rule's own failure wearing
 this rule's clothes: the mechanism was scoped to the room it was built in. Three
 wrong numbers reported on 2026-09-20 were every one null-shaped, and the one of
@@ -117,7 +120,8 @@ keys that decide whether a rule loads are out of that tool's reach by design. So
 the GATE fires on every `/output/` write fleet-wide while this INSTRUCTION still
 loads only on the older paths. The gate's stderr carries the full fix, so a
 blocked write teaches without the rule in context. Widening the frontmatter is a
-separate change through a different door.
+separate change through a different door. kind: observation (measured 2026-09-21;
+no test pins the frontmatter refusal).
 
 
 ## What is NOT enforced (say it, do not hide it)

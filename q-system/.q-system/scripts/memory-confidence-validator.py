@@ -189,7 +189,28 @@ def main():
     for err in as_of_errors(fm):
         block(err)
 
+    # ASK-3818 (RCA 696): a directive note names what holds it. The check lives in
+    # capability-claim-lint.py so the rule-file lint and this hook share one
+    # definition of "held"; two copies would drift the way the provenance enum did.
+    why = _claim_verdict(content, file_path)
+    if why:
+        block(why + " (ASK-3818). Add one to the frontmatter or body.")
+
     sys.exit(0)
+
+
+def _claim_verdict(content, file_path):
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "capability_claim_lint",
+            str(Path(__file__).resolve().parent / "capability-claim-lint.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:
+        return None  # an instance mid-update without the lint: the other checks still ran
+    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    return mod.memory_note_verdict(content, root, file_path)
 
 
 if __name__ == "__main__":

@@ -127,6 +127,15 @@ pre-commit:
       run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/enforced-claim-lint.py --all
       fail_text: "A rule claims (ENFORCED), (NON-NEGOTIABLE), (MANDATORY) or BLOCKING that nothing substantiates. Declare ENFORCED / DETECTED / ADVISORY in its enforcement block, or fix the wiring."
 
+    # ASK-3818. A rule line that names a mechanism ("`x` fails / blocks / refuses /
+    # exits 2") must be held: the named thing is a wired executable, or the line
+    # carries held_by:, ticket:+expires:, or kind: observation. Scar: the
+    # no-orphan-findings backstop said `gates run` fails on ANY open item; no
+    # such command exists here and the real one is scoped.
+    enforcement-claim:
+      run: python3 q-system/.q-system/scripts/capability-claim-lint.py --all --root "$(git rev-parse --show-toplevel)"
+      fail_text: "A rule names a mechanism that fails/blocks/refuses and nothing holds it. Add held_by: <wired script or test>, ticket: ASK-n expires: YYYY-MM-DD, kind: observation, or correct the sentence."
+
     instruction-budget:
       run: python3 q-system/.q-system/scripts/instruction-budget-audit.py --ratchet
       fail_text: "Always-on instruction lines grew past the ratchet baseline. Trim what you added or scope a rule with paths: frontmatter."

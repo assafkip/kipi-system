@@ -30,11 +30,20 @@ There is no third way. You cannot hand-clear the gate.
 
 ## Deterministic backstops
 
+Rule-ID: RULE-2026-11-25-BACKSTOP
+Enforced by: q-system/.q-system/scripts/test_enforcement_claim_lint.py
+
 - A `deferred` medium-and-up finding AUTO-creates the item + Linear issue in BOTH findings
   systems (findings_writer + issue_findings); `add` or defer of a minor/low/nit exits 2.
+  held_by: plugins/prd-os/tests/test_spillover_minor_tier.py
 - The fable-discipline lint blocks deferral language written into CODE without a
   capture (`# spillover-skip` acks an already-captured line).
-- `gates run` fails while any item is open (the enforcement of last resort).
+  held_by: plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py
+- `prd_runner.py gates run` fails on an open `blocker`, `major` or `high` item
+  that the run's scope opened (the active issue or PRD, or any item when no scope
+  is active), and on an inherited item only when it is a `blocker`. Minor items and
+  other inherited items are counted and printed, not blocking (the enforcement of
+  last resort). held_by: plugins/prd-os/tests/test_spillover_combined_rule.py
 - `spillover-linear-check.py` (daily launchd) retries failed Linear filings, alerts Sana once; never blocks.
 
 ## Reporting

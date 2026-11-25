@@ -3308,6 +3308,27 @@ def notify_text(outcome: dict, per_detector: dict) -> str:
     return f"fleet health: {counts}. Board has them; nothing to do now."
 
 
+def advisory_hook_line() -> str:
+    """The hook census count (ASK-3818, RCA 698). A hook entry that is `test -f
+    && ...` or ends `|| true` cannot block, whatever its rule says; the count
+    was measured once by hand (2026-11-06) and printed nowhere after."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "capability_claim_lint", str(HERE / "capability-claim-lint.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        hooks = Path.home() / ".claude" / "hooks"
+        settings = [Path.home() / ".claude" / "settings.json",
+                    REPO_ROOT / ".claude" / "settings.json"]
+        rep = mod.hook_census(hooks, [x for x in settings if x.is_file()])
+    except Exception as exc:  # a census that crashes must not stop the run
+        return f"  advisory-hooks: census failed ({exc})"
+    c = rep["counts"]
+    return (f"  advisory-hooks: {rep['advisory_entries']} of {rep['entries']} hook entries; "
+            f"~/.claude/hooks {c['deny']} deny, {c['advisory']} advisory, {c['retired']} retired")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true", help="actually file Linear issues")
@@ -3328,6 +3349,7 @@ def main() -> int:
     print(f"fleet-health {_now()}")
     for did, n in per_detector.items():
         print(f"  {did}: {n}")
+    print(advisory_hook_line())
 
     outcome = file_findings(all_findings, args.apply)
     print(outcome_line(outcome))
