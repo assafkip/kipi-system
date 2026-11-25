@@ -91,3 +91,35 @@ def test_main_wires_the_hold():
     body = src.split("def _commit_main", 1)[1].split("\ndef ", 1)[0]
     assert "hold_skeleton_default_branch(groups)" in body
     assert body.index("hold_skeleton_default_branch(groups)") < body.index("commit_group(")
+
+
+def test_a_clean_tree_clears_the_held_marker_so_the_same_set_pages_again(monkeypatch, tmp_path):
+    """PR #879 review round 2, major: the marker outlived the held set, so the same
+    paths held a second time were never paged."""
+    monkeypatch.setenv("KIPI_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(ac, "PROJ_DIR", str(tmp_path / "skel"))
+    notify = tmp_path / "notify.sh"
+    out = tmp_path / "pages.txt"
+    notify.write_text(f'#!/bin/bash\necho "$1" >> {out}\n')
+    monkeypatch.setenv("KIPI_AUTOCOMMIT_NOTIFY", str(notify))
+    paths = ["q-system/output/rca/rca-x-2026-11-25.md"]
+    assert ac.page_held_content(paths) is True
+    monkeypatch.setattr(ac, "is_remote_session", lambda: False)
+    monkeypatch.setattr(ac, "fleet_update_in_progress", lambda: None)
+    monkeypatch.setattr(ac, "another_commit_in_flight", lambda: None)
+    monkeypatch.setattr(ac, "get_changed_files", lambda: set())
+    monkeypatch.setattr(ac, "run", lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    ac._commit_main()
+    assert ac.page_held_content(paths) is True
+
+
+def test_a_refusal_on_skeleton_main_never_says_commit_it_yourself(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("KIPI_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(ac, "page_refusal", lambda r: False)
+    monkeypatch.setattr(ac, "on_skeleton_default_branch", lambda: True)
+    ac.report_refusal([("q-system/canonical/decisions.md", "loses 198 lines")])
+    text = capsys.readouterr().out
+    assert "commit it yourself" not in text and "a PR" in text
+    monkeypatch.setattr(ac, "on_skeleton_default_branch", lambda: False)
+    ac.report_refusal([("q-system/canonical/decisions.md", "loses 198 lines")])
+    assert "commit it yourself" in capsys.readouterr().out

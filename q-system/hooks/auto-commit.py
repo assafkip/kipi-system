@@ -827,8 +827,14 @@ def report_refusal(refusals):
                 "would lose lines in an unattended commit (ASK-1515):")
     lines = [head]
     lines += [f"  - {p}: {why}" for p, why in refusals]
-    lines.append("  The files are untouched on disk and NOT staged. If the loss is "
-                 "intended, commit it yourself with a real message.")
+    if on_skeleton_default_branch():
+        # A hand commit here is the drift ASK-5583 removed (PR #879 review round 2, minor).
+        lines.append("  The files are untouched on disk and NOT staged. If the loss is "
+                     "intended, land it through a worktree branch cut from origin/main "
+                     "and a PR; never commit on the skeleton's main.")
+    else:
+        lines.append("  The files are untouched on disk and NOT staged. If the loss is "
+                     "intended, commit it yourself with a real message.")
     text = "\n".join(lines)
     print(text)
     print(text, file=sys.stderr)
@@ -1220,6 +1226,9 @@ def _commit_main():
     if not files:
         clear_refusal_markers()
         clear_commit_refusal_marker()
+        # The held set is gone (landed and held aside, or cleaned): the next hold of
+        # the same paths is a new event and pages again (PR #879 review round 2, major).
+        clear_held_content_marker()
         print("auto-commit: no changes")
         return
 

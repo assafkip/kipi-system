@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Hold dirty skeleton memory files that origin/main also changed (ASK-3525).
+"""Hold dirty skeleton files that block the fast-forward to origin/main (ASK-3525, ASK-5583).
+
+Two kinds are held: memory and ledger files under PREFIXES that origin also changed,
+and, anywhere in the tree, a dirty file whose bytes already equal origin's (content
+auto-commit held and Sana then landed by PR, so the fast-forward writes the same bytes).
+Any other local edit is left exactly where it is.
 
 Pairs with q-system/hooks/auto-commit.py, which no longer commits session memory on
 the skeleton's default branch, so those files sit modified in the working tree.
