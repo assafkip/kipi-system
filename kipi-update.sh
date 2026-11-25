@@ -2510,6 +2510,7 @@ while IFS='|' read -r name path prefix itype declared; do
       echo "  dry-run model: skipped ${#MODEL_SKIPPED_PATHS[@]} nested repositories (separate repos, not synced)"
     fi
     if ! MODEL_IGNORED_LINKS_FILE="$DRY_MODEL_ROOT/ignored-links" \
+        MODEL_STANDIN_LINKS_FILE="$DRY_MODEL_ROOT/standin-links" \
         python3 - "$path" ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"} <<'PY'
 import os
 import pathlib
@@ -2542,6 +2543,8 @@ root = pathlib.Path(sys.argv[1]).resolve()
 skipped = {(root / arg).resolve(strict=False) for arg in sys.argv[2:]}
 # Links the model leaves out, one relative path per line, for the rsync excludes.
 ignored_out = open(os.environ["MODEL_IGNORED_LINKS_FILE"], "w")
+# Tracked links the model holds as a stand-in, one relative path per line.
+standin_out = open(os.environ["MODEL_STANDIN_LINKS_FILE"], "w")
 
 
 def left_out(candidate):
@@ -2567,6 +2570,32 @@ def left_out(candidate):
     if result.returncode != 0:
         return False
     ignored_out.write(rel + "\n")
+    return True
+
+
+def stood_in(candidate):
+    """True for a TRACKED link, which the model keeps at its path but repoints at
+    an empty directory inside the model, so a write through it stays there.
+
+    Scar ASK-4969 (measured 2026-11-25): a client instance tracks a case
+    folder's link into a cloud drive, so it is repo content the model cannot
+    leave out (left_out above), and refusing it blocked every dry run of the
+    instance. An untracked, unignored escaping link still refuses: it is a stray
+    the instance should commit or ignore, not content the sync has to model.
+    Same pattern-character rule as left_out, so the stand-in hits one path only.
+    """
+    rel = str(candidate.relative_to(root))
+    if any(ch in rel for ch in "*?[\\\n"):
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", rel],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    standin_out.write(rel + "\n")
     return True
 
 
@@ -2609,6 +2638,8 @@ for current, directories, files in os.walk(root, followlinks=False):
         else:
             internal = False
         if internal or left_out(candidate):
+            continue
+        if stood_in(candidate):
             continue
         reason = "directory" if candidate.is_dir() else "dangling"
         print(f"unsafe {reason} symlink escapes the disposable model: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
@@ -2714,6 +2745,34 @@ PY
           --replace-all core.worktree "$DRY_MODEL_ROOT/instance"; then
         abandon_instance "  ERROR: could not isolate linked-worktree config" && continue
       fi
+    fi
+    # Stand-ins for tracked escaping links (ASK-4969). The copy above holds the
+    # link as a link, still pointing at PRODUCTION; repoint it at an empty
+    # directory inside the model before any sync step runs, and mark it
+    # assume-unchanged so the model's git does not report the repointed bytes as
+    # an instance change. rm without -r removes the link only, never its target.
+    MODEL_STANDIN_LINKS=0
+    MODEL_STANDIN_FAILED=0
+    if [ -s "$DRY_MODEL_ROOT/standin-links" ]; then
+      while IFS= read -r standin_rel; do
+        [ -n "$standin_rel" ] || continue
+        MODEL_STANDIN_LINKS=$((MODEL_STANDIN_LINKS + 1))
+        standin_dir="$DRY_MODEL_ROOT/standins/$MODEL_STANDIN_LINKS"
+        standin_link="$DRY_MODEL_ROOT/instance/$standin_rel"
+        if [ ! -L "$standin_link" ] ||
+            ! mkdir -p "$standin_dir" ||
+            ! rm -f -- "$standin_link" ||
+            ! ln -s "$standin_dir" "$standin_link" ||
+            ! git -C "$DRY_MODEL_ROOT/instance" update-index \
+              --assume-unchanged -- "$standin_rel"; then
+          MODEL_STANDIN_FAILED=1
+          break
+        fi
+      done < "$DRY_MODEL_ROOT/standin-links"
+      if [ "$MODEL_STANDIN_FAILED" != "0" ]; then
+        abandon_instance "  ERROR: could not stand in for a tracked symlink in the dry-run model" && continue
+      fi
+      echo "  dry-run model: stood in for $MODEL_STANDIN_LINKS tracked symlink(s) that leave the instance (writes land in the model)"
     fi
     path="$DRY_MODEL_ROOT/instance"
     if [ "$itype" = "direct-clone" ]; then
