@@ -274,12 +274,21 @@ def run(cmd, actor, env=None, **kw):
         # The plan, behind the 45% weekly stop (RULE-2026-11-26-PLAN45), same as fleet-claude.sh.
         gate = subprocess.run([sys.executable, os.path.join(HERE, "plan_usage_gate.py")],
                               env=plan_env(src), capture_output=True, text=True)
-        sys.stderr.write("fleet_door: %s: %s (bills the PLAN)\n"
-                         % (actor, gate.stdout.strip() or "plan_usage_gate.py gave no reading"))
-        sys.stderr.flush()
         if gate.returncode != 0:
-            return subprocess.CompletedProcess(list(cmd), gate.returncode, "" if kw.get("text") else b"",
-                                               gate.stdout if kw.get("text") else gate.stdout.encode())
+            # The same one machine line fleet-claude.sh prints, so a caller classifying stderr
+            # reads a stop as an outage; the gate's own words and any traceback ride after it
+            # on our stderr, never lost (PR #885 review round 1, minor 1).
+            rc = 3 if gate.returncode == 3 else 4
+            line = ("kipi plan gate: weekly %s (RULE-2026-11-26-PLAN45)\n"
+                    % ("stop line reached" if rc == 3 else "usage unreadable"))
+            sys.stderr.write("fleet_door: %s: %s%s" % (actor, gate.stdout, gate.stderr))
+            sys.stderr.flush()
+            return subprocess.CompletedProcess(list(cmd), rc, "" if kw.get("text") else b"",
+                                               line if kw.get("text") else line.encode())
+        # The caller's own stderr (its launchd log), not the child's captured stream, so this
+        # line never reaches an is_environmental reading the way the shim's would.
+        sys.stderr.write("fleet_door: %s bills the PLAN (%s)\n" % (actor, gate.stdout.strip()))
+        sys.stderr.flush()
         return _spawn(list(cmd), list(cmd), env=plan_env(src), **kw)
     res = _spawn(door_argv(cmd, actor), list(cmd), env=door_env(cmd, src), **kw)
     _say_refusal(actor, res)

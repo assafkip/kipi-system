@@ -69,8 +69,8 @@ DECLARED = (
     # ruling: a stop line the founder set himself, 2026-11-26, verbatim: "Move the fleet work
     # to the claude account - Ensure it stops when usage gets to 45% of the weekly usage".
     # It supersedes R1 for plan weekly usage only (RULE-2026-11-26-PLAN45, plan_usage_gate.py).
-    ("kipi-dispatch.sh", "PLAN_GATE", "ruling", 6),
-    (S + "fleet-claude.sh", "PLAN_GATE", "ruling", 4),
+    ("kipi-dispatch.sh", "PLAN_GATE", "ruling", 4),
+    (S + "fleet-claude.sh", "PLAN_GATE", "ruling", 2),
 )
 
 SOURCED = re.compile(r'^\s*(?:\.|source)\s+"\$SCRIPT_DIR/([\w.-]+\.sh)"')

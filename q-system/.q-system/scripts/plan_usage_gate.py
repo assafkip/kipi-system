@@ -41,7 +41,7 @@ STATE = os.environ.get("KIPI_PLAN_USAGE_STATE",
                        os.path.expanduser("~/.local/state/kipi/plan-usage.json"))
 # A fleet call is minutes long; 2 minutes of staleness can overshoot the line by at most
 # what the fleet spends in 2 minutes, and saves one HTTP call per `claude` launch.
-CACHE_S = int(os.environ.get("KIPI_PLAN_USAGE_CACHE_S", "120"))
+CACHE_S = 120  # no env override: a widened window would let a day-old reading pass (PR #885 round 1)
 
 
 def keychain_service(config_dir):
@@ -51,10 +51,15 @@ def keychain_service(config_dir):
     return "Claude Code-credentials-" + hashlib.sha256(config_dir.encode()).hexdigest()[:8]
 
 
+def login():
+    """Which login this reading belongs to; a cached row from another login never counts."""
+    return keychain_service(os.environ.get("CLAUDE_CONFIG_DIR", ""))
+
+
 def token():
     if os.environ.get("KIPI_PLAN_USAGE_TOKEN"):
         return os.environ["KIPI_PLAN_USAGE_TOKEN"]
-    svc = keychain_service(os.environ.get("CLAUDE_CONFIG_DIR", ""))
+    svc = login()
     acct = os.environ.get("USER") or os.path.basename(os.path.expanduser("~"))
     raw = subprocess.run(["security", "find-generic-password", "-s", svc, "-a", acct, "-w"],
                          capture_output=True, text=True, timeout=10).stdout.strip()
@@ -72,14 +77,15 @@ def fetch():
     pct = week.get("utilization")
     if not isinstance(pct, (int, float)):
         raise RuntimeError("usage reply has no seven_day.utilization")
-    return {"pct": float(pct), "resets_at": week.get("resets_at"), "at": time.time()}
+    return {"pct": float(pct), "resets_at": week.get("resets_at"), "at": time.time(), "login": login()}
 
 
 def cached():
     try:
         with open(STATE) as fh:
             row = json.load(fh)
-        if time.time() - float(row["at"]) < CACHE_S and isinstance(row.get("pct"), (int, float)):
+        if (row.get("login") == login() and 0 <= time.time() - float(row["at"]) < CACHE_S
+                and isinstance(row.get("pct"), (int, float))):
             return row
     except (OSError, ValueError, KeyError, TypeError):
         pass
@@ -105,10 +111,10 @@ def main():
         return 4
     save(row)
     if row["pct"] >= STOP_PCT:
-        print("plan-usage: STOP, weekly %.0f%% >= %.0f%% stop line, resets %s (%s)"
+        print("plan-usage: STOP, weekly %.1f%% >= %.0f%% stop line, resets %s (%s)"
               % (row["pct"], STOP_PCT, row.get("resets_at"), RULE))
         return 3
-    print("plan-usage: run, weekly %.0f%% < %.0f%% stop line" % (row["pct"], STOP_PCT))
+    print("plan-usage: run, weekly %.1f%% < %.0f%% stop line" % (row["pct"], STOP_PCT))
     return 0
 
 

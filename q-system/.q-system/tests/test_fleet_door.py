@@ -111,7 +111,8 @@ class Base(unittest.TestCase):
             "KIPI_PLAN_USAGE_STATE": os.path.join(d, "plan-usage.json"),
         })
         with open(os.environ["KIPI_PLAN_USAGE_STATE"], "w") as fh:
-            json.dump({"pct": 10.0, "resets_at": "x", "at": time.time()}, fh)
+            json.dump({"pct": 10.0, "resets_at": "x", "at": time.time(),
+                       "login": "Claude Code-credentials"}, fh)
         for k in ("KIPI_FLEET_FAKE_KEY_2", "KIPI_FLEET_KEY_SLOT",
                   "KIPI_FLEET_RUN", "FAKE_SLEEP", "KIPI_FLEET_NOW", "FAKE_READ_STDIN", "FAKE_RC"):
             os.environ.pop(k, None)

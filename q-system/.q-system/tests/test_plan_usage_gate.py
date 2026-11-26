@@ -52,7 +52,8 @@ class PlanUsageGate(unittest.TestCase):
         self.mark = os.path.join(self.tmp, "ran")
         fake = os.path.join(self.tmp, "claude")
         with open(fake, "w") as fh:
-            fh.write('#!/bin/sh\necho "key=${ANTHROPIC_API_KEY:-none}" > "%s"\n' % self.mark)
+            fh.write('#!/bin/sh\necho "key=${ANTHROPIC_API_KEY:-none}" > "%s"\n'
+                     '[ -n "$FAKE_SAY" ] && echo "$FAKE_SAY" >&2\nexit 0\n' % self.mark)
         os.chmod(fake, 0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("KIPI_")}
         self.env.update({
@@ -62,6 +63,7 @@ class PlanUsageGate(unittest.TestCase):
             "KIPI_CLAUDE_BIN": fake,
             "ANTHROPIC_API_KEY": "sk-should-be-stripped",
             "KIPI_FLEET_API_KEY_SLOT": "",
+            "KIPI_PLAN_USAGE_LOG": os.path.join(self.tmp, "gate.log"),
         })
 
     def weekly(self, pct):
@@ -126,6 +128,48 @@ class PlanUsageGate(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(self.mark) as fh:
             self.assertEqual(fh.read().strip(), "key=none")
+
+
+    # --- PR #885 review round 1. The worker (2>&1 | tee), the heartbeat (2>&1 | tee, then
+    # is_environmental before its per-instance failure path) and the reviewer all classify
+    # the shim's output with env-failure-lib.sh. A stop must read as the machine refusing,
+    # and a run must add no line, or a real plan outage reads as a ticket failure.
+    def environmental(self, text):
+        lib = SCRIPTS / "env-failure-lib.sh"
+        r = subprocess.run(["bash", "-c", '. "$1"; is_environmental "$2"', "_", str(lib), text])
+        return r.returncode == 0
+
+    def test_a_run_adds_no_line_so_a_real_outage_still_reads_as_one(self):
+        self.weekly(17.0)
+        self.env["FAKE_SAY"] = "You've hit your 5-hour limit - resets 3pm (America/Los_Angeles)"
+        r = subprocess.run(["bash", "-c", 'bash "$1" -p hi 2>&1', "_", str(SHIM)],
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), self.env["FAKE_SAY"], "the shim spoke on a run")
+        self.assertTrue(self.environmental(r.stdout))
+
+    def test_a_stop_reads_as_the_machine_refusing_not_the_ticket_failing(self):
+        for reply, want in (((200, {"seven_day": {"utilization": 45.0}}), 3), ((401, "nope"), 4)):
+            _Usage.reply = reply
+            if os.path.exists(self.env["KIPI_PLAN_USAGE_STATE"]):
+                os.remove(self.env["KIPI_PLAN_USAGE_STATE"])
+            r = self.shim()
+            self.assertEqual(r.returncode, want, r.stderr)
+            self.assertTrue(self.environmental(r.stderr), r.stderr)
+
+    def test_the_python_door_stop_reads_as_environmental(self):
+        self.weekly(46.0)
+        code = ("import sys; sys.path.insert(0, %r); import fleet_door; "
+                "r = fleet_door.run([%r, '-p', 'hi'], 'test', capture_output=True, text=True); "
+                "print(r.stderr, end='')" % (str(SCRIPTS), self.env["KIPI_CLAUDE_BIN"]))
+        r = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
+        self.assertTrue(self.environmental(r.stdout), r.stdout)
+
+    def test_a_cached_reading_from_another_login_is_not_used(self):
+        import time
+        with open(self.env["KIPI_PLAN_USAGE_STATE"], "w") as fh:
+            json.dump({"pct": 1.0, "at": time.time(), "login": "Claude Code-credentials-other"}, fh)
+        self.weekly(45.0)
+        self.assertEqual(self.gate().returncode, 3)
 
 
 if __name__ == "__main__":
