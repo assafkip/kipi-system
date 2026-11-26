@@ -50,12 +50,10 @@ if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ]; then
   # this shim's 2>&1 with env-failure-lib.sh's is_environmental, which needs EVERY line to
   # be the machine's: a "run" line on every call hid real plan outages ("hit your 5-hour
   # limit") as ticket failures. A stop prints exactly one line, an ENV_MARKERS shape, so the
-  # worker halts with no attempt charged. The gate's own detail goes to the gate log.
+  # worker halts with no attempt charged. The gate writes its own detail to the gate log
+  # (one writer, and under a test it never writes the production log).
   PLAN_GATE_RC=0
-  PLAN_GATE_LOG="${KIPI_PLAN_USAGE_LOG:-$HOME/.local/state/kipi/plan-usage-gate.log}"
-  mkdir -p "$(dirname "$PLAN_GATE_LOG")" 2>/dev/null || true
-  PLAN_GATE_LINE="$(python3 "$HERE/plan_usage_gate.py" --binary "${KIPI_CLAUDE_BIN:-claude}" 2>&1)" || PLAN_GATE_RC=$?
-  printf '%s rc=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PLAN_GATE_RC" "$PLAN_GATE_LINE" >>"$PLAN_GATE_LOG" 2>/dev/null || true
+  python3 "$HERE/plan_usage_gate.py" --binary "${KIPI_CLAUDE_BIN:-claude}" >/dev/null 2>&1 || PLAN_GATE_RC=$?
   case "$PLAN_GATE_RC" in
     0) ;;
     3) echo "kipi plan gate: weekly stop line reached (RULE-2026-11-26-PLAN45)" >&2; exit 3 ;;

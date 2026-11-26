@@ -64,6 +64,9 @@ class PlanUsageGate(unittest.TestCase):
             "ANTHROPIC_API_KEY": "sk-should-be-stripped",
             "KIPI_FLEET_API_KEY_SLOT": "",
             "KIPI_PLAN_USAGE_LOG": os.path.join(self.tmp, "gate.log"),
+            # The repo's one under-test signal (fleet_door.in_test). The seams above are read
+            # only under it, so this class drives the real stop logic and nothing live.
+            "KIPI_TEST": "1",
         })
 
     def weekly(self, pct):
@@ -164,25 +167,68 @@ class PlanUsageGate(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
         self.assertTrue(self.environmental(r.stdout), r.stdout)
 
-    def test_only_a_temp_dir_fake_claude_skips_the_reading(self):
-        # The 23 worker and dispatcher suites run a fake `claude` from a temp dir with no
-        # seam set; on CI's Linux there is no `security`, so a real read stopped them all.
-        # The real binary (measured 2026-11-26: ~/.local/share/claude/versions/2.1.332) is
-        # outside every temp root, so it still gets the real reading: with no `security`
-        # on PATH that reading fails, and the stop proves the skip did not apply.
-        env = {k: v for k, v in self.env.items()
-               if k not in ("KIPI_PLAN_USAGE_URL", "KIPI_PLAN_USAGE_TOKEN")}
-        env["PATH"] = self.tmp
-        fake = subprocess.run([sys.executable, str(GATE), "--binary", self.env["KIPI_CLAUDE_BIN"]],
-                              env=env, capture_output=True, text=True)
-        self.assertEqual(fake.returncode, 0, fake.stdout + fake.stderr)
-        self.assertIn("temp-dir fake", fake.stdout)
-        # A fixed path, never one beside this file: verify.sh runs the tests from a temp copy
-        # of the tree, where "beside this file" is itself under a temp root (PR #885 round 3).
-        outside = "/usr/local/bin/kipi-test-claude-not-temp"
-        real = subprocess.run([sys.executable, str(GATE), "--binary", outside],
-                              env=env, capture_output=True, text=True)
-        self.assertEqual(real.returncode, 4, real.stdout + real.stderr)
+    def _sentinel_env(self):
+        """No seams, no `security` on PATH, HOME a sentinel dir: the live path, if taken,
+        can only show up as a file under the sentinel or a `security` error."""
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(home)
+        env = {k: v for k, v in self.env.items() if not k.startswith("KIPI_")
+               and k != "PYTEST_CURRENT_TEST"}
+        env.update({"PATH": self.tmp, "HOME": home})
+        return env, home
+
+    def _files_under(self, d):
+        return [os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs]
+
+    def test_no_test_signal_reaches_the_live_account(self):
+        # PR #885 rounds 2 and 3: the dispatcher suite (KIPI_TEST=1, real `claude`) read
+        # the founder's Keychain and overwrote ~/.local/state/kipi/plan-usage.json. Every
+        # signal fleet_door.in_test knows must keep the gate off the live path.
+        # (rca-pr885-plan-gate-test-isolation-2026-11-26)
+        signals = [
+            ("KIPI_TEST=1", {"KIPI_TEST": "1"}, "/usr/bin/true"),
+            ("pytest running", {"PYTEST_CURRENT_TEST": "x (call)"}, "/usr/bin/true"),
+            ("temp-dir fake by path", {}, self.env["KIPI_CLAUDE_BIN"]),
+            ("temp-dir fake found on PATH", {}, "claude"),
+        ]
+        for name, extra, binary in signals:
+            with self.subTest(name):
+                env, home = self._sentinel_env()
+                env.update(extra)
+                r = subprocess.run([sys.executable, str(GATE), "--binary", binary],
+                                   env=env, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn("live account is never read", r.stdout)
+                self.assertEqual(self._files_under(home), [], "a test wrote a live path")
+                os.rmdir(home)
+
+    def test_without_a_test_signal_the_live_path_is_taken(self):
+        # The negative half: same sentinel env, no signal, a literal non-temp binary. The
+        # gate must try the Keychain (absent here, so rc 4 naming `security`) and write the
+        # live log under HOME. If this ever reads "run", the test mode has leaked into
+        # production. Seams set here must be ignored outside a test.
+        env, home = self._sentinel_env()
+        env["KIPI_PLAN_USAGE_URL"] = self.env["KIPI_PLAN_USAGE_URL"]
+        env["KIPI_PLAN_USAGE_TOKEN"] = "test-token"
+        self.weekly(10.0)
+        r = subprocess.run([sys.executable, str(GATE), "--binary", "/usr/bin/true"],
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("security", r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(home, ".local/state/kipi/plan-usage-gate.log")))
+
+    def test_tmpdir_holding_home_is_not_a_temp_root(self):
+        # TMPDIR=$HOME made the real install under ~/.local read as a fake (round 3 minor).
+        import pwd
+        home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+        code = ("import sys; sys.path.insert(0, %r); import fleet_door; "
+                "print(any(%r == r or %r.startswith(r.rstrip('/') + '/') for r in fleet_door._temp_roots()))"
+                % (str(SCRIPTS), home, home))
+        for tmpdir in (home, os.path.dirname(home), "/"):
+            with self.subTest(tmpdir):
+                r = subprocess.run([sys.executable, "-c", code], env=dict(self.env, TMPDIR=tmpdir),
+                                   capture_output=True, text=True)
+                self.assertEqual(r.stdout.strip(), "False", r.stderr)
 
     def test_a_cached_reading_from_another_login_is_not_used(self):
         import time

@@ -22,25 +22,36 @@ stop; a brake that opens when its gauge breaks is not one. The dispatcher pages 
 once on 4 so the broken gauge gets fixed.
 
 Exit 0 run, 3 stop (at or past the line; the same code usage_breaker.py uses for a
-pause), 4 stop (no reading). Prints one line either way.
-Test seams: KIPI_PLAN_USAGE_URL, KIPI_PLAN_USAGE_TOKEN, KIPI_PLAN_USAGE_STATE.
+pause), 4 stop (no reading). Prints one line either way, and appends it to the gate log.
+
+UNDER A TEST THE LIVE PATH IS UNREACHABLE. "Am I under a test" has one answer in this
+repo, fleet_door.in_test (KIPI_TEST=1, pytest running, or a temp-dir `claude`), and this
+gate imports it. Under a test the endpoint, the token and the cache come ONLY from the
+seams KIPI_PLAN_USAGE_URL / _TOKEN / _STATE (and the log from _LOG); without URL and
+TOKEN the gate says "run" and reads nothing. Outside a test the seams are ignored, so no
+fleet run can point the gauge at a stand-in. Scar: PR #885 rounds 2 and 3 answered the
+question three ad-hoc ways (seams, per-test env, a temp-binary check); each covered the
+suites in front of it, and the dispatcher suite still read the founder's Keychain and
+overwrote ~/.local/state/kipi/plan-usage.json
+(rca-pr885-plan-gate-test-isolation-2026-11-26).
 """
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # python3 -I drops it
+from fleet_door import in_test  # noqa: E402  the one under-test rule (see docstring)
+
 RULE = "RULE-2026-11-26-PLAN45"
 STOP_PCT = 45.0  # the founder's line; no env override, so no run can raise it for itself
-URL = os.environ.get("KIPI_PLAN_USAGE_URL", "https://api.anthropic.com/api/oauth/usage")
-STATE = os.environ.get("KIPI_PLAN_USAGE_STATE",
-                       os.path.expanduser("~/.local/state/kipi/plan-usage.json"))
+LIVE_URL = "https://api.anthropic.com/api/oauth/usage"
+LIVE_STATE = os.path.expanduser("~/.local/state/kipi/plan-usage.json")
+LIVE_LOG = os.path.expanduser("~/.local/state/kipi/plan-usage-gate.log")
 # A fleet call is minutes long; 2 minutes of staleness can overshoot the line by at most
 # what the fleet spends in 2 minutes, and saves one HTTP call per `claude` launch.
 CACHE_S = 120  # no env override: a widened window would let a day-old reading pass (PR #885 round 1)
@@ -58,9 +69,20 @@ def login():
     return keychain_service(os.environ.get("CLAUDE_CONFIG_DIR", ""))
 
 
-def token():
-    if os.environ.get("KIPI_PLAN_USAGE_TOKEN"):
-        return os.environ["KIPI_PLAN_USAGE_TOKEN"]
+def config(binary, env=None):
+    """Where this call reads from: the live account, or a test's seams, never a mix."""
+    env = os.environ if env is None else env
+    if not in_test([binary] if binary else [], env):
+        return {"test": False, "url": LIVE_URL, "token": None,
+                "state": LIVE_STATE, "log": LIVE_LOG}
+    return {"test": True, "url": env.get("KIPI_PLAN_USAGE_URL"),
+            "token": env.get("KIPI_PLAN_USAGE_TOKEN"),
+            "state": env.get("KIPI_PLAN_USAGE_STATE"), "log": env.get("KIPI_PLAN_USAGE_LOG")}
+
+
+def token(cfg):
+    if cfg["test"]:
+        return cfg["token"]  # a test never reaches the Keychain
     svc = login()
     acct = os.environ.get("USER") or os.path.basename(os.path.expanduser("~"))
     raw = subprocess.run(["security", "find-generic-password", "-s", svc, "-a", acct, "-w"],
@@ -71,9 +93,9 @@ def token():
     return oauth["accessToken"]
 
 
-def fetch():
-    req = urllib.request.Request(URL, headers={"Authorization": "Bearer " + token(),
-                                               "anthropic-beta": "oauth-2025-04-20"})
+def fetch(cfg):
+    req = urllib.request.Request(cfg["url"], headers={"Authorization": "Bearer " + token(cfg),
+                                                      "anthropic-beta": "oauth-2025-04-20"})
     body = json.loads(urllib.request.urlopen(req, timeout=15).read())
     week = body.get("seven_day") or {}
     pct = week.get("utilization")
@@ -82,9 +104,11 @@ def fetch():
     return {"pct": float(pct), "resets_at": week.get("resets_at"), "at": time.time(), "login": login()}
 
 
-def cached():
+def cached(cfg):
+    if not cfg["state"]:
+        return None
     try:
-        with open(STATE) as fh:
+        with open(cfg["state"]) as fh:
             row = json.load(fh)
         if (row.get("login") == login() and 0 <= time.time() - float(row["at"]) < CACHE_S
                 and isinstance(row.get("pct"), (int, float))):
@@ -94,57 +118,54 @@ def cached():
     return None
 
 
-def save(row):
+def save(cfg, row):
+    if not cfg["state"]:
+        return
     try:
-        os.makedirs(os.path.dirname(STATE), exist_ok=True)
-        tmp = STATE + ".tmp"
+        os.makedirs(os.path.dirname(cfg["state"]), exist_ok=True)
+        tmp = cfg["state"] + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(row, fh)
-        os.replace(tmp, STATE)
+        os.replace(tmp, cfg["state"])
     except OSError:
         pass  # a lost cache costs one extra HTTP call, never a wrong verdict
 
 
-def fake_binary(argv):
-    """True when the `claude` this run would start is a test's fake under a temp dir.
+def log(cfg, rc, line):
+    """The gate's one log writer. fleet-claude.sh stays silent on a run, so the detail of
+    every verdict lands here; under a test only a seam path is ever written."""
+    if not cfg["log"]:
+        return
+    try:
+        os.makedirs(os.path.dirname(cfg["log"]), exist_ok=True)
+        with open(cfg["log"], "a") as fh:
+            fh.write("%s rc=%d %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), rc, line))
+    except OSError:
+        pass
 
-    The same rule fleet_door.in_test uses for the key door: a fake has no plan to meter,
-    and a test must never read the real Keychain or call the real endpoint. 23 worker and
-    dispatcher suites run a fake `claude` this way; on CI's Linux there is no `security`
-    at all, so without this every one of them read as "stopped" (PR #885 validate, round 2).
-    The explicit seams (KIPI_PLAN_USAGE_URL / _TOKEN) keep the real logic, which is how
-    test_plan_usage_gate.py drives the stop line itself."""
-    if os.environ.get("KIPI_PLAN_USAGE_URL") or os.environ.get("KIPI_PLAN_USAGE_TOKEN"):
-        return False
-    binary = argv[argv.index("--binary") + 1] if "--binary" in argv[:-1] else ""
-    if not binary:
-        return False
-    found = os.path.realpath(binary) if os.sep in binary else shutil.which(binary)
-    if not found:
-        return False
-    found = os.path.realpath(found)
-    roots = {os.path.realpath(r) for r in (tempfile.gettempdir(), "/tmp", "/private/tmp",
-                                             "/var/folders", "/private/var/folders")}
-    return any(found == r or found.startswith(r + os.sep) for r in roots)
+
+def verdict(cfg):
+    if cfg["test"] and not (cfg["url"] and cfg["token"]):
+        return 0, "plan-usage: run, under a test with no usage seam; the live account is never read"
+    try:
+        row = cached(cfg) or fetch(cfg)
+    except (OSError, ValueError, RuntimeError, urllib.error.URLError, subprocess.SubprocessError) as e:
+        return 4, "plan-usage: STOP, weekly usage unreadable (%s); fleet does not run (%s)" % (e, RULE)
+    save(cfg, row)
+    if row["pct"] >= STOP_PCT:
+        return 3, ("plan-usage: STOP, weekly %.1f%% >= %.0f%% stop line, resets %s (%s)"
+                   % (row["pct"], STOP_PCT, row.get("resets_at"), RULE))
+    return 0, "plan-usage: run, weekly %.1f%% < %.0f%% stop line" % (row["pct"], STOP_PCT)
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if fake_binary(argv):
-        print("plan-usage: run, the claude here is a temp-dir fake with no plan to meter")
-        return 0
-    try:
-        row = cached() or fetch()
-    except (OSError, ValueError, RuntimeError, urllib.error.URLError, subprocess.SubprocessError) as e:
-        print("plan-usage: STOP, weekly usage unreadable (%s); fleet does not run (%s)" % (e, RULE))
-        return 4
-    save(row)
-    if row["pct"] >= STOP_PCT:
-        print("plan-usage: STOP, weekly %.1f%% >= %.0f%% stop line, resets %s (%s)"
-              % (row["pct"], STOP_PCT, row.get("resets_at"), RULE))
-        return 3
-    print("plan-usage: run, weekly %.1f%% < %.0f%% stop line" % (row["pct"], STOP_PCT))
-    return 0
+    binary = argv[argv.index("--binary") + 1] if "--binary" in argv[:-1] else ""
+    cfg = config(binary)
+    rc, line = verdict(cfg)
+    log(cfg, rc, line)
+    print(line)
+    return rc
 
 
 if __name__ == "__main__":

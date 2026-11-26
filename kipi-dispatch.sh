@@ -1112,9 +1112,12 @@ fi
 # starts nothing; fleet-claude.sh asks the same gate before every claude call, so a run
 # already going stops at its next launch. At the line is the expected weekly state, so it
 # is logged and not paged; an unreadable gauge is a defect and pages Sana once.
-# A checkout with no gate file predates this ruling, the same reading the key block above
-# gives a missing helper; fleet-claude.sh still refuses every call there (rc 4), so skipping
-# here never lets a run through unmetered.
+# The -f skip is for the dispatcher suites, which point KIPI_REPO at a stub checkout with
+# no scripts. It is not a pre-ruling fallback: a checkout older than this ruling has no
+# gate call in its fleet-claude.sh at all. In production the gate file is tracked in the
+# same commit as this block, and fleet-claude.sh at this commit refuses every call (rc 4)
+# when it is missing, so a missing gate still stops the work, one ticket at a time
+# (PR #885 round 3).
 PLAN_GATE="$REPO/q-system/.q-system/scripts/plan_usage_gate.py"
 if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ] && [ -f "$PLAN_GATE" ]; then
   PLAN_GATE_RC=0

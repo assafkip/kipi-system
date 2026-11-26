@@ -117,9 +117,19 @@ def in_fleet_run(env=None):
 
 
 def _temp_roots():
-    roots = {tempfile.gettempdir(), "/tmp", "/private/tmp", "/var/folders",
-             "/private/var/folders"}
-    return {os.path.realpath(r) for r in roots}
+    """Where a test's fake `claude` lives. A root that is the user's home or holds it is
+    dropped: TMPDIR=$HOME (or /) would make the real install under ~/.local look like a
+    fake, and both the key door and the 45% plan stop would skip it (PR #885 round 3).
+    The home comes from the password db, never $HOME, which tests point at a temp dir."""
+    import pwd
+    try:
+        home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        home = os.path.realpath(os.path.expanduser("~"))
+    roots = {os.path.realpath(r) for r in (tempfile.gettempdir(), "/tmp", "/private/tmp",
+                                           "/var/folders", "/private/var/folders")}
+    return {r for r in roots
+            if not (home == r or home.startswith(r.rstrip(os.sep) + os.sep))}
 
 
 def _resolve(binary, env):
