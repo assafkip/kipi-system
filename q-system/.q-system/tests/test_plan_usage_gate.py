@@ -177,7 +177,9 @@ class PlanUsageGate(unittest.TestCase):
                               env=env, capture_output=True, text=True)
         self.assertEqual(fake.returncode, 0, fake.stdout + fake.stderr)
         self.assertIn("temp-dir fake", fake.stdout)
-        outside = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude-not-temp")
+        # A fixed path, never one beside this file: verify.sh runs the tests from a temp copy
+        # of the tree, where "beside this file" is itself under a temp root (PR #885 round 3).
+        outside = "/usr/local/bin/kipi-test-claude-not-temp"
         real = subprocess.run([sys.executable, str(GATE), "--binary", outside],
                               env=env, capture_output=True, text=True)
         self.assertEqual(real.returncode, 4, real.stdout + real.stderr)
