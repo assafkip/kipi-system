@@ -66,6 +66,11 @@ DECLARED = (
     (S + "linear-worker.sh", "BREAKER_", "debt", 5),        # plan usage breaker (ASK-2010)
     (S + "linear-worker.sh", 'run_tokens.py" --record', "record", 1),
     (S + "fleet-claude.sh", "HELPER", "environmental", 4),  # key door: refuses only with no credit
+    # ruling: a stop line the founder set himself, 2026-11-26, verbatim: "Move the fleet work
+    # to the claude account - Ensure it stops when usage gets to 45% of the weekly usage".
+    # It supersedes R1 for plan weekly usage only (RULE-2026-11-26-PLAN45, plan_usage_gate.py).
+    ("kipi-dispatch.sh", "PLAN_GATE", "ruling", 6),
+    (S + "fleet-claude.sh", "PLAN_GATE", "ruling", 4),
 )
 
 SOURCED = re.compile(r'^\s*(?:\.|source)\s+"\$SCRIPT_DIR/([\w.-]+\.sh)"')

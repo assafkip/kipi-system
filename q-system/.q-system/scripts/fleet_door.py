@@ -270,10 +270,16 @@ def _say_refusal(actor, res):
 def run(cmd, actor, env=None, **kw):
     """`subprocess.run(cmd, ...)`, billed to a fleet API key. For unattended jobs."""
     src = os.environ if env is None else env
-    if src.get("KIPI_FLEET_API_KEYS", "1") == "0":
-        sys.stderr.write("fleet_door: KIPI_FLEET_API_KEYS=0 -- %s bills the PLAN, not the "
-                         "API credit\n" % actor)
+    if src.get("KIPI_FLEET_API_KEYS", "0") == "0":
+        # The plan, behind the 45% weekly stop (RULE-2026-11-26-PLAN45), same as fleet-claude.sh.
+        gate = subprocess.run([sys.executable, os.path.join(HERE, "plan_usage_gate.py")],
+                              env=plan_env(src), capture_output=True, text=True)
+        sys.stderr.write("fleet_door: %s: %s (bills the PLAN)\n"
+                         % (actor, gate.stdout.strip() or "plan_usage_gate.py gave no reading"))
         sys.stderr.flush()
+        if gate.returncode != 0:
+            return subprocess.CompletedProcess(list(cmd), gate.returncode, "" if kw.get("text") else b"",
+                                               gate.stdout if kw.get("text") else gate.stdout.encode())
         return _spawn(list(cmd), list(cmd), env=plan_env(src), **kw)
     res = _spawn(door_argv(cmd, actor), list(cmd), env=door_env(cmd, src), **kw)
     _say_refusal(actor, res)

@@ -40,8 +40,16 @@ for _a in "$@"; do
   case "$_a" in --kipi-*) echo "fleet-claude: $_a must lead the arguments; no run" >&2; exit 2 ;; esac
 done
 
-if [ "${KIPI_FLEET_API_KEYS:-1}" = "0" ]; then
-  echo "fleet-claude: KIPI_FLEET_API_KEYS=0 -- this run bills the PLAN, not the API credit" >&2
+# THE PLAN IS THE DEFAULT (RULE-2026-11-26-PLAN45). Founder, 2026-11-26: "Move the fleet
+# work to the claude account - Ensure it stops when usage gets to 45% of the weekly usage".
+# Every call asks plan_usage_gate.py first, so a run that crosses 45% stops at its next
+# `claude` launch. 3 = at or past the line, 4 = no reading; both stop, neither falls back
+# to the key. KIPI_FLEET_API_KEYS=1 is the way back to the API key below.
+if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ]; then
+  PLAN_GATE_RC=0
+  PLAN_GATE_LINE="$(python3 "$HERE/plan_usage_gate.py")" || PLAN_GATE_RC=$?
+  echo "fleet-claude: ${PLAN_GATE_LINE:-plan_usage_gate.py gave no reading} (bills the PLAN)" >&2
+  [ "$PLAN_GATE_RC" = "0" ] || exit "$PLAN_GATE_RC"
   exec env -u ANTHROPIC_API_KEY "${KIPI_CLAUDE_BIN:-claude}" "$@"
 fi
 

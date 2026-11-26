@@ -166,8 +166,14 @@ if fleet_keyed; then
   FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
   [ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
 else
-  echo "linear-worker: KIPI_FLEET_API_KEYS=0 -- claude runs bill the PLAN, not the API credit" >&2
-  FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
+  # The plan still goes through the shim when it is here, so the 45% weekly stop
+  # (RULE-2026-11-26-PLAN45) is never skipped; the bare call is for a skeleton without it.
+  if [ -f "$SCRIPT_DIR/fleet-claude.sh" ]; then
+    FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-bash $SCRIPT_DIR/fleet-claude.sh}"
+  else
+    echo "linear-worker: KIPI_FLEET_API_KEYS=0 and no fleet-claude.sh -- claude runs bill the PLAN with no weekly stop" >&2
+    FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
+  fi
 fi
 # The stand-in's model is the routing table's second-runner row (ASK-4013). If the
 # read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
