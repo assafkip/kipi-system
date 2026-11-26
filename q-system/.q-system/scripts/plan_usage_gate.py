@@ -28,8 +28,10 @@ Test seams: KIPI_PLAN_USAGE_URL, KIPI_PLAN_USAGE_TOKEN, KIPI_PLAN_USAGE_STATE.
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -103,7 +105,34 @@ def save(row):
         pass  # a lost cache costs one extra HTTP call, never a wrong verdict
 
 
-def main():
+def fake_binary(argv):
+    """True when the `claude` this run would start is a test's fake under a temp dir.
+
+    The same rule fleet_door.in_test uses for the key door: a fake has no plan to meter,
+    and a test must never read the real Keychain or call the real endpoint. 23 worker and
+    dispatcher suites run a fake `claude` this way; on CI's Linux there is no `security`
+    at all, so without this every one of them read as "stopped" (PR #885 validate, round 2).
+    The explicit seams (KIPI_PLAN_USAGE_URL / _TOKEN) keep the real logic, which is how
+    test_plan_usage_gate.py drives the stop line itself."""
+    if os.environ.get("KIPI_PLAN_USAGE_URL") or os.environ.get("KIPI_PLAN_USAGE_TOKEN"):
+        return False
+    binary = argv[argv.index("--binary") + 1] if "--binary" in argv[:-1] else ""
+    if not binary:
+        return False
+    found = os.path.realpath(binary) if os.sep in binary else shutil.which(binary)
+    if not found:
+        return False
+    found = os.path.realpath(found)
+    roots = {os.path.realpath(r) for r in (tempfile.gettempdir(), "/tmp", "/private/tmp",
+                                             "/var/folders", "/private/var/folders")}
+    return any(found == r or found.startswith(r + os.sep) for r in roots)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if fake_binary(argv):
+        print("plan-usage: run, the claude here is a temp-dir fake with no plan to meter")
+        return 0
     try:
         row = cached() or fetch()
     except (OSError, ValueError, RuntimeError, urllib.error.URLError, subprocess.SubprocessError) as e:

@@ -54,7 +54,7 @@ if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ]; then
   PLAN_GATE_RC=0
   PLAN_GATE_LOG="${KIPI_PLAN_USAGE_LOG:-$HOME/.local/state/kipi/plan-usage-gate.log}"
   mkdir -p "$(dirname "$PLAN_GATE_LOG")" 2>/dev/null || true
-  PLAN_GATE_LINE="$(python3 "$HERE/plan_usage_gate.py" 2>&1)" || PLAN_GATE_RC=$?
+  PLAN_GATE_LINE="$(python3 "$HERE/plan_usage_gate.py" --binary "${KIPI_CLAUDE_BIN:-claude}" 2>&1)" || PLAN_GATE_RC=$?
   printf '%s rc=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PLAN_GATE_RC" "$PLAN_GATE_LINE" >>"$PLAN_GATE_LOG" 2>/dev/null || true
   case "$PLAN_GATE_RC" in
     0) ;;

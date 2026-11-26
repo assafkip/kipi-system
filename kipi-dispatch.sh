@@ -1112,9 +1112,13 @@ fi
 # starts nothing; fleet-claude.sh asks the same gate before every claude call, so a run
 # already going stops at its next launch. At the line is the expected weekly state, so it
 # is logged and not paged; an unreadable gauge is a defect and pages Sana once.
-if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ]; then
+# A checkout with no gate file predates this ruling, the same reading the key block above
+# gives a missing helper; fleet-claude.sh still refuses every call there (rc 4), so skipping
+# here never lets a run through unmetered.
+PLAN_GATE="$REPO/q-system/.q-system/scripts/plan_usage_gate.py"
+if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ] && [ -f "$PLAN_GATE" ]; then
   PLAN_GATE_RC=0
-  PLAN_GATE_LINE="$(python3 "$REPO/q-system/.q-system/scripts/plan_usage_gate.py" 2>&1)" || PLAN_GATE_RC=$?
+  PLAN_GATE_LINE="$(python3 "$PLAN_GATE" --binary "${KIPI_CLAUDE_BIN:-claude}" 2>&1)" || PLAN_GATE_RC=$?
   case "$PLAN_GATE_RC" in
     0) page_clear plan-usage-unreadable ;;
     3) page_clear plan-usage-unreadable

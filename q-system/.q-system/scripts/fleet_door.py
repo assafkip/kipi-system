@@ -272,7 +272,8 @@ def run(cmd, actor, env=None, **kw):
     src = os.environ if env is None else env
     if src.get("KIPI_FLEET_API_KEYS", "0") == "0":
         # The plan, behind the 45% weekly stop (RULE-2026-11-26-PLAN45), same as fleet-claude.sh.
-        gate = subprocess.run([sys.executable, os.path.join(HERE, "plan_usage_gate.py")],
+        gate = subprocess.run([sys.executable, os.path.join(HERE, "plan_usage_gate.py"),
+                               "--binary", str(list(cmd)[0]) if list(cmd) else ""],
                               env=plan_env(src), capture_output=True, text=True)
         if gate.returncode != 0:
             # The same one machine line fleet-claude.sh prints, so a caller classifying stderr

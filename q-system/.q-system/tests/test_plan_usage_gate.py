@@ -164,6 +164,24 @@ class PlanUsageGate(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", code], env=self.env, capture_output=True, text=True)
         self.assertTrue(self.environmental(r.stdout), r.stdout)
 
+    def test_only_a_temp_dir_fake_claude_skips_the_reading(self):
+        # The 23 worker and dispatcher suites run a fake `claude` from a temp dir with no
+        # seam set; on CI's Linux there is no `security`, so a real read stopped them all.
+        # The real binary (measured 2026-11-26: ~/.local/share/claude/versions/2.1.332) is
+        # outside every temp root, so it still gets the real reading: with no `security`
+        # on PATH that reading fails, and the stop proves the skip did not apply.
+        env = {k: v for k, v in self.env.items()
+               if k not in ("KIPI_PLAN_USAGE_URL", "KIPI_PLAN_USAGE_TOKEN")}
+        env["PATH"] = self.tmp
+        fake = subprocess.run([sys.executable, str(GATE), "--binary", self.env["KIPI_CLAUDE_BIN"]],
+                              env=env, capture_output=True, text=True)
+        self.assertEqual(fake.returncode, 0, fake.stdout + fake.stderr)
+        self.assertIn("temp-dir fake", fake.stdout)
+        outside = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude-not-temp")
+        real = subprocess.run([sys.executable, str(GATE), "--binary", outside],
+                              env=env, capture_output=True, text=True)
+        self.assertEqual(real.returncode, 4, real.stdout + real.stderr)
+
     def test_a_cached_reading_from_another_login_is_not_used(self):
         import time
         with open(self.env["KIPI_PLAN_USAGE_STATE"], "w") as fh:
