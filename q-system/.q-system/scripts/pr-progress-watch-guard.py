@@ -31,10 +31,13 @@ import sys
 
 # why `do` after a `;` or newline: a bare `for` matched English in a comment and refused a one-shot
 # `sleep 120; gh pr checks 904` (round 1). Requiring `do` on the SAME line then let every
-# multi-line loop through (round 2), so `do` may follow a newline. A shell loop's `do`
-# always follows `;` or a newline. A comment that reads "for ...; do ..." can still match;
-# the bypass covers it.
-LOOP_RE = re.compile(r"\b(while|until|for)\b[^;]*?[;\n]\s*do\b")
+# multi-line loop through (round 2), so `do` may follow a newline. Then `[^;]` in the header
+# let a C-style `for ((i=0;i<9;i++)); do` and `while cmd; test; do` through (round 3), because
+# those headers hold an earlier `;`. The header now stops only at a newline (`[^\n]*?`), so a `;`
+# inside it is fine and `do` is the first `;`/newline-then-do on the same logical line. Pinned by
+# LOOP_SHAPES in test_pr_progress_watch.py. A comment that reads "for ...; do ..." can still
+# match; the bypass covers it.
+LOOP_RE = re.compile(r"\b(while|until|for)\b[^\n]*?[;\n]\s*do\b")
 GH_RE = re.compile(r"\bgh\s+(pr\s+(view|checks|status)\b|api\s+\S*pulls/)")
 SLEEP_RE = re.compile(r"\bsleep\b")
 WATCHER = "pr-progress-watch"

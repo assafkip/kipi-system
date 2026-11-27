@@ -218,6 +218,39 @@ def test_guard_blocks_status_and_api_loops():
     assert guard("while :; do gh api repos/o/r/pulls/903; sleep 300; done").returncode == 2
 
 
+# why a table: the loop regex was edited 3 times and each edit was tested only against the shape the
+# last review named, so round 2's fix broke C-style `for` (ASK-5842 RCA). Every regex edit now runs
+# the whole set of shapes.
+LOOP_SHAPES = [
+    # (id, command, expected exit)
+    ("while-oneline-view", "while true; do gh pr view 1; sleep 5; done", 2),
+    ("until-oneline-view", "until false; do gh pr view 1; sleep 5; done", 2),
+    ("for-in-oneline-view", "for i in 1 2 3; do gh pr view 1; sleep 5; done", 2),
+    ("cstyle-for-oneline-view", "for ((i=0;i<9;i++)); do gh pr view 1; sleep 5; done", 2),
+    ("cstyle-for-spaced-checks", "for ((i=0; i<60; i++)); do gh pr checks 904; sleep 60; done", 2),
+    ("while-cond-list-view", "while s=$(gh pr view 904 --json state); [ x ]; do sleep 5; done", 2),
+    ("while-multiline-view", "while true\ndo\n  gh pr view 1\n  sleep 5\ndone", 2),
+    ("until-multiline-checks", "until false\ndo\n  gh pr checks 1\n  sleep 5\ndone", 2),
+    ("for-in-multiline-view", "for i in 1 2 3\ndo\n  gh pr view 1\n  sleep 5\ndone", 2),
+    ("cstyle-for-multiline-view", "for ((i=0;i<9;i++))\ndo\n  gh pr view 1\n  sleep 5\ndone", 2),
+    ("while-oneline-checks", "while true; do gh pr checks 1; sleep 5; done", 2),
+    ("while-oneline-status", "while :; do gh pr status; sleep 5; done", 2),
+    ("while-oneline-api", "while :; do gh api repos/o/r/pulls/903; sleep 5; done", 2),
+    ("cstyle-for-api", "for ((i=0;i<9;i++)); do gh api repos/o/r/pulls/903; sleep 5; done", 2),
+    ("single-view", "gh pr view 903 --json state", 0),
+    ("one-shot-sleep-then-checks", "sleep 120; gh pr checks 904", 0),
+    ("loop-no-sleep", "for i in 1 2; do gh pr view 1; done", 0),
+    ("loop-no-gh", "while true; do echo hi; sleep 5; done", 0),
+    ("watcher-in-loop", "for p in 1 2; do bash q-system/.q-system/scripts/pr-progress-watch.sh $p; sleep 1; done", 0),
+    ("watcher-plain", "bash q-system/.q-system/scripts/pr-progress-watch.sh 903 --stall-min 1", 0),
+]
+
+
+@pytest.mark.parametrize("cmd,want", [(c, w) for _, c, w in LOOP_SHAPES], ids=[i for i, _, _ in LOOP_SHAPES])
+def test_guard_loop_shape_table(cmd, want):
+    assert guard(cmd).returncode == want
+
+
 def test_guard_malformed_stdin_allows():
     r = subprocess.run([sys.executable, str(GUARD)], input="{not json", capture_output=True, text=True)
     assert r.returncode == 0
