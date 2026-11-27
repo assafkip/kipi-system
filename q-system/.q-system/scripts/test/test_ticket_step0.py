@@ -81,7 +81,14 @@ def main() -> int:
                 ("fix the reviewer\n\nadd a deadman to the morning brief", "the key only in the description"),
                 # Each case below is decided by ONE part of the rule alone (round 2 mutants):
                 ("session handoff for the fleet-wide Linear rollout", "key whole-word in the title, no build verb"),
-                ("add a reviewer fallback\n\nthe deadman keeps paging", "build verb, key only in the description")):
+                ("add a reviewer fallback\n\nthe deadman keeps paging", "build verb, key only in the description"),
+                # PR #899 rounds 1-2: an enhancement to an existing thing is not a duplicate build.
+                ("Add a deadman to the cap-ladder nightly run", "adds a part TO another thing"),
+                ("Make the morning brief read the ledger instead of the log", "make = change, not build"),
+                ("Add a friction note capture to the lane runner", "adds a part TO another thing"),
+                ("Add a self-review pass to pr-owner.py", "adds a part TO another thing"),
+                ("Make a handoff's \"every branch is pushed\" claim come from the disk, not a static list "
+                 "of branches.", "verbatim RCA action item; make = change")):
             rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
             check(f"a named-file match that is not a build proposal passes: {why}",
                   rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))

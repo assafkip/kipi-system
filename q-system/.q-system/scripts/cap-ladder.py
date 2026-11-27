@@ -1041,8 +1041,8 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
         ledger(["clear-flag", issue, CLOSE_FLAG])
         clear_caps(issue)
         if unclosed:
-            return (f"{issue}: CLOSE (Canceled, RCA {rca_ref}); {PR_UNCLOSED} #{pr['number']}, "
-                    f"pr-owner.py closes a canceled ticket's PR")
+            return (f"{issue}: CLOSE (Canceled, RCA {rca_ref}); {PR_UNCLOSED} #{pr['number']}. pr-owner.py "
+                    f"owns it next: it closes a canceled ticket's PR, but merges one already approved and green")
         return f"{issue}: CLOSE (Canceled, RCA {rca_ref})"
     # BLOCKED-ON. The hold goes on FIRST: if it does not land, nothing is cleared,
     # so the cap record still keeps the worker off and the next run retries.
@@ -1107,7 +1107,7 @@ def next_step_line(r: int) -> str:
             "an owned blocker), never a timed retry.")
 
 
-def late_lane(issue: str, rung: int, report: list) -> str:
+def late_lane(issue: str, rung: int, report: list, during: str = "the RCA") -> str:
     """The lane check again, after the Fable call and before the ladder's own writes.
 
     PR #732 round 1, major: main() read the marker once, then rca() ran Fable for
@@ -1121,7 +1121,7 @@ def late_lane(issue: str, rung: int, report: list) -> str:
     if not held_by:
         return ""
     report.append({"issue": issue, "rung": rung, "waiting_on": held_by})
-    return (f"{issue}: {held_by}, which appeared while the RCA ran; nothing was closed, opened or "
+    return (f"{issue}: {held_by}, which appeared while {during} ran; nothing was closed, opened or "
             "requeued, and the rung is not spent")
 
 
@@ -1200,7 +1200,7 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
                 return f"[dry] {issue}: rung 0 would cancel it, already built: {', '.join(d0['cites'])}"
             # The step-0 check takes up to KIPI_STEP0_TIMEOUT; a lane that started
             # meanwhile wins, as at every other rung (PR #899 round 1, finding 3).
-            late = late_lane(issue, int(row.get("rung", 0)), report)
+            late = late_lane(issue, int(row.get("rung", 0)), report, during="the step-0 check")
             if late:
                 return late
             out = apply_decision(issue, d0, t, pr, slug, 0, row)

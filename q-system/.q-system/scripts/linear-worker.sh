@@ -3000,7 +3000,7 @@ print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) i
     # for the next tick or the nightly run.
     if [ "$APPLY" = "1" ]; then
       CAP_LADDER_ATTEMPTS="$ATTEMPTS" ${KIPI_CAP_LADDER:-python3 "$SCRIPT_DIR/cap-ladder.py"} --issue "$ISSUE" --apply >>"$LOG" 2>&1 \
-        || say "WARN: cap-ladder.py --issue $ISSUE failed; its nightly run takes the capout"
+        || say "WARN: cap-ladder.py --issue $ISSUE reported RED (its line above says which): a cancel that did not land keeps the capout and the next tick retries; a PR left open goes to pr-owner.py"
     fi
     say "skip $ISSUE: stopped at step 0, already built; handed to cap-ladder.py rung 0, which cancels it with the file named (its line above, or a WARN, says whether it did)"
     continue

@@ -102,15 +102,22 @@ def stop_comment(issue: str, cites: list, reason: str) -> str:
             "takes it as written. (ticket_step0.py, ASK-5802)")
 
 
-BUILD_VERB = re.compile(r"^\W*(add|build|create|implement|introduce|write|make|ship|new)\b", re.IGNORECASE)
+# "make" is not here: "make X do Y" changes an existing X (PR #899 rounds 1-2).
+BUILD_VERB = re.compile(r"^\W*(add|build|create|implement|introduce|write|ship|new)\b", re.IGNORECASE)
+# "add Y TO X" builds Y into some other X, so the key names a part, not the
+# whole being proposed (PR #899 rounds 1-2: "Add a deadman to the cap-ladder
+# nightly run" cancelled as already built). "for" is not here: "add risk-scored
+# auto-merge for low-risk PRs" is a true duplicate.
+TARGET = re.compile(r"\b(to|into|onto)\b", re.IGNORECASE)
 
 
 def build_proposal_of(title: str, key: str, cites: list) -> bool:
     """True only when the title proposes building the thing the key names and
-    the cited file is really here. See the module docstring for the measurement."""
+    the cited file is really here. See the module docstring for the measurement.
+    A cancel runs unattended, so every doubt here passes the ticket."""
     in_title = bool(key) and re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", title, re.IGNORECASE)
     exists = bool(cites) and all((REPO / c).is_file() for c in cites)
-    return bool(in_title and BUILD_VERB.match(title) and exists)
+    return bool(in_title and BUILD_VERB.match(title) and not TARGET.search(title) and exists)
 
 
 def check(issue: str, text: str) -> dict:
