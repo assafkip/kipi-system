@@ -641,7 +641,8 @@ def ticket(issue: str) -> dict | None:
             i = (json.loads(Path(fixture).read_text()) or {}).get(issue)
             if i is None:
                 return None
-            return dict(i, desc_hash=hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16])
+            return dict(i, desc_hash=hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16],
+                        text=f"{i.get('title') or ''}\n\n{i.get('description') or ''}")
         data = _sync().graphql(
             "query($id:String!){issue(id:$id){id title description state{type} team{id} "
             "project{id name} labels{nodes{name}}}}", {"id": issue})
@@ -650,6 +651,7 @@ def ticket(issue: str) -> dict | None:
                 "labels": [n["name"] for n in (i.get("labels") or {}).get("nodes") or []],
                 "project": (i.get("project") or {}).get("name") or "", "title": i.get("title") or "",
                 "desc_hash": hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16],
+                "text": f"{i.get('title') or ''}\n\n{i.get('description') or ''}",
                 "uuid": i.get("id"), "team_id": (i.get("team") or {}).get("id"),
                 "project_id": (i.get("project") or {}).get("id")}
     except Exception as exc:  # noqa: BLE001 - one unreadable ticket must not stop the run
@@ -1068,12 +1070,58 @@ def late_lane(issue: str, rung: int, report: list) -> str:
             "requeued, and the rung is not spent")
 
 
+def rung_zero(issue: str, sigs: list, t: dict, state: dict, apply: bool) -> str:
+    """Rung 0 (ASK-5802): before the first RCA is paid for, ask whether the
+    ticket should exist. The founder ruled the should-exist check is step 0;
+    an RCA on a ticket whose file already exists studies the wrong question.
+    "" means go on to rung 1. A stop spends no rung: the cap and the PR stay,
+    and row["step0"] remembers the caps and the description hash, so the next
+    run does not re-post. A new cap or a changed description is checked again.
+    The state is written by main() after this returns, like every rung."""
+    held = (state.get(issue) or {}).get("step0") or {}
+    if held.get("desc_hash") == (t or {}).get("desc_hash") and set(sigs) <= set(held.get("sigs") or []):
+        # Same text, same caps: the verdict cannot have changed, and one comment is enough.
+        return f"{issue}: held at rung 0 since {held.get('at')}: already built ({', '.join(held.get('cites') or [])})"
+    res = step0().check(issue, (t or {}).get("text") or (t or {}).get("title") or "")
+    say(res["line"])
+    if res["decision"] != "stop":
+        return ""
+    if not apply:
+        return f"[dry] {issue}: rung 0 would stop it, already built: {', '.join(res['cites'])}"
+    rc, out = run(SYNC + ["progress", issue, res["comment"], "--agent", "sana"])
+    if rc != 0:
+        return f"{issue}: rung 0 stop could not post its comment ({out[-120:]}); the next run retries"
+    row = state.get(issue) or {}
+    row["step0"] = {"at": now().isoformat(), "cites": res["cites"], "sigs": sigs,
+                    "desc_hash": (t or {}).get("desc_hash")}
+    state[issue] = row
+    return f"{issue}: rung 0 stopped it, already built: {', '.join(res['cites'])}"
+
+
+_STEP0_MOD = None
+
+
+def step0():
+    """ticket_step0.py, the one should-exist decision the worker also runs."""
+    global _STEP0_MOD
+    if _STEP0_MOD is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("kipi_ticket_step0_ladder", str(HERE / "ticket_step0.py"))
+        _STEP0_MOD = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_STEP0_MOD)
+    return _STEP0_MOD
+
+
 def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: dict,
           apply: bool, tgts: list, report: list) -> str:
     row = state.get(issue) or {}
     r = int(row.get("rung", 0)) + 1
     kind = sigs[0].split(":", 1)[0]
     why = f"{kind} cap ({', '.join(s.split(':', 1)[0] for s in sigs)})"
+    if r == 1:
+        stopped = rung_zero(issue, sigs, t, state, apply)
+        if stopped:
+            return stopped
     if not apply:
         return f"[dry] {issue}: would take rung {r} ({rung_name(r)}) on its {why}"
 

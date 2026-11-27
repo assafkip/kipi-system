@@ -127,11 +127,15 @@ def ground(idea: str, target: str = "skill", env=None) -> dict:
     for key, path in KNOWN_BUILT.items():
         if key in low:
             return {"verdict": "already-built", "reason": f"{path} already does this", "cites": [path],
-                    "corpora": report}
+                    "basis": "named-file", "corpora": report}
     strong = [(s, p) for s, p in hits if s >= MATCH_FLOOR]
     if strong:
+        # basis "lesson" is weaker than "named-file" and callers that STOP work
+        # read the difference (ticket_step0.py, ASK-5802): measured 2026-11-26,
+        # 6 of 35 real backlog tickets matched a lesson and none of the 6 was
+        # built; a lesson on a topic is not the deliverable existing.
         return {"verdict": "already-built", "reason": "a lesson already covers it",
-                "cites": [p for _, p in strong], "corpora": report}
+                "cites": [p for _, p in strong], "basis": "lesson", "corpora": report}
     read = [c["path"] for c in report if c["status"] == "read"]
     if not read:
         # Nothing was consumed, so nothing can be cited. A verdict with no cite

@@ -1548,7 +1548,9 @@ print(json.dumps({
     "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
                "state": i["state"]["type"], "priority": i.get("priority"),
                "expired_park": expired_park(i),
-               "why": pick_why(i)}
+               "why": pick_why(i),
+               # Step 0 reads what the ticket asks for (ticket_step0.py, ASK-5802).
+               "text": (f"{i.get('title') or ''}\n\n{i.get('description') or ''}")[:4000]}
               for i in pool],
     "started_held": started_held,
     "total_open": len(issues),
@@ -2951,6 +2953,30 @@ while IFS= read -r ISSUE; do
     # for up to a day. No live claim means the note is stale: drop it here, and
     # a later outage that reaches this issue notes it afresh.
     [ "$APPLY" = "1" ] && { python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true; }
+  fi
+
+  # STEP 0: SHOULD THIS TICKET EXIST (ASK-5802). Founder, 2026-11-26: "chekcing
+  # if the ticket should exist should be step 0". Runs before the dry pick, so
+  # a dry run shows the stop and the dispatcher moves to the next ticket, and
+  # before any claim, comment or model call. ticket_step0.py is the one
+  # decision (cap-ladder.py rung 0 runs the same one); it is offline and fails
+  # open with a NOT CHECKED line, so a broken check never holds the fleet.
+  STEP0_RC=0
+  STEP0_OUT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]), ""))' "$ISSUE" 2>/dev/null \
+    | python3 "$SCRIPT_DIR/ticket_step0.py" --issue "$ISSUE" 2>>"$LOG")" || STEP0_RC=$?
+  STEP0_LINE="$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["line"])' 2>/dev/null)"
+  say "${STEP0_LINE:-step 0 $ISSUE: NOT CHECKED (ticket_step0.py exited $STEP0_RC with no line); the ticket proceeds unchecked}"
+  if [ "$STEP0_RC" = "3" ]; then
+    # One comment per ticket, never one per tick: page_once writes the ledger,
+    # so a dry run (which must change nothing) only says the line above.
+    if [ "$APPLY" = "1" ] && page_once "$ISSUE" step0_stopped; then
+      python3 "$SYNC" progress "$ISSUE" \
+        "$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["comment"])')" \
+        --agent sana >/dev/null 2>&1 || say "WARN: the step 0 comment on $ISSUE did not post"
+    fi
+    say "skip $ISSUE: stopped at step 0, already built; no build session is spent on it"
+    continue
   fi
 
   if [ "$APPLY" = "0" ]; then
