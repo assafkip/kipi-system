@@ -397,7 +397,9 @@ def test_a_read_failure_inside_started_hold_reason_is_unread_not_a_gap(tmp_path,
     # closed). Read as history it filed a gap whose text says the ledger has no row.
     assert sweep.started_classes(sync, [t], ledger("no-ledger", None))["ASK-9001"][0] == "unread"
     other = json.dumps({"ASK-1": {"count": 1}})
-    assert sweep.started_classes(sync, [t], ledger("no-row", other))["ASK-9001"][0] == "history"
+    # ASK-5845: a no-row ticket quiet 30h is abandoned, so the only thing left in its
+    # way is the PR read, and that read fails here: "could not look" is unread.
+    assert sweep.started_classes(sync, [t], ledger("no-row", other))["ASK-9001"][0] == "unread"
 
 
 @needs_sweep

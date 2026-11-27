@@ -296,7 +296,8 @@ os.environ["KIPI_LANES_DIR"] = lanes
 
 
 def abandoned_case(mod_):
-    return mod_.started_hold_reason(started(2, ident="ASK-7"), NOW, quiet_state)
+    # Month-old startedAt: past the 24h lane window, so these cases test the 6h quiet rule.
+    return mod_.started_hold_reason(started(24 * 30, ident="ASK-7"), NOW, quiet_state)
 
 
 got = abandoned_case(with_recorder(Recorder()))
@@ -321,6 +322,10 @@ check("could not be read" in got, "an unreadable updatedAt holds it (fail closed
 exact = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
 got = abandoned_case(with_recorder(Recorder(updated_at=exact)))
 check(got == "", "exactly 6h quiet is released (threshold inclusive)", got)
+
+got = with_recorder(Recorder()).started_hold_reason(started(12, ident="ASK-7"), NOW, quiet_state)
+check("inside the 24h window" in got,
+      "a never-run ticket started 12h ago is held by the 24h lane window even when quiet", got)
 
 print("== negative self-test")
 src = open(SYNC).read()

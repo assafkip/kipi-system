@@ -8,7 +8,7 @@
 
      EVERY 2 HOURS (ASK-5845, was daily 04:40): a capped PR waited up to 24h for its
      next rung, and a live run on it added another day. The 04:40 slot protected
-     nothing: the limit, not the clock, bounds the Fable RCA calls, so --limit 5 stays
+     nothing: the limit, not the clock, bounds the Fable RCA calls, so a limit of 5 stays
      and it now bounds each run. StartInterval 7200 seconds.
      No double hyphen in this comment: XML forbids one there. -->
 <plist version="1.0">

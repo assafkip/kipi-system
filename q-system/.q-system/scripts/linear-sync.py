@@ -853,7 +853,9 @@ def worker_history(state_dir: str, identifier: str) -> str:
     a person working in their own checkout updates nothing on the ticket. A row
     in the attempts ledger is proof the fleet worker, the redrives or converge
     took the issue, so a started ticket WITHOUT one was started by someone the
-    fleet cannot see, and nothing here may release it. Measured 2026-11-06: none
+    fleet cannot see. Since ASK-5845 that alone no longer holds it forever:
+    started_hold_reason releases it after 24h of age AND 6h without a Linear
+    update, a lane marker, a live claim or an open PR. Measured 2026-11-06: none
     of the 19 lane tickets ASK-3815 to ASK-3833 has a row; every started ticket
     the fleet worked (ASK-2058, ASK-1876, ASK-2810, ASK-3036, ASK-142, ASK-767)
     has one. FAIL CLOSED: an unreadable ledger proves nothing.
@@ -932,7 +934,12 @@ def started_hold_reason(issue: dict, now=None, state_dir: str = "") -> str:
     if history and not never_ran:
         return history
     hours = (now - started).total_seconds() / 3600.0
-    if not never_ran and hours < STARTED_STALE_HOURS:
+    # The 24h lane window applies to EVERY started ticket, ledger row or not
+    # (PR #906 review, finding 1): updatedAt equals startedAt on a ticket a person
+    # moved by hand, so the 6h quiet clock alone would be a 6h window, and a lane
+    # that has not yet pushed a PR would get an agent on top of it. The measured
+    # abandoned tickets are 2 to 36 days old, far past it.
+    if hours < STARTED_STALE_HOURS:
         return (f"started {hours:.1f}h ago, inside the {STARTED_STALE_HOURS}h window "
                 f"a lane gets before the worker may take it")
     if never_ran:
