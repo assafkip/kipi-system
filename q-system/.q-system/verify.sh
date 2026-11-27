@@ -116,16 +116,23 @@ case "$MODE" in
   *) echo "usage: verify.sh [--staged|--full|--changed [--base REF] [--rev SHA]]" >&2; exit 2 ;;
 esac
 
-# Check SNAP out as a throwaway worktree at $TMP/wt and point TARGET at it.
+# Check SNAP out as a throwaway worktree under $TMP and point TARGET at it.
 # Shared by --staged (a commit built from the index) and --changed (an existing
 # commit), so both doors grade a COPY by the same machinery, collisions included.
 materialise_snapshot() {
   local SNAP="$1" _what="$2"
+  # ONE ADMIN NAME PER RUN (PR #899 verify, 2026-11-27). git names a worktree's
+  # admin dir after the path's basename. Every run used "$TMP/wt", so concurrent
+  # runs raced for .git/worktrees/wt and the loser read a half-made one: "fatal:
+  # failed to read .../worktrees/wt/commondir", which is no lock message, so no
+  # retry and exit 1 on CI. The mktemp suffix is unique; "verify" keeps it
+  # visible to test_verify_concurrent.sh's leaked-registration check.
+  local WT="$TMP/verify-${TMP##*/}"
   WT_OK=""
   for _try in 1 2 3; do
     if WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
                      -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
-                     git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
+                     git -C "$REPO" worktree add --detach "$WT" "$SNAP" 2>&1)"; then
       WT_OK=1
       break
     fi
@@ -144,7 +151,7 @@ materialise_snapshot() {
     echo "$WT_ERR" | sed 's/^/  /' >&2
     exit 1
   fi
-  TARGET="$TMP/wt"
+  TARGET="$WT"
 }
 
 SCOPED=""
@@ -267,7 +274,7 @@ if [ "$MODE" = "--staged" ]; then
   else
     SNAP="$(git -C "$REPO" commit-tree "$TREE" -m 'verify.sh staged snapshot')"
   fi
-  # FAIL, never fall through. A failed `worktree add` leaves $TMP/wt absent, and
+  # FAIL, never fall through. A failed `worktree add` leaves the snapshot absent, and
   # a TARGET that does not exist would send every check at the MAIN CHECKOUT,
   # reporting green for a tree nobody staged.
   #

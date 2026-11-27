@@ -2973,6 +2973,13 @@ print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) i
   if [ "$STEP0_RC" = "3" ] && [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" step0_canceled "" 2>/dev/null)" = "True" ]; then
     say "step 0 $ISSUE: stands down, reopened after a step-0 cancel; the ticket proceeds"
     STEP0_RC=0
+  elif [ "$STEP0_RC" = "0" ] && [ "$APPLY" = "1" ] \
+       && printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;sys.exit(0 if json.load(sys.stdin).get("checked") else 1)' 2>/dev/null; then
+    # THE FLAG EXPIRES ON A CHECKED PASS (PR #893 round 3, minor 4: set once,
+    # never cleared, so step 0 was off for that id forever). Once the reopened
+    # text passes, the reopen has done its job; a later build request is checked
+    # again. A NOT CHECKED fail-open is no pass: it would re-arm a re-cancel.
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" step0_canceled >/dev/null 2>&1 || true
   fi
   if [ "$STEP0_RC" = "3" ]; then
     # THE STOP HANDS OFF TO cap-ladder.py, IT DOES NOT END HERE (PR #893 round 1,
@@ -2987,11 +2994,13 @@ print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) i
     fi
     # NOW, NOT AT 04:40 (founder 2026-11-27, no waits for a time of day). The
     # cancel spends no RCA, so the ladder's nightly clock has no reason to hold
-    # it. Same attempts ledger as this run. A failure leaves the capout for the
-    # nightly run, which is the backstop, never the plan.
+    # it. --issue runs the ladder's own loop for this one ticket, with its lane,
+    # live-run and lock guards (PR #893 round 3: a separate --rung0 skipped them).
+    # Same attempts ledger as this run. A refusal or failure leaves the capout
+    # for the next tick or the nightly run.
     if [ "$APPLY" = "1" ]; then
-      CAP_LADDER_ATTEMPTS="$ATTEMPTS" ${KIPI_CAP_LADDER:-python3 "$SCRIPT_DIR/cap-ladder.py"} --rung0 "$ISSUE" --apply >>"$LOG" 2>&1 \
-        || say "WARN: cap-ladder.py --rung0 $ISSUE failed; its nightly run takes the capout"
+      CAP_LADDER_ATTEMPTS="$ATTEMPTS" ${KIPI_CAP_LADDER:-python3 "$SCRIPT_DIR/cap-ladder.py"} --issue "$ISSUE" --apply >>"$LOG" 2>&1 \
+        || say "WARN: cap-ladder.py --issue $ISSUE failed; its nightly run takes the capout"
     fi
     say "skip $ISSUE: stopped at step 0, already built; cap-ladder.py rung 0 cancels it with the file named (this tick on --apply)"
     continue

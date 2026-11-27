@@ -1288,35 +1288,77 @@ def case_step0(script: Path = LADDER) -> None:
         check("step0: at rung 1 already, a step-0 capout step 0 no longer stops is released, no rung 2 RCA",
               not log(env, "fable") and not ledger_row(env, "ASK-1").get("capout") and "released" in out, out[-300:])
     with tempfile.TemporaryDirectory() as td:
-        # Round 2, finding 2: the reason is posted before the cancel; a failed post cancels nothing.
+        # The CLOSE's order (rca-ask5802-three-rounds-2026-11-27.md): a failed
+        # reason post cancels nothing, closes no PR and keeps the cap.
         env = make_world(Path(td))
         (Path(td) / "badsync").write_text("import sys\nsys.exit(1)\n")
         env["CAP_LADDER_SYNC"] = f"{sys.executable} {td}/badsync"
         edit_ticket(env, "ASK-1", title=built)
         led(env, "record-capout", "ASK-1", "step 0: already built")
         out = ladder(env, "--apply", script=script)
-        check("step0: a failed reason post cancels nothing and keeps the cap for the next run",
+        check("step0: a failed reason post cancels nothing, closes no PR and keeps the cap for the next run",
               not any(w.get("op") == "state" for w in writes(env)) and ledger_row(env, "ASK-1").get("capout")
-              and "nothing canceled" in out, (out[-300:], writes(env)))
+              and not any("close" in c for c in log(env, "gh")) and "nothing canceled" in out,
+              (out[-300:], writes(env), log(env, "gh")))
     with tempfile.TemporaryDirectory() as td:
-        # --rung0 (founder 2026-11-27, no waits for a time of day): the worker's
-        # call cancels a built ticket in the same tick and touches no other cap.
+        # PR #893 round 3, findings 2 and 3: a cancel that keeps failing posts its
+        # reason ONCE across runs, never closes the PR, and keeps the cap.
+        env = make_world(Path(td))
+        env["CAP_LADDER_LINEAR_FAIL"] = "state"
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        for day in (0, 1, 2):
+            at(env, day)
+            out = ladder(env, "--apply", script=script)
+        reasons = [c for c in log(env, "sync") if c[0] == "progress" and "Canceled at step 0" in c[2]]
+        check("step0: a failing cancel posts its reason once over three runs, closes no PR, keeps the cap",
+              len(reasons) == 1 and not any("close" in c for c in log(env, "gh"))
+              and ledger_row(env, "ASK-1").get("capout") and "cancel failed" in out,
+              (len(reasons), log(env, "gh"), out[-300:]))
+    with tempfile.TemporaryDirectory() as td:
+        # --issue (founder 2026-11-27, no waits for a time of day): the worker's
+        # call cancels a built ticket in the same tick through the same loop,
+        # and touches no other cap.
         env = make_world(Path(td))
         edit_ticket(env, "ASK-1", title=built)
         led(env, "record-capout", "ASK-1", "step 0: already built")
         led(env, "record-capout", "ASK-2", "hit the 3-round cap")
-        out = ladder(env, "--rung0", "ASK-1", "--apply", script=script)
-        check("step0: --rung0 cancels the built ticket now, clears its cap, and spends no RCA",
+        out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+        check("step0: --issue cancels the built ticket now through the CLOSE, clears its cap, spends no RCA",
               any(w.get("op") == "state" and w.get("type") == "canceled" and w.get("issue") == "ASK-1"
                   for w in writes(env))
               and not ledger_row(env, "ASK-1").get("capout") and not log(env, "fable"), (out[-300:], writes(env)))
-        check("step0: --rung0 leaves every other cap for the nightly run",
+        check("step0: --issue leaves every other cap and writes no nightly report",
               ledger_row(env, "ASK-2").get("capout") is True
-              and not any(w.get("issue") == "ASK-2" for w in writes(env)), ledger_row(env, "ASK-2"))
-        reset(env)
-        out = ladder(env, "--rung0", "ASK-2", "--apply", script=script)
-        check("step0: --rung0 on a ticket step 0 passes writes nothing and names the nightly run",
-              not writes(env) and not log(env, "fable") and "nightly run takes rung 1" in out, out[-300:])
+              and not any(w.get("issue") == "ASK-2" for w in writes(env))
+              and not Path(env["CAP_LADDER_REPORT"]).exists(), ledger_row(env, "ASK-2"))
+    for guard in ("lane", "live"):
+        with tempfile.TemporaryDirectory() as td:
+            # PR #893 round 3, finding 1: --rung0 closed a lane's PR and canceled
+            # the ticket under a live lane marker or a live converge run. --issue
+            # is the nightly loop, so both guards hold it.
+            env = make_world(Path(td))
+            env["KIPI_LANES_DIR"] = str(Path(td) / "lanes")
+            if guard == "lane":
+                lane(env, "ASK-1", "2026-11-09T06:00:00Z")
+            else:
+                (Path(td) / "ps.txt").write_text("bash converge.sh --issue ASK-1 --max-rounds 4\n")
+            edit_ticket(env, "ASK-1", title=built)
+            led(env, "record-capout", "ASK-1", "step 0: already built")
+            out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+            check(f"step0: --issue under a {guard} hold cancels nothing and closes no PR",
+                  not writes(env) and not any("close" in c for c in log(env, "gh"))
+                  and ledger_row(env, "ASK-1").get("capout"), (out[-300:], writes(env), log(env, "gh")))
+    with tempfile.TemporaryDirectory() as td:
+        # PR #893 round 3, minor 5: a step-0 release spends no RCA, so it takes no
+        # --limit slot and a real cap still climbs the same night.
+        env = make_world(Path(td))
+        led(env, "record-capout", "ASK-1", "step 0: already built: q-system/.q-system/scripts/review-tier.py")
+        led(env, "record-capout", "ASK-2", "hit the 3-round cap")
+        out = ladder(env, "--apply", "--limit", "1", script=script)
+        check("step0: a step-0 release takes no --limit slot: the real cap climbs in the same run",
+              not ledger_row(env, "ASK-1").get("capout") and "over the limit" not in out
+              and any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")), out[-400:])
     with tempfile.TemporaryDirectory() as td:
         env = make_world(Path(td))
         (Path(td) / "broken.py").write_text("import sys\nsys.exit(1)\n")

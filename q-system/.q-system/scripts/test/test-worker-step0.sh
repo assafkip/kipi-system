@@ -145,7 +145,7 @@ for _ in $(seq 1 100); do PORT="$(cat "$WORK/port2" 2>/dev/null)"; [ -n "${PORT:
 # a mutant worker that did not stop went on to a real bounded `claude -p` run
 # and sat in run_bounded's 1800 s watchdog. A worker that fails to stop must
 # fail this test fast and spend nothing. cap-ladder.py is stubbed the same way:
-# the real --rung0 writes Linear and the ledger, and test_cap_ladder.py owns it.
+# the real --issue run writes Linear and the ledger, and test_cap_ladder.py owns it.
 printf '#!/bin/sh\necho called >> "%s/claude-called"\nexit 1\n' "$WORK" > "$WORK/claude-stub"
 chmod +x "$WORK/claude-stub"
 # KIPI_NOTIFY stubbed on every ledger read: attempts-ledger.py can reach slack-notify.sh.
@@ -167,9 +167,9 @@ WHY="$(led_get capout_why)"
 [ ! -e "$WORK/claude-called" ] \
   && ok "--apply spends nothing on the stopped ticket (the claude seam was never called)" \
   || bad "--apply spends nothing on the stopped ticket" "the claude stub was called $(wc -l < "$WORK/claude-called") time(s)"
-grep -qx -- '--rung0 ASK-961 --apply' "$WORK/ladder-called" 2>/dev/null \
-  && ok "--apply hands the stop to cap-ladder.py --rung0 in the same tick (no wait for 04:40)" \
-  || bad "--apply calls cap-ladder.py --rung0 now" "$(cat "$WORK/ladder-called" 2>/dev/null || echo 'never called')"
+grep -qx -- '--issue ASK-961 --apply' "$WORK/ladder-called" 2>/dev/null \
+  && ok "--apply hands the stop to cap-ladder.py's own loop (--issue) in the same tick (no wait for 04:40)" \
+  || bad "--apply calls cap-ladder.py --issue now" "$(cat "$WORK/ladder-called" 2>/dev/null || echo 'never called')"
 sleep 1; apply_worker >/dev/null
 AT2="$(led_get capout_at)"
 [ -n "$AT1" ] && [ "$AT1" = "$AT2" ] \
@@ -201,6 +201,21 @@ for kind in broken hang; do
     && ok "a $kind check says NOT CHECKED, never a silent pass" \
     || bad "a $kind check says NOT CHECKED" "$(printf '%s\n' "$OUTB" | grep -E 'ASK-961' | head -3)"
 done
+
+# PR #893 round 3, minor 4: step0_canceled expires on a CHECKED pass and only
+# then. A NOT CHECKED fail-open keeps it, or a working check would re-cancel a
+# reopened ticket. --apply with every spend seam stubbed (claude, cap-ladder).
+# LAST in the file: these --apply runs bump ASK-961's attempts, which would
+# make every later case see it as STUCK.
+KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" claim-flag ASK-961 step0_canceled >/dev/null 2>&1
+printf 'import json\nprint(json.dumps({"verdict": "adopt"}))\n' > "$WORK/adopt.py"
+for kind in broken adopt; do
+  KIPI_STEP0_GROUND="$WORK/$kind.py" apply_worker > "$WORK/expiry-$kind.out" 2>&1
+  eval "FLAG_$kind=\"\$(led_get step0_canceled)\""
+done
+[ "$FLAG_broken" = "True" ] && [ -z "$FLAG_adopt" ] \
+  && ok "step0_canceled survives a NOT CHECKED run and expires on a checked pass" \
+  || bad "step0_canceled expires on a checked pass only" "after broken [$FLAG_broken] after adopt [$FLAG_adopt]"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
