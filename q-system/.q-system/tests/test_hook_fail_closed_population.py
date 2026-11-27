@@ -100,6 +100,10 @@ NOT_SECURITY = {
     # Output trimmer (ASK-4649): a crash returns no updatedToolOutput, so the
     # full output reaches the model. Nothing is refused, nothing is lost.
     "tool-output-trim.py",
+    # Duplicate-build gate (ASK-5804): fails open BY DESIGN. A crash, a timeout or
+    # a missing improve_ground.py prints "did not check" and lets the new file
+    # land, because a gate that cannot run must not block every new file.
+    "improve-ground-gate.py",
 }
 
 
