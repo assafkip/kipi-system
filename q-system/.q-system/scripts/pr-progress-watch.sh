@@ -42,7 +42,9 @@ case "$PR" in ''|*[!0-9]*) usage ;; esac
 for v in "$STALL_MIN" "$DEADLINE_MIN"; do
   case "$v" in ''|*[!0-9]*) usage ;; esac
 done
-[ "$STALL_MIN" -ge 1 ] || usage
+# 10# forces base 10: "010" would read as octal 8 (round 2). Both must be at least 1 minute.
+STALL_MIN=$((10#$STALL_MIN)); DEADLINE_MIN=$((10#$DEADLINE_MIN))
+[ "$STALL_MIN" -ge 1 ] && [ "$DEADLINE_MIN" -ge 1 ] || usage
 
 POLL="${PR_WATCH_POLL_SEC:-60}"
 MIN_SEC="${PR_WATCH_MIN_SEC:-60}"

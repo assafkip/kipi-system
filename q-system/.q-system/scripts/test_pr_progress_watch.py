@@ -107,7 +107,8 @@ def test_still_moving_runs_to_the_deadline(stub):
 
 
 def test_bad_usage_exits_64(stub):
-    for bad in (("--stall-min", "x"), ("--stall-min", ""), ("--deadline-min", ""), ("--stall-min", "0")):
+    for bad in (("--stall-min", "x"), ("--stall-min", ""), ("--deadline-min", ""), ("--stall-min", "0"),
+                ("--deadline-min", "0")):
         assert stub(pr_body(), *bad).returncode == 64, bad
 
 
@@ -204,6 +205,12 @@ def test_guard_allows_watcher_and_plain_calls():
     assert guard("sleep 5; echo hi").returncode == 0
     # review round 1, finding 3: English "for" in a one-shot wait is not a loop
     assert guard("sleep 120; gh pr checks 904  # one wait for the slow validate job").returncode == 0
+
+
+def test_guard_blocks_multiline_loops():
+    # review round 2: `do` on its own line must still be seen as a loop
+    assert guard("while true\ndo\n  gh pr view 903 --json state\n  sleep 300\ndone").returncode == 2
+    assert guard("for i in 1 2 3\ndo gh pr checks 9; sleep 5\ndone").returncode == 2
 
 
 def test_guard_blocks_status_and_api_loops():

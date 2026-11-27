@@ -29,9 +29,12 @@ import json
 import re
 import sys
 
-# why `do` is required: a bare `for` matched English in a comment and refused a one-shot
-# `sleep 120; gh pr checks 904` (PR #904 review round 1). A shell loop always has `do`.
-LOOP_RE = re.compile(r"\b(while|until|for)\b[^\n]*?\bdo\b")
+# why `do` after a `;` or newline: a bare `for` matched English in a comment and refused a one-shot
+# `sleep 120; gh pr checks 904` (round 1). Requiring `do` on the SAME line then let every
+# multi-line loop through (round 2), so `do` may follow a newline. A shell loop's `do`
+# always follows `;` or a newline. A comment that reads "for ...; do ..." can still match;
+# the bypass covers it.
+LOOP_RE = re.compile(r"\b(while|until|for)\b[^;]*?[;\n]\s*do\b")
 GH_RE = re.compile(r"\bgh\s+(pr\s+(view|checks|status)\b|api\s+\S*pulls/)")
 SLEEP_RE = re.compile(r"\bsleep\b")
 WATCHER = "pr-progress-watch"
@@ -45,8 +48,8 @@ MESSAGE = (
     "[--stall-min N] [--deadline-min M]\n"
     "  exit 0 = PR<n> MERGED <oid> or PR<n> CLOSED\n"
     "  exit 3 = PR<n> STALLED <reason> (no change for N min, default 30, or deadline, "
-    "default 360); the reason names red checks, a conflict, changes requested, or no "
-    "verdict at the head\n"
+    "default 360); the reason names red checks, a conflict, changes requested, checks "
+    "still running, or no verdict at the head\n"
     "Run it in the background and act on the exit.\n\n"
     "Scar: a 6h merge-only loop on PR 903 idled a session about 5h while the PR waited "
     "on a reviewer nothing had started (ASK-5842).\n"

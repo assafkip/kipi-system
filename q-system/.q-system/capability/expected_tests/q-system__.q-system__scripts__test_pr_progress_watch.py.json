@@ -1,5 +1,6 @@
 {
   "path": "q-system/.q-system/scripts/test_pr_progress_watch.py",
   "runner": "pytest",
+  "serial": true,
   "timeout_s": 120
 }
