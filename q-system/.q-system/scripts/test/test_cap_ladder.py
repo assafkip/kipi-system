@@ -152,6 +152,7 @@ def make_world(tmp: Path) -> dict:
         "ASK-50": tk("backlog", ["owner:sana"]), "ASK-51": tk("backlog", []),
     }))
     (tmp / "attempts.json").write_text("{}")
+    (tmp / "lessons").mkdir()
     py = sys.executable
     return {
         "W": str(tmp), "PATH": os.environ.get("PATH", ""), "HOME": str(tmp),
@@ -174,6 +175,9 @@ def make_world(tmp: Path) -> dict:
         "CAP_LADDER_TARGETS": json.dumps([{"slug": "o/r", "project": "kipi-system"}]),
         "CAP_LADDER_MODEL_FP": "fp1",
         "CAP_LADDER_NOW": "2026-11-09T04:40:00+00:00",
+        # Rung 0 (ASK-5802) grounds every first cap; an empty tmp corpus keeps
+        # it off the live lessons dir and off the file's runtime bound.
+        "KIPI_LESSONS_CORPORA": str(tmp / "lessons"),
     }
 
 
@@ -1224,6 +1228,41 @@ def case_founder_asks_reach_chief() -> None:
               sent(env) == ["2 decisions waiting for you."] and all(r.get("notified_at") for r in _status_rows(env)), sent(env))
 
 
+def case_step0(script: Path = LADDER) -> None:
+    """Rung 0 (ASK-5802): founder 2026-11-26, "chekcing if the ticket should
+    exist should be step 0". A capped ticket whose file already exists is
+    stopped before the rung 1 RCA is paid for; a broken check stops nothing.
+    The title is improve_ground.py's own already-built fixture."""
+    built = "risk-scored auto-merge for low-risk PRs"
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, script=script)
+        check("step0: a dry run says rung 0 would stop it and names the file",
+              "rung 0 would stop it" in out and "review-tier.py" in out, out[-400:])
+        out = ladder(env, "--apply", script=script)
+        progress = [c for c in log(env, "sync") if c[0] == "progress" and "Step 0 stopped" in c[2]]
+        check("step0: --apply stops before rung 1: no RCA, no PR closed, one comment naming the file",
+              not any(c[:2] == ["--kind", "rca"] for c in log(env, "fable"))
+              and not any("close" in c for c in log(env, "gh"))
+              and len(progress) == 1 and "review-tier.py" in progress[0][2], (out[-300:], log(env, "sync")))
+        at(env, 1)
+        out = ladder(env, "--apply", script=script)
+        progress = [c for c in log(env, "sync") if c[0] == "progress" and "Step 0 stopped" in c[2]]
+        check("step0: the next night, same text and same cap: held quietly, no second comment",
+              len(progress) == 1 and "held at rung 0" in out, (out[-300:], progress))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        (Path(td) / "broken.py").write_text("import sys\nsys.exit(1)\n")
+        env["KIPI_STEP0_GROUND"] = str(Path(td) / "broken.py")
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a broken check stops nothing: rung 1 runs, and the log says NOT CHECKED",
+              any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")) and "NOT CHECKED" in out, out[-400:])
+
+
 def main() -> int:
     t0 = time.monotonic()
     print("test_cap_ladder.py")
@@ -1233,7 +1272,7 @@ def main() -> int:
     else:
         cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
                  case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
-                 case_mutant, case_lane_marker, case_founder_asks_reach_chief] + cases
+                 case_mutant, case_lane_marker, case_founder_asks_reach_chief, case_step0] + cases
     # list() re-raises any exception a case threw, so a crash still fails the file.
     with ThreadPoolExecutor(max_workers=len(cases)) as pool:
         list(pool.map(lambda f: f(), cases))
