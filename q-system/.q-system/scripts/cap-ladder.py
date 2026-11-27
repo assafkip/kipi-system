@@ -121,7 +121,7 @@ GH = cmd("CAP_LADDER_GH", ["gh"])
 SYNC = cmd("CAP_LADDER_SYNC", [sys.executable, str(HERE / "linear-sync.py")])
 FABLE = cmd("CAP_LADDER_FABLE", [sys.executable, str(HERE / "fable-escalate.py")])
 DRAFTER = cmd("CAP_LADDER_DRAFTER", [sys.executable, str(HERE / "linear-dor-drafter.py")])
-PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "args="])
+PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "pid=,args="])
 
 # Every path this script writes, every outside writer it calls, and the live
 # lanes dir it reads (KIPI_LANES_DIR, PR #732 round 1 minor: a test that missed
@@ -704,18 +704,23 @@ def lin(op: str, **kw):
 
 
 def own_chain() -> set:
-    """The argv of this process and every ancestor, as `ps -o args=` prints it."""
+    """The PIDs of this process and every ancestor."""
     chain, pid = set(), os.getpid()
     for _ in range(16):
-        rc, line = run(["ps", "-o", "ppid=,args=", "-p", str(pid)], timeout=5)
-        ppid, _, args = line.strip().partition(" ")
-        if rc != 0 or not args:
-            break
-        chain.add(args.strip())
-        if not ppid.isdigit() or int(ppid) <= 1:
+        chain.add(pid)
+        rc, line = run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5)
+        ppid = line.strip()
+        if rc != 0 or not ppid.isdigit() or int(ppid) <= 1:
             break
         pid = int(ppid)
     return chain
+
+
+def _not_mine(row: str, chain: set) -> bool:
+    """A row with a leading PID in my chain is me; a row with no PID (the
+    suite's ps fixture prints bare argv) is never me."""
+    head = row.strip().split(None, 1)
+    return not (head and head[0].isdigit() and int(head[0]) in chain)
 
 
 def live(issue: str, pr: dict | None) -> bool:
@@ -725,10 +730,14 @@ def live(issue: str, pr: dict | None) -> bool:
     # MY OWN CALL CHAIN IS NOT A SECOND WRITER (PR #899 round 1, finding 1).
     # `cap-ladder.py --issue ASK-n`, and a worker run as `--issue ASK-n`,
     # matched "--issue ASK-n" below, so the worker's same-tick call was held
-    # by itself on every tick. The suite's ps fixture never lists the caller.
+    # by itself on every tick. Filtered by PID, not argv (PR #903 round 1,
+    # Codex P1): an argv filter also hid a second writer started identically.
     chain = own_chain()
-    table = "\n".join(l for l in table.splitlines() if l.strip() not in chain)
-    pats = [rf"converge\.sh\s+--issue\s+{issue}(\s|$)", rf"--issue\s+{issue}(\s|$)"]
+    table = "\n".join(l for l in table.splitlines() if _not_mine(l, chain))
+    # ONLY WRITERS COUNT (PR #903 round 1, Codex P1): a bare "--issue ASK-n"
+    # also matched a read-only `ticket_step0.py --issue ASK-n` and the
+    # drafter, so a concurrent check held the same-tick cancel.
+    pats = [rf"(converge\.sh|cap-ladder\.py|linear-worker\.sh)\b[^\n]*?--issue\s+{issue}(\s|$)"]
     if pr:
         pats.append(rf"pr-review-agent\.sh\s+{pr['number']}(\s|$)")
     return any(re.search(p, table, re.M) for p in pats)
@@ -1219,7 +1228,10 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
         return f"[dry] {issue}: would take rung {r} ({rung_name(r)}) on its {why}"
 
     if r >= 4:
-        d = decide(issue, kind, why, pr, slug, tgts)
+        # A CLOSE THAT FAILED IS RETRIED AS DECIDED (PR #903 round 1, Codex P2).
+        # Its reason may already be posted; a fresh decide() could answer SPLIT
+        # or BLOCKED-ON under a cancel comment, and spend another model run.
+        d = row.get("pending_close") or decide(issue, kind, why, pr, slug, tgts)
         if d is None:
             report.append({"issue": issue, "rung": r, "decision": None, "red": True,
                            "note": "capped with no decision record: Fable produced no RCA; retried next run"})
@@ -1229,8 +1241,12 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
             return late
         out = apply_decision(issue, d, t, pr, slug, r, row)
         if "retries" in out:
+            if d["kind"] == "CLOSE":
+                row["pending_close"] = d
+                state[issue] = row
             report.append({"issue": issue, "rung": r, "decision": d["kind"], "red": True, "note": out})
             return out
+        row.pop("pending_close", None)
         row.update(rung=r, last_at=now().isoformat(), handled=sigs,
                    decision={k: v for k, v in d.items() if k != "text"})
         state[issue] = row

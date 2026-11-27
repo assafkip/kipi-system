@@ -314,6 +314,21 @@ def case_decisions() -> None:
           and any(c[0] == "progress" and "rca-ASK-1" in c[2] for c in log(env, "sync")), writes(env))
     td.cleanup()
 
+    # PR #903 round 1, Codex P2: a CLOSE whose cancel failed is retried AS
+    # DECIDED. The second answer would be a SPLIT, so a fresh decide() shows.
+    td, env = decision_world([RCA + "DECISION: CLOSE\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: a works\nSUBTICKET: b :: b works\n"])
+    env["CAP_LADDER_LINEAR_FAIL"] = "state"
+    ladder(env, "--apply")
+    env.pop("CAP_LADDER_LINEAR_FAIL")
+    ladder(env, "--apply")
+    w = writes(env)
+    check("CLOSE retry: a failed cancel is retried as CLOSE, no second RCA, no SPLIT",
+          {"op": "state", "issue": "ASK-1", "type": "canceled"} in w
+          and not any(x["op"] == "create" for x in w)
+          and sum(1 for c in log(env, "fable") if c[:2] == ["--kind", "rca"]) == 1, (w, log(env, "fable")))
+    td.cleanup()
+
     td, env = decision_world([RCA + "DECISION: BLOCKED-ON ASK-50\n"])
     ladder(env, "--apply")
     bpath = Path(env["CAP_LADDER_BLOCKERS"])
@@ -1238,7 +1253,7 @@ def case_step0(script: Path = LADDER) -> None:
     cap is cleared so it never sits in the ladder (PR #893 round 1, finding 2).
     A broken check stops nothing. The title is improve_ground.py's own
     already-built fixture, as a build proposal."""
-    built = "add risk-scored auto-merge for low-risk PRs"
+    built = "Build review-tier.py for risk-scored auto-merge"
     with tempfile.TemporaryDirectory() as td:
         env = make_world(Path(td))
         edit_ticket(env, "ASK-1", title=built)
@@ -1356,13 +1371,37 @@ def case_step0(script: Path = LADDER) -> None:
         # PR #899 round 1, finding 1: with the REAL process table, --issue saw its
         # own argv ("--issue ASK-1") and held itself on every tick.
         env = make_world(Path(td))
-        env["CAP_LADDER_PS"] = "ps -Ao args="
+        env["CAP_LADDER_PS"] = "ps -Ao pid=,args="
         edit_ticket(env, "ASK-1", title=built)
         led(env, "record-capout", "ASK-1", "step 0: already built")
         out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
         check("step0: --issue under the real ps is not held by its own command line",
               any(w.get("op") == "state" and w.get("type") == "canceled" for w in writes(env))
               and "a run is live" not in out, (out[-300:], writes(env)))
+    # PR #903 round 1, Codex P1 x2. The stand-in ps prints $PPID, the ladder's
+    # own PID, so "mine" is decided by PID; 999999 is an identical second writer.
+    for name, rows, held in (
+            ("read-only step-0 checks and the drafter are not writers",
+             ["python3 ticket_step0.py --issue ASK-1", "python3 linear-dor-drafter.py --issue ASK-1 --limit 1"], False),
+            ("my own PID is not a second writer",
+             ["$PPID python3 cap-ladder.py --issue ASK-1 --apply"], False),
+            ("an identical writer under another PID holds",
+             ["$PPID python3 cap-ladder.py --issue ASK-1 --apply",
+              "999999 python3 cap-ladder.py --issue ASK-1 --apply"], True),
+            ("a worker on the issue holds",
+             ["999998 bash linear-worker.sh --apply --issue ASK-1"], True)):
+        with tempfile.TemporaryDirectory() as td:
+            env = make_world(Path(td))
+            fake = Path(td) / "pid_ps.sh"
+            fake.write_text("#!/bin/sh\n" + "".join(f'echo "{r}"\n' for r in rows))
+            fake.chmod(0o755)
+            env["CAP_LADDER_PS"] = str(fake)
+            edit_ticket(env, "ASK-1", title=built)
+            led(env, "record-capout", "ASK-1", "step 0: already built")
+            out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+            canceled = any(w.get("op") == "state" and w.get("type") == "canceled" for w in writes(env))
+            check(f"step0 live(): {name}",
+                  (("a run is live" in out and not canceled) if held else canceled), (out[-300:], writes(env)))
     with tempfile.TemporaryDirectory() as td:
         # PR #899 round 1, finding 3: a lane that starts while step 0 runs wins.
         # The stand-in check writes the marker, then answers like the real one.

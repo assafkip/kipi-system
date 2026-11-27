@@ -10,11 +10,20 @@ use it:
 linear-worker.sh (before the build prompt, through the CLI) and cap-ladder.py
 (rung 0, before the rung 1 RCA, through check()).
 
-A STOP NEEDS FOUR THINGS, because a stop ends in cap-ladder.py canceling the
-ticket. (1) basis "named-file", (2) the KNOWN_BUILT key it matched is a whole
-word in the TITLE, (3) the title opens with a build verb, (4) the cited file
-exists in this checkout. Anything short of that is logged as advisory and
-passes. Why so narrow, measured 2026-11-27 on every open owner:sana ticket:
+A STOP NEEDS THE TITLE TO NAME THE CITED FILE, because a stop ends in
+cap-ladder.py canceling the ticket. (1) basis "named-file", (2) the ticket
+TITLE contains the basename of a cited file, with or without its extension, as
+a whole word, case-insensitive ("capability-gate.py" or "capability-gate"),
+(3) that file exists in this checkout. Every other already-built match (a key
+in the title, anything in the description, a lesson) is an advisory line and
+passes. Losing a stop is the safe direction: a missed duplicate costs one
+build session, a false stop cancels live work unattended.
+Why file identity and not wording: PR #899 and #903 spent four review rounds
+tuning verb and preposition lists ("add Y to X" passed, "add Y on X" was
+canceled), and each round found a new synonym. A title that names the exact
+file is the one signal no synonym moves
+(rca-pr899-step0-precision-three-rounds-2026-11-27.md).
+Measured 2026-11-27 on every open owner:sana ticket, before that:
 - a lesson match is advice for the build, not the build: 6 of 35 sampled
   tickets matched a lesson and none was built (ASK-5779 "Reinstate X" matched
   a lesson about porting gates);
@@ -97,32 +106,31 @@ def stop_comment(issue: str, cites: list, reason: str) -> str:
     """Posted by cap-ladder.py rung 0 when it cancels the ticket."""
     named = ", ".join(f"`{c}`" for c in cites)
     return (f"**Canceled at step 0: {issue} asks to build something that exists.** improve_ground.py "
-            f"names {named} ({reason}), and the title proposes building it. No build session or RCA "
-            "was spent on it. Reopen to undo: step 0 then stands down for this ticket and the worker "
+            f"names {named} ({reason}), and the ticket title names that file. Reopen to undo: step 0 then stands down for this ticket and the worker "
             "takes it as written. (ticket_step0.py, ASK-5802)")
 
 
-# "make" is not here: "make X do Y" changes an existing X (PR #899 rounds 1-2).
-BUILD_VERB = re.compile(r"^\W*(add|build|create|implement|introduce|write|ship|new)\b", re.IGNORECASE)
-# "add Y TO X" builds Y into some other X, so the key names a part, not the
-# whole being proposed (PR #899 rounds 1-2: "Add a deadman to the cap-ladder
-# nightly run" cancelled as already built). "for" is not here: "add risk-scored
-# auto-merge for low-risk PRs" is a true duplicate.
-TARGET = re.compile(r"\b(to|into|onto)\b", re.IGNORECASE)
-
-
-def build_proposal_of(title: str, key: str, cites: list) -> bool:
-    """True only when the title proposes building the thing the key names and
-    the cited file is really here. See the module docstring for the measurement.
-    A cancel runs unattended, so every doubt here passes the ticket."""
-    in_title = bool(key) and re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", title, re.IGNORECASE)
-    exists = bool(cites) and all((REPO / c).is_file() for c in cites)
-    return bool(in_title and BUILD_VERB.match(title) and not TARGET.search(title) and exists)
+def title_names_cited_file(title: str, cites: list) -> bool:
+    """True only when the title names a cited file by its basename, with or
+    without the extension, and that file is really here. Nothing else stops:
+    a cancel runs unattended, so every doubt passes the ticket."""
+    for cite in cites:
+        path = Path(cite)
+        if not (REPO / path).is_file():
+            continue
+        for name in {path.name, path.stem}:
+            if name and re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", title, re.IGNORECASE):
+                return True
+    return False
 
 
 def check(issue: str, text: str) -> dict:
     """The one decision. Never raises. `text` is the title, a blank line, then
     the description (both callers build it that way)."""
+    if not (text or "").strip():
+        # PR #903 round 1, minor 3: the worker's WIP rework rows carry no text,
+        # and a "checked" pass on nothing cleared the step0_canceled flag.
+        return _not_checked(issue, "no ticket text to check")
     verdict, err = run_ground((text or "")[:MAX_TEXT])
     if verdict is None:
         return _not_checked(issue, err)
@@ -130,14 +138,14 @@ def check(issue: str, text: str) -> dict:
     basis = verdict.get("basis") or ""
     title = (text or "").split("\n", 1)[0]
     if (verdict["verdict"] == "already-built" and basis == "named-file"
-            and build_proposal_of(title, verdict.get("matched") or "", cites)):
+            and title_names_cited_file(title, cites)):
         return {"decision": "stop", "checked": True, "basis": basis, "cites": cites,
                 "comment": stop_comment(issue, cites, verdict.get("reason") or ""),
                 "line": f"step 0 {issue}: STOP, already built: {', '.join(cites)}"}
     if verdict["verdict"] == "already-built":
         return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
                 "line": f"step 0 {issue}: pass (advisory: already-built on a {basis or 'lesson'} match, "
-                        f"but the title is not a build proposal for it: {', '.join(Path(c).name for c in cites)})"}
+                        f"but the title does not name the file: {', '.join(Path(c).name for c in cites)})"}
     return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
             "line": f"step 0 {issue}: pass ({verdict['verdict']})"}
 

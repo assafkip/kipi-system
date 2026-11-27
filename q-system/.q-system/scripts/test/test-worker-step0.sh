@@ -47,7 +47,7 @@ def issue(ident, title, created):
 
 # The built one is OLDER, so without step 0 it is the first pick.
 BOARD = [
-    issue("ASK-961", "add risk-scored auto-merge for low-risk PRs", "2026-08-01T10:00:00.000Z"),
+    issue("ASK-961", "Build review-tier.py for risk-scored auto-merge", "2026-08-01T10:00:00.000Z"),
     issue("ASK-962", "usage-pacer.py usage_pct() crashes on TimeoutExpired instead of returning None",
           "2026-08-02T10:00:00.000Z"),
 ]

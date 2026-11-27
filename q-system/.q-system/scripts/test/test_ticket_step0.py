@@ -67,11 +67,23 @@ def main() -> int:
         empty.mkdir()
         full = corpus(root, LESSONS)
 
-        rc, out = step0("add risk-scored auto-merge for low-risk PRs\n\nbuild it", KIPI_LESSONS_CORPORA=str(empty))
-        check("a title proposing to build a named file that exists STOPS (exit 3) and names the file",
+        rc, out = step0("Build review-tier.py for risk-scored auto-merge\n\nbuild it", KIPI_LESSONS_CORPORA=str(empty))
+        check("a title naming the cited file STOPS (exit 3) and names the file",
               rc == 3 and out.get("decision") == "stop" and out.get("checked") is True
               and "q-system/.q-system/scripts/review-tier.py" in out.get("cites", [])
               and "review-tier.py" in out.get("comment", ""), (rc, out))
+        rc, out = step0("Add a REVIEW-TIER risk-scored auto-merge", KIPI_LESSONS_CORPORA=str(empty))
+        check("a title naming the cited file without its extension, any case, STOPS",
+              rc == 3 and out.get("decision") == "stop", (rc, out))
+        rc, out = step0("Add risk-scored auto-merge\n\nlike review-tier.py does", KIPI_LESSONS_CORPORA=str(empty))
+        check("the cited file named only in the description passes, advisory",
+              rc == 0 and out.get("decision") == "pass" and "advisory" in out.get("line", ""), (rc, out))
+        rc, out = step0("Add risk-scored auto-merge to review-tiers", KIPI_LESSONS_CORPORA=str(empty))
+        check("a longer word that contains the file stem is not the file (word boundary)",
+              rc == 0 and out.get("decision") == "pass", (rc, out))
+        rc, out = step0("   \n\n", KIPI_LESSONS_CORPORA=str(empty))
+        check("empty ticket text is NOT CHECKED, never a checked pass (it would clear the reopen flag)",
+              rc == 0 and out.get("checked") is False and "NOT CHECKED" in out.get("line", ""), (rc, out))
 
         # PR #893 round 1, finding 1: real false stops, by their real titles.
         for title, why in (
@@ -88,7 +100,14 @@ def main() -> int:
                 ("Add a friction note capture to the lane runner", "adds a part TO another thing"),
                 ("Add a self-review pass to pr-owner.py", "adds a part TO another thing"),
                 ("Make a handoff's \"every branch is pushed\" claim come from the disk, not a static list "
-                 "of branches.", "verbatim RCA action item; make = change")):
+                 "of branches.", "verbatim RCA action item; make = change"),
+                # PR #903 round 1, finding 1: any preposition, any verb, key in the title.
+                ("Add friction counts on the morning brief", "key in the title, file not named"),
+                ("Add a deadman for the pr-review-agent queue", "key in the title, file not named"),
+                ("Build a morning brief section for consulting", "build verb + key, file not named"),
+                ("Add a friction note capture on the lane runner", "same title with 'on' for 'to'"),
+                ("Create a handoff index page", "key in the title, file not named"),
+                ("add risk-scored auto-merge for low-risk PRs", "the old known-answer stop: key only")):
             rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
             check(f"a named-file match that is not a build proposal passes: {why}",
                   rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))
@@ -108,7 +127,7 @@ def main() -> int:
         ghost = root / "ghost.py"
         ghost.write_text("import json\nprint(json.dumps({'verdict': 'already-built', 'basis': 'named-file', "
                          "'matched': 'deadman', 'cites': ['q-system/no-such-file.py'], 'reason': 'x'}))\n")
-        rc, out = step0("add a deadman for the sweep", KIPI_STEP0_GROUND=str(ghost))
+        rc, out = step0("add no-such-file.py, a deadman for the sweep", KIPI_STEP0_GROUND=str(ghost))
         check("a named-file verdict citing a file that does not exist passes (no cancel on a ghost)",
               rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))
 
