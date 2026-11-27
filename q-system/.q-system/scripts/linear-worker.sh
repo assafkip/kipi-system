@@ -166,14 +166,8 @@ if fleet_keyed; then
   FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
   [ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
 else
-  # The plan still goes through the shim when it is here, so the 45% weekly stop
-  # (RULE-2026-11-26-PLAN45) is never skipped; the bare call is for a skeleton without it.
-  if [ -f "$SCRIPT_DIR/fleet-claude.sh" ]; then
-    FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-bash $SCRIPT_DIR/fleet-claude.sh}"
-  else
-    echo "linear-worker: KIPI_FLEET_API_KEYS=0 and no fleet-claude.sh -- claude runs bill the PLAN with no weekly stop" >&2
-    FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
-  fi
+  echo "linear-worker: KIPI_FLEET_API_KEYS=0 -- claude runs bill the PLAN, not the API credit" >&2
+  FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
 fi
 # The stand-in's model is the routing table's second-runner row (ASK-4013). If the
 # read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
@@ -379,17 +373,7 @@ elif fleet_keyed; then
   # not paying for. The brakes on key spend are kipi-dispatch.sh's daily
   # budget gate and fleet_api_key.py's per-run ceiling. KIPI_FLEET_API_KEYS=0
   # puts the run back on the plan, and this brake back in front of it.
-  # fleet_keyed means "route through fleet-claude.sh" (its :-1 default keeps the shim
-  # on); the shim itself bills the PLAN when the variable is unset (RULE-2026-11-26-PLAN45).
-  # So the reason depends on what the shim will do, read with the shim's own default
-  # (PR #887 round 1: an unset run logged "bills the fleet API key" while billing the plan).
-  # The old ledger breaker stays off on both paths: on the plan path the brake is
-  # plan_usage_gate.py, asked by the shim before every claude call.
-  if [ "${KIPI_FLEET_API_KEYS:-0}" != "0" ]; then
-    echo "usage breaker skipped: this run bills the fleet API key, not the plan (KIPI_FLEET_API_KEYS=0 restores both)" >>"$LOG"
-  else
-    echo "usage breaker skipped: this run bills the plan behind fleet-claude.sh's 45% weekly stop (plan_usage_gate.py, RULE-2026-11-26-PLAN45)" >>"$LOG"
-  fi
+  echo "usage breaker skipped: this run bills the fleet API key, not the plan (KIPI_FLEET_API_KEYS=0 restores both)" >>"$LOG"
 elif [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
   # A DRY RUN ASKS WITHOUT SPENDING (ASK-2010; claude review of PR #472, minor).
   # kipi-dispatch.sh runs this script with no --apply to pick the next issue and

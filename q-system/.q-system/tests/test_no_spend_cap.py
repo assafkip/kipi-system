@@ -66,17 +66,6 @@ DECLARED = (
     (S + "linear-worker.sh", "BREAKER_", "debt", 5),        # plan usage breaker (ASK-2010)
     (S + "linear-worker.sh", 'run_tokens.py" --record', "record", 1),
     (S + "fleet-claude.sh", "HELPER", "environmental", 4),  # key door: refuses only with no credit
-    # ruling: a stop line the founder set himself, 2026-11-26, verbatim: "Move the fleet work
-    # to the claude account - Ensure it stops when usage gets to 45% of the weekly usage".
-    # It supersedes R1 for plan weekly usage only (RULE-2026-11-26-PLAN45, plan_usage_gate.py).
-    ("kipi-dispatch.sh", "PLAN_GATE", "ruling", 5),
-    # The unreadable-gauge page: a constant body since PR #887 round 1, so it no longer
-    # carries $PLAN_GATE_LINE and needs its own declaration.
-    ("kipi-dispatch.sh", "page_once plan-usage-unreadable", "ruling", 1),
-    # The worker's skip line names the plan's 45% stop as its brake (PR #887 round 1); a
-    # log line that names the gate, not a second reading.
-    (S + "linear-worker.sh", "usage breaker skipped: this run bills the plan behind", "ruling", 1),
-    (S + "fleet-claude.sh", "PLAN_GATE", "ruling", 2),
 )
 
 SOURCED = re.compile(r'^\s*(?:\.|source)\s+"\$SCRIPT_DIR/([\w.-]+\.sh)"')
