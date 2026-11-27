@@ -100,3 +100,8 @@ def test_the_active_ticket_title_is_grounded_before_the_docstring(tmp_path):
         json.dumps({"issue_id": "ASK-1", "spec_path": ".prd-os/issues/ASK-1.md"}))
     r = _run(tmp_path, _target(tmp_path), _script(NEW_DOC))
     assert r.returncode == 2 and "BLOCKED" in r.stderr, r.stderr
+
+
+def test_a_new_test_file_is_out_of_scope(tmp_path):
+    r = _run(tmp_path, _target(tmp_path, "repo/plugins/kipi-core/scripts/test_new_thing.py"), _script(REAL_DOC))
+    assert r.returncode == 0 and r.stderr == ""

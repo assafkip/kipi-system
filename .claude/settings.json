@@ -252,6 +252,16 @@
         ]
       },
       {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/improve-ground-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/improve-ground-gate.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
