@@ -18,7 +18,11 @@ Honest boundary: a regex reads text, not intent. A loop inside a script file the
 command merely runs is invisible here, and so is a loop built on `watch` or a
 recursive re-arm, or one polling through `gh run`, `gh pr list` or a raw `curl`. A bounded
 multi-PR sweep with a short sleep is blocked and needs the bypass (its why is 10+
-characters). It catches the inline shape that cost the 5h.
+characters). So is a one-shot wait that shares a command with an UNRELATED loop
+(`sleep 2; gh pr checks 904; for f in a b; do ruff check $f; done`): the three regexes
+read the whole text, not the loop body. Chosen over body-matching because the cost is one
+turn plus the bypass, and a body parser is a new way to be wrong (PR #907 round 2). Pinned
+by the `oneshot-wait-plus-unrelated-loop` row of LOOP_SHAPES. It catches the inline shape that cost the 5h.
 
 Exit codes: 2 = block (stderr goes back to Claude), 0 = allow. Malformed input
 allows: failing closed on the harness's own bug would block every Bash call.

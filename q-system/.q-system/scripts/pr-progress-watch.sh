@@ -48,9 +48,24 @@ STALL_MIN=$((10#$STALL_MIN)); DEADLINE_MIN=$((10#$DEADLINE_MIN))
 
 POLL="${PR_WATCH_POLL_SEC:-60}"
 MIN_SEC="${PR_WATCH_MIN_SEC:-60}"
+CALL_SEC="${PR_WATCH_CALL_SEC:-90}"   # per-gh-call bound, finding 1 of PR #907 round 2
 STALL_SEC=$((STALL_MIN * MIN_SEC))
 DEADLINE_SEC=$((DEADLINE_MIN * MIN_SEC))
 FIELDS="state,mergeCommit,headRefOid,reviews,comments,statusCheckRollup,mergeable,reviewDecision"
+
+# bounded <sec> cmd...: run cmd in its own process group, SIGKILL the group after <sec>, exit 124.
+# why: the stall clock and the deadline are compared only BETWEEN polls, so one blocking `gh`
+# (blackholed TLS, a proxy that never answers) hung the watcher forever (PR #907 review round 2,
+# finding 1). macOS has no `timeout`; perl is on every Mac. Group kill, not just the child: a
+# stub or wrapper that spawns `sleep` would otherwise keep running. Output goes to files, not a
+# pipe, so a leftover grandchild cannot hold a $(...) open.
+bounded() {
+  perl -e '$t = shift; $p = fork; die unless defined $p;
+    if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    setpgrp($p, $p);
+    $SIG{ALRM} = sub { kill "KILL", -$p; waitpid($p, 0); exit 124 };
+    alarm $t; waitpid($p, 0); exit(($? & 127) ? 128 + ($? & 127) : $? >> 8)' "$@"
+}
 
 # stdin: gh JSON. stdout line 1 = state, 2 = merge oid, 3 = fingerprint, 4 = reason.
 # Reason priority: red checks, conflict, changes requested, checks still running, no verdict
@@ -71,13 +86,17 @@ pend = sorted(cname(c) for c in checks if cres(c) in ("", "PENDING", "QUEUED", "
 rstates = sorted((r.get("author") or {}).get("login", "?") + ":" + r.get("state", "") + ":" + ((r.get("commit") or {}).get("oid") or "")[:7] for r in reviews)
 fp = "|".join([head, ";".join(rstates), str(len(d.get("comments") or [])),
                ";".join(sorted(cname(c) + "=" + cres(c) for c in checks)), d.get("mergeable") or ""])
-at_head = [r for r in reviews if (r.get("commit") or {}).get("oid") == head and r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+def roid(r): return (r.get("commit") or {}).get("oid") or ""
+# a review with no commit oid cannot be tied to another head, so it counts as one here
+mine = [r for r in reviews if roid(r) in (head, "")]
+approved = d.get("reviewDecision") == "APPROVED" or any(r.get("state") == "APPROVED" for r in mine)
 if red: why = "checks red: " + ", ".join(red)
 elif d.get("mergeable") == "CONFLICTING": why = "merge conflict with base"
 elif d.get("reviewDecision") == "CHANGES_REQUESTED": why = "changes requested"
 elif pend: why = "checks still running: " + ", ".join(pend)
-elif not at_head: why = "no review or verdict at head " + head[:7] + " (nothing started a reviewer)"
-else: why = "verdict at head, checks green, not merged (auto-merge not armed?)"
+elif approved: why = "approved, auto-merge not armed?"
+elif not mine: why = "no review or verdict at head " + head[:7] + " (nothing started a reviewer)"
+else: why = "reviewed at head " + head[:7] + " but no verdict (comment only)"
 print(d.get("state", "")); print((d.get("mergeCommit") or {}).get("oid") or ""); print(fp); print(why)
 '
 }
@@ -85,15 +104,19 @@ print(d.get("state", "")); print((d.get("mergeCommit") or {}).get("oid") or "");
 # why a separate stderr file: gh prints its upgrade notice to stderr, and folding it into the
 # JSON made a MERGED PR read as "gh read failed" and exit 3 (PR #904 review round 1).
 ERRF="$(mktemp "${TMPDIR:-/tmp}/pr-watch-err.XXXXXX")"
-trap 'rm -f "$ERRF"' EXIT
+OUTF="$(mktemp "${TMPDIR:-/tmp}/pr-watch-out.XXXXXX")"
+trap 'rm -f "$ERRF" "$OUTF"' EXIT
 start=$(date +%s)
 last_change=$start
 last_fp=""
 last_why="no successful gh read yet"
 while :; do
   now=$(date +%s)
-  if [ -n "$REPO" ]; then raw="$(gh pr view "$PR" -R "$REPO" --json "$FIELDS" 2>"$ERRF")"; else raw="$(gh pr view "$PR" --json "$FIELDS" 2>"$ERRF")"; fi
+  # why remaining-time cap: a call allowed its full CALL_SEC could outlive the deadline by that much.
+  budget=$((DEADLINE_SEC - (now - start))); [ "$budget" -gt "$CALL_SEC" ] && budget=$CALL_SEC; [ "$budget" -lt 1 ] && budget=1
+  if [ -n "$REPO" ]; then bounded "$budget" gh pr view "$PR" -R "$REPO" --json "$FIELDS" >"$OUTF" 2>"$ERRF"; else bounded "$budget" gh pr view "$PR" --json "$FIELDS" >"$OUTF" 2>"$ERRF"; fi
   rc=$?
+  raw="$(cat "$OUTF")"
   if [ "$rc" -eq 0 ] && out="$(printf '%s' "$raw" | summarize 2>/dev/null)" && [ -n "$out" ]; then
     state="$(printf '%s\n' "$out" | sed -n 1p)"
     oid="$(printf '%s\n' "$out" | sed -n 2p)"
@@ -104,6 +127,9 @@ while :; do
       CLOSED) echo "PR$PR CLOSED"; exit 0 ;;
     esac
     if [ "$fp" != "$last_fp" ]; then last_fp="$fp"; last_change=$now; fi
+  elif [ "$rc" -eq 124 ]; then
+    # timed out = no change, so the stall clock and the deadline keep running (ASK-5842 round 2)
+    last_why="gh read timed out after ${budget}s"
   else
     last_why="gh read failed: $( { cat "$ERRF"; printf '%s' "$raw"; } | head -c 120 | tr '\n' ' ')"
   fi

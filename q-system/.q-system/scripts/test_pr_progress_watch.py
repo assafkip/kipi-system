@@ -27,6 +27,9 @@ n_path = os.path.join(d, "n")
 n = int(open(n_path).read()) + 1 if os.path.exists(n_path) else 1
 open(n_path, "w").write(str(n))
 body = json.load(open(os.path.join(d, "body.json")))
+if os.path.exists(os.path.join(d, "hang")):
+    import subprocess
+    subprocess.run(["sleep", "607"])  # a child, so only a process-group kill ends it
 if os.path.exists(os.path.join(d, "moving")):
     body["comments"] = [{}] * n
 print(json.dumps(body))
@@ -54,16 +57,18 @@ def stub(tmp_path):
     gh.write_text(STUB)
     gh.chmod(0o755)
 
-    def run(body, *args, moving=False, noisy=False, script=WATCH, timeout=20):
+    def run(body, *args, moving=False, noisy=False, hang=False, script=WATCH, timeout=20):
         (d / "body.json").write_text(json.dumps(body))
-        for f in ("n", "moving", "stderr"):
+        for f in ("n", "moving", "stderr", "hang"):
             (d / f).unlink(missing_ok=True)
         if moving:
             (d / "moving").write_text("1")
         if noisy:
             (d / "stderr").write_text("1")
+        if hang:
+            (d / "hang").write_text("1")
         env = dict(os.environ, PATH=f"{gh.parent}:{os.environ['PATH']}", GH_STUB_DIR=str(d),
-                   PR_WATCH_POLL_SEC="0.2", PR_WATCH_MIN_SEC="1")
+                   PR_WATCH_POLL_SEC="0.2", PR_WATCH_MIN_SEC="1", PR_WATCH_CALL_SEC="1")
         return subprocess.run(["bash", str(script), "7", *args], env=env, capture_output=True,
                               text=True, timeout=timeout)
     return run
@@ -136,6 +141,46 @@ def mutant(tmp_path, old, new):
     return p
 
 
+def test_hung_gh_still_ends_in_deadline(stub):
+    # review round 2, finding 1: a gh that blocks must not defer the deadline. Without the per-call
+    # bound this run never returns (subprocess timeout), so the test can fail.
+    r = stub(pr_body(), "--stall-min", "99", "--deadline-min", "3", hang=True, timeout=15)
+    assert r.returncode == 3 and "deadline 3min reached" in r.stdout and "timed out" in r.stdout
+    # the bound kills the whole group: no orphaned `sleep 607` from the stub
+    assert subprocess.run(["pgrep", "-f", "[s]leep 607"], capture_output=True).returncode == 1
+
+
+def test_hung_gh_counts_as_no_change_and_stalls(stub):
+    r = stub(pr_body(), "--stall-min", "2", "--deadline-min", "60", hang=True, timeout=15)
+    assert r.returncode == 3 and "no change for 2min" in r.stdout and "timed out" in r.stdout
+
+
+def test_reason_approved_not_armed(stub):
+    r = stub(pr_body(reviewDecision="APPROVED"), "--stall-min", "1")
+    assert r.returncode == 3 and "approved, auto-merge not armed?" in r.stdout
+    assert "nothing started a reviewer" not in r.stdout
+
+
+def test_reason_commented_review_at_head_is_not_no_reviewer(stub):
+    rv = [{"state": "COMMENTED", "author": {"login": "bot"}, "commit": {"oid": HEAD}}]
+    r = stub(pr_body(reviews=rv), "--stall-min", "1")
+    assert r.returncode == 3 and "reviewed at head aaaaaaa but no verdict" in r.stdout
+    assert "nothing started a reviewer" not in r.stdout
+
+
+def test_reason_review_without_commit_oid_is_not_no_reviewer(stub):
+    rv = [{"state": "COMMENTED", "author": {"login": "bot"}}]
+    r = stub(pr_body(reviews=rv), "--stall-min", "1")
+    assert r.returncode == 3 and "nothing started a reviewer" not in r.stdout
+
+
+def test_mutant_call_bound_removed_is_caught(stub, tmp_path):
+    m = mutant(tmp_path, "alarm $t; ", "")
+    with pytest.raises(subprocess.TimeoutExpired):
+        stub(pr_body(), "--stall-min", "99", "--deadline-min", "3", hang=True, script=m, timeout=8)
+    subprocess.run(["pkill", "-f", "[s]leep 607"])
+
+
 def test_mutant_stall_check_removed_is_caught(stub, tmp_path):
     m = mutant(tmp_path, '-ge "$STALL_SEC"', '-ge 999999')
     r = stub(pr_body(mergeable="CONFLICTING"), "--stall-min", "1", "--deadline-min", "3", script=m)
@@ -155,20 +200,22 @@ def test_mutant_merged_exit_code_is_caught(stub, tmp_path):
 
 
 def test_mutant_stderr_folded_into_json_is_caught(stub, tmp_path):
-    m = mutant(tmp_path, '--json "$FIELDS" 2>"$ERRF")"; else', '--json "$FIELDS" 2>&1)"; else')
-    m2 = tmp_path / "mut2.sh"
-    m2.write_text(m.read_text().replace('"$PR" --json "$FIELDS" 2>"$ERRF")"; fi', '"$PR" --json "$FIELDS" 2>&1)"; fi'))
-    r = stub(pr_body(state="MERGED", mergeCommit={"oid": "x"}), "--stall-min", "1", noisy=True, script=m2)
+    src = WATCH.read_text()
+    assert '>"$OUTF" 2>"$ERRF"' in src
+    m = tmp_path / "mut2.sh"
+    m.write_text(src.replace('>"$OUTF" 2>"$ERRF"', '>"$OUTF" 2>&1'))
+    r = stub(pr_body(state="MERGED", mergeCommit={"oid": "x"}), "--stall-min", "1", noisy=True, script=m)
     assert r.returncode == 3 and r.stdout.startswith("PR7 STALLED")  # old 2>&1 shape: merge hidden
 
 
 def test_mutant_reason_order_is_caught(stub, tmp_path):
     src = WATCH.read_text()
     a = 'elif pend: why = "checks still running: " + ", ".join(pend)\n'
-    b = 'elif not at_head: why = "no review or verdict at head " + head[:7] + " (nothing started a reviewer)"\n'
-    assert a + b in src
+    b = 'elif not mine: why = "no review or verdict at head " + head[:7] + " (nothing started a reviewer)"\n'
+    c = 'elif approved: why = "approved, auto-merge not armed?"\n'
+    assert a + c + b in src
     m = tmp_path / "mut3.sh"
-    m.write_text(src.replace(a + b, b + a, 1))
+    m.write_text(src.replace(a + c + b, b + c + a, 1))
     body = pr_body(statusCheckRollup=[{"name": "reviewer-hosted", "status": "IN_PROGRESS"}])
     r = stub(body, "--stall-min", "1", script=m)
     assert "nothing started a reviewer" in r.stdout  # mutated order blames the reviewer
@@ -237,6 +284,9 @@ LOOP_SHAPES = [
     ("while-oneline-status", "while :; do gh pr status; sleep 5; done", 2),
     ("while-oneline-api", "while :; do gh api repos/o/r/pulls/903; sleep 5; done", 2),
     ("cstyle-for-api", "for ((i=0;i<9;i++)); do gh api repos/o/r/pulls/903; sleep 5; done", 2),
+    # honest-boundary limit (review round 2, finding 3): an unrelated loop in the same command text
+    # makes a one-shot wait look like a wait loop. Pinned so the docstring's claim stays true.
+    ("oneshot-wait-plus-unrelated-loop", "sleep 2; gh pr checks 904; for f in a b; do ruff check $f; done", 2),
     ("single-view", "gh pr view 903 --json state", 0),
     ("one-shot-sleep-then-checks", "sleep 120; gh pr checks 904", 0),
     ("loop-no-sleep", "for i in 1 2; do gh pr view 1; done", 0),
