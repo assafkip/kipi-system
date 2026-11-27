@@ -124,6 +124,18 @@ BANNED_PHRASES = [
     "wanted to flag", "at a high level", "net net", "net-net",
 ]
 
+# Phrases whose banned form is a PREFIX, so they keep a substring match at the
+# tail (ASK-4616). The ASK-4608 whole-word fix closed the 'one flag' inside
+# 'one flagged' false positive and in the same stroke stopped these two firing on
+# their commonest AI form, 'let's dive into' and 'just checking into'. The tail is
+# where the drift lives, so it is not a boundary for them. Every phrase NOT in
+# here stays whole-word; the 'one flag' assertions in
+# test-voice-lint-phrase-word-boundary.sh pin that half.
+PREFIX_PHRASES = {
+    "let's dive in",
+    "just checking in",
+}
+
 NON_CONTRACTED_NEGATIONS = [
     r"\b(do not)\b", r"\b(does not)\b", r"\b(did not)\b",
     r"\b(is not)\b", r"\b(are not)\b", r"\b(was not)\b", r"\b(were not)\b",
@@ -275,7 +287,16 @@ def check_banned_phrases(text):
         # Whole words only (ASK-4608): a bare substring find fired 'one flag' inside
         # 'the one flagged question' and blocked the consulting site deploy. A plural
         # still fires ('game-changers'), so the tail allows an s or es before the edge.
-        pattern = re.compile(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?:e?s)?(?![a-z0-9])")
+        #
+        # A PREFIX_PHRASES member keeps the LEFT boundary and drops the right one
+        # (ASK-4616): the ASK-4608 fix made 'let's dive in' stop firing on "let's
+        # dive into", which is the form that actually shows up in an AI draft. The
+        # left boundary stays on both branches, so "we will dive into it" is still
+        # clean -- only the tail is open.
+        if phrase in PREFIX_PHRASES:
+            pattern = re.compile(r"(?<![a-z0-9])" + re.escape(phrase))
+        else:
+            pattern = re.compile(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?:e?s)?(?![a-z0-9])")
         for match in pattern.finditer(prose_text):
             line = find_line_number(text, match.start())
             violations.append({"rule": "banned-phrase", "line": line, "detail": f"banned phrase: '{phrase}'"})
