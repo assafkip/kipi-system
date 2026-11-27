@@ -411,6 +411,27 @@ def reviewer_slot_posted(pr_obj):
     return False
 
 
+UNSETTLED_STATES = ("PENDING", "EXPECTED")
+
+
+def reviewer_slot_unsettled(pr_obj):
+    """True if a reviewer slot is posted and EVERY posted one is still PENDING.
+
+    Scar (ASK-5841, PR #903): CI all green, `kipi/reviewer-approved` PENDING,
+    no verdict record, 5h idle. reviewer_slot_posted() answers "did the producer
+    speak" and a PENDING placeholder is the producer clearing its throat, so
+    candidates() skipped the PR as "has a verdict" while linear-worker.sh
+    skipped it as "the redrive owns it". A terminal slot beside a pending one
+    still counts as settled: only an all-pending set reads as no verdict.
+    """
+    states = []
+    for check in pr_obj.get("statusCheckRollup") or []:
+        if isinstance(check, dict) and check.get("__typename") == "StatusContext" \
+                and CI.is_reviewer_slot(check.get("context") or ""):
+            states.append((check.get("state") or "").upper())
+    return bool(states) and all(s in UNSETTLED_STATES for s in states)
+
+
 def floor_ran(pr_obj, slug=""):
     """Did the reviewer floor mark this head, so an absent verdict reads red?
 
@@ -536,8 +557,10 @@ def candidates(repo_dir, records_dir):
         pr = pr_obj.get("number")
         record = read_record(records_dir, pr, slug)
         if not slots:
-            if reviewer_slot_posted(pr_obj):
+            if reviewer_slot_posted(pr_obj) and not reviewer_slot_unsettled(pr_obj):
                 # A gating verdict exists and is not failing. Nothing to redrive.
+                # An UNSETTLED slot (PENDING) is not a verdict, so it falls
+                # through to the record / never-reviewed paths below (ASK-5841).
                 continue
             if record is CORRUPT_RECORD:
                 # Say what is true: the record is there and unreadable. Naming it
