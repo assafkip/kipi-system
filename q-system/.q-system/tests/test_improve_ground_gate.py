@@ -27,7 +27,8 @@ NEW_DOC = "Convert sqlite rows into iCalendar VEVENT blocks for a calendar expor
 def _run(tmp_path, file_path, content, tool="Write", ground=GROUND, extra_env=None):
     corpus = tmp_path / "lessons"
     corpus.mkdir(exist_ok=True)
-    env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path / "repo"),
+    (tmp_path / "t").mkdir(exist_ok=True)
+    env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path / "repo"), "TMPDIR": str(tmp_path / "t"),
            "KIPI_IMPROVE_GROUND": str(ground), "KIPI_LESSONS_CORPORA": str(corpus)}
     env.update(extra_env or {})
     (tmp_path / "repo").mkdir(exist_ok=True)
@@ -91,15 +92,56 @@ def test_the_skip_marker_bypasses(tmp_path):
     assert r.returncode == 0 and r.stderr == ""
 
 
-def test_the_active_ticket_title_is_grounded_before_the_docstring(tmp_path):
+def _ticket(tmp_path, title):
     repo = tmp_path / "repo"
     (repo / ".claude/state").mkdir(parents=True)
     (repo / ".prd-os/issues").mkdir(parents=True)
-    (repo / ".prd-os/issues/ASK-1.md").write_text("---\nid: ASK-1\ntitle: a deadman for the morning brief\n---\n")
+    (repo / ".prd-os/issues/ASK-1.md").write_text(f"---\nid: ASK-1\ntitle: {title}\n---\n")
     (repo / ".claude/state/active-issue.json").write_text(
         json.dumps({"issue_id": "ASK-1", "spec_path": ".prd-os/issues/ASK-1.md"}))
+
+
+def test_a_ticket_that_names_a_built_thing_blocks(tmp_path):
+    _ticket(tmp_path, "a deadman for the morning brief")
     r = _run(tmp_path, _target(tmp_path), _script(NEW_DOC))
     assert r.returncode == 2 and "BLOCKED" in r.stderr, r.stderr
+
+
+def test_an_active_ticket_never_hides_a_duplicate_file(tmp_path):
+    """PR #892 round 1: `ticket or docstring` let the ticket replace the file."""
+    _ticket(tmp_path, "Fleet bills the Claude plan, stops at 45% weekly")
+    r = _run(tmp_path, _target(tmp_path), _script(REAL_DOC))
+    assert r.returncode == 2 and "morning-brief-deadman.py" in r.stderr, r.stderr
+
+
+def test_a_lesson_only_cite_is_advisory_not_a_block(tmp_path):
+    """The corpus is test_improve_ground.py's own covered-idea fixture: recall
+    weighs only terms shared by two lessons, so a lone invented lesson scores 0."""
+    lessons = tmp_path / "lessons"
+    lessons.mkdir()
+    for slug, title, body in (
+        ("every-stage-needs-its-own-trigger", "Every stage needs its own trigger",
+         "a stage with no registered trigger is dead; list triggers, list stages, diff the two lists; launchd plist scheduler"),
+        ("a-scheduled-job-runs-in-a-bare-environment", "A scheduled job runs in a bare environment",
+         "a launchd plist trigger starts a job with no shell profile; test the stages under a stripped environment"),
+        ("verify-the-copy-the-reader-actually-reads", "Verify the copy the reader actually reads",
+         "the running system may load a different clone; grep the loaded copy, marketplace cache, plugin version"),
+    ):
+        (lessons / f"{slug}.md").write_text(
+            f"---\nid: {slug}\nkind: pattern\ntitle: {title}\ndate: 2026-09-01\n---\n\n{body}\n")
+    idea = "list every launchd plist trigger and diff it against the stages that should run"
+    r = _run(tmp_path, _target(tmp_path), _script(idea))
+    assert r.returncode == 0 and "advisory" in r.stderr and "every-stage-needs-its-own-trigger" in r.stderr, r.stderr
+
+
+def test_scratch_space_is_out_of_scope(tmp_path):
+    home = tmp_path / "home"
+    for rel in ("review-scratch/run.x", "some-job/state"):
+        (home / ".config/kipi" / rel).mkdir(parents=True)
+        r = _run(tmp_path, home / ".config/kipi" / rel / "repro.py", _script(REAL_DOC), extra_env={"HOME": str(home)})
+        assert r.returncode == 0 and r.stderr == "", (rel, r.stderr)
+    r = _run(tmp_path, _target(tmp_path), _script(REAL_DOC), extra_env={"TMPDIR": str(tmp_path)})
+    assert r.returncode == 0 and r.stderr == ""
 
 
 def test_a_new_test_file_is_out_of_scope(tmp_path):
