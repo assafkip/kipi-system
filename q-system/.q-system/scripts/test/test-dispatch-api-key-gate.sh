@@ -103,6 +103,13 @@ run_gate() {
     export KIPI_FLEET_EVENTS="${GATE_EVENTS:-$WORK/$label-events.jsonl}"
     export KIPI_FLEET_STATE="$state"
     export KIPI_DISPATCH_RESET_HOUR=7
+    # Pinned here, never inherited: the fleet's own env carries KIPI_FLEET_API_KEYS=0
+    # (the gate exports it while the plan-billing override holds), and inheriting
+    # it skipped the block under test, 21 of 28 cases red (PR #889 round 1, F2).
+    unset KIPI_FLEET_API_KEYS  # case 13d reads the through line: unset means keys stay on
+    # Default to a file that does not exist so no case reads the live
+    # ~/.config/kipi/fleet-plan-billing-until (F3). Cases 13x set their own.
+    export KIPI_FLEET_PLAN_BILLING_FILE="${KIPI_FLEET_PLAN_BILLING_FILE:-$WORK/none}"
     . "$GATE"
     echo "through keys=${KIPI_FLEET_API_KEYS:-unset}" > "$WORK/$label.through" ) >"$WORK/$label.out" 2>&1
 }
