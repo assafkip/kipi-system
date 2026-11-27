@@ -28,7 +28,10 @@ def _run(tmp_path, file_path, content, tool="Write", ground=GROUND, extra_env=No
     corpus = tmp_path / "lessons"
     corpus.mkdir(exist_ok=True)
     (tmp_path / "t").mkdir(exist_ok=True)
+    # HOME and TMPDIR pinned: the review harness runs this suite with TMPDIR
+    # under ~/.config/kipi/review-scratch (PR #892 round 2, 5 tests red there).
     env = {**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path / "repo"), "TMPDIR": str(tmp_path / "t"),
+           "HOME": str(tmp_path / "home"),
            "KIPI_IMPROVE_GROUND": str(ground), "KIPI_LESSONS_CORPORA": str(corpus)}
     env.update(extra_env or {})
     (tmp_path / "repo").mkdir(exist_ok=True)
@@ -132,6 +135,16 @@ def test_a_lesson_only_cite_is_advisory_not_a_block(tmp_path):
     idea = "list every launchd plist trigger and diff it against the stages that should run"
     r = _run(tmp_path, _target(tmp_path), _script(idea))
     assert r.returncode == 0 and "advisory" in r.stderr and "every-stage-needs-its-own-trigger" in r.stderr, r.stderr
+
+
+def test_a_fleet_worktree_under_config_kipi_is_in_scope(tmp_path):
+    """PR #892 round 2: ~/.config/kipi/worktrees/<ticket>/ is a live lane root."""
+    home = tmp_path / "home"
+    target = home / ".config/kipi/worktrees/ask-1/q-system/.q-system/scripts/new-thing.py"
+    r = _run(tmp_path, target, _script(REAL_DOC), extra_env={"HOME": str(home)})
+    assert r.returncode == 2 and "BLOCKED" in r.stderr, r.stderr
+    tree = home / ".config/kipi/review-trees/pr-1/q-system/.q-system/scripts/repro.py"
+    assert _run(tmp_path, tree, _script(REAL_DOC), extra_env={"HOME": str(home)}).returncode == 0
 
 
 def test_scratch_space_is_out_of_scope(tmp_path):

@@ -34,6 +34,9 @@ Contract (PreToolUse, matcher Write):
     the theme, not a duplicate implementation (ASK-5805 owns improve_ground's
     precision). A gate that blocks 18% of honest new files gets stamped with its
     skip marker everywhere, which turns it off without anyone deciding to.
+    What can block today is therefore improve_ground's KNOWN_BUILT table only
+    (lesson cites are all .md): a duplicate of a script not named there passes.
+    Widening that table is improve_ground's job (ASK-5805), not this hook's.
   - any other verdict, no text to ground, improve_ground missing, failing,
     unparseable or over its time budget -> exit 0 with one stderr line saying it
     did not check. A gate that cannot run must not block every new file; the
@@ -76,6 +79,10 @@ SCOPE_PATTERNS = (
     re.compile(r"/plugins/[^/]+/(hooks|scripts)/"),
 )
 CONFIG_SUBDIR = re.compile(r"^[^/]+/(hooks|scripts)/")
+# Review trees are repo copies a reviewer writes repros into; review-scratch is
+# the review harness's TMPDIR (pr-review-agent.sh). Fleet worktrees under
+# ~/.config/kipi/worktrees/ are NOT scratch: real lanes build there.
+CONFIG_SCRATCH = ("review-trees", "review-scratch")
 TEST_NAME = re.compile(r"^(test[_-]|.*_test\.py$|conftest\.py$)")
 
 
@@ -91,30 +98,34 @@ def _under(path: str, root: str) -> bool:
     return path.startswith(root.rstrip("/") + "/")
 
 
-def config_kipi_scope(p: str):
-    """True/False when p is under ~/.config/kipi, None when it is not."""
-    root = _resolved("~/.config/kipi")
-    if not _under(p, root):
-        return None
-    rel = p[len(root) + 1:]
-    # review-trees/<tree>/... and review-scratch/... are nested deeper than
-    # <dir>/hooks|scripts/, so they fall out here, before SCOPE_PATTERNS can
-    # match a repo copy inside a review tree (a separate exclusion was an
-    # equivalent mutant in round 2 and was removed).
+def _is_excluded(p: str, config_root: str) -> bool:
+    """Scratch space: never a place a new switch or gate gets built."""
+    if TEST_NAME.match(Path(p).name):
+        return True
+    tmp = os.environ.get("TMPDIR")
+    if tmp and _under(p, _resolved(tmp)):
+        return True
+    return any(_under(p, f"{config_root}/{d}") for d in CONFIG_SCRATCH)
+
+
+def _is_config_switch(p: str, config_root: str) -> bool:
+    """A file at the top of ~/.config/kipi, or in its <dir>/hooks|scripts/."""
+    if not _under(p, config_root):
+        return False
+    rel = p[len(config_root) + 1:]
     return "/" not in rel or bool(CONFIG_SUBDIR.match(rel))
 
 
 def is_in_scope(file_path: str) -> bool:
+    """Excluded first, then a UNION of the two included shapes. PR #892 round 2:
+    an early return for ~/.config/kipi paths skipped SCOPE_PATTERNS, so a repo
+    script created in a fleet worktree under ~/.config/kipi/worktrees/ passed
+    silently. Neither shape may decide alone that a path is out."""
     p = _resolved(file_path)
-    if TEST_NAME.match(Path(p).name):
+    config_root = _resolved("~/.config/kipi")
+    if _is_excluded(p, config_root):
         return False
-    tmp = os.environ.get("TMPDIR")
-    if tmp and _under(p, _resolved(tmp)):
-        return False
-    in_config = config_kipi_scope(p)
-    if in_config is not None:
-        return in_config
-    return any(rx.search(p) for rx in SCOPE_PATTERNS)
+    return _is_config_switch(p, config_root) or any(rx.search(p) for rx in SCOPE_PATTERNS)
 
 
 def header_text(content: str) -> str:
@@ -216,7 +227,8 @@ def decide(payload: dict, repo: Path, script: Path) -> int:
     if not ideas:
         note(f"did not check {file_path}: no active ticket and no docstring or header comment")
         return 0
-    roots = [repo] + [script.resolve().parents[5]] * (len(script.resolve().parents) > 5)
+    parents = script.resolve().parents
+    roots = [repo] + ([parents[5]] if len(parents) > 5 else [])
     deadline = time.monotonic() + TOTAL_BUDGET
     for source, idea in ideas:
         verdict, detail = run_ground(script, idea, deadline - time.monotonic())
