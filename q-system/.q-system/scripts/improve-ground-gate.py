@@ -76,7 +76,6 @@ SCOPE_PATTERNS = (
     re.compile(r"/plugins/[^/]+/(hooks|scripts)/"),
 )
 CONFIG_SUBDIR = re.compile(r"^[^/]+/(hooks|scripts)/")
-CONFIG_SCRATCH = ("review-trees/", "review-scratch/")
 TEST_NAME = re.compile(r"^(test[_-]|.*_test\.py$|conftest\.py$)")
 
 
@@ -98,8 +97,10 @@ def config_kipi_scope(p: str):
     if not _under(p, root):
         return None
     rel = p[len(root) + 1:]
-    if rel.startswith(CONFIG_SCRATCH):
-        return False
+    # review-trees/<tree>/... and review-scratch/... are nested deeper than
+    # <dir>/hooks|scripts/, so they fall out here, before SCOPE_PATTERNS can
+    # match a repo copy inside a review tree (a separate exclusion was an
+    # equivalent mutant in round 2 and was removed).
     return "/" not in rel or bool(CONFIG_SUBDIR.match(rel))
 
 
