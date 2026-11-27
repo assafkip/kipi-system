@@ -85,6 +85,9 @@ NOT_SECURITY = {
     # into exit 2. That is pinned by test_voice_hook_run.py and test_voice_send_check.py.
     "voice-send-check.py",
     "token-guard.py", "read-first-gate.py", "agent-brief-one-job-guard.py", "miyo-research-gate.py", "design-chain-gate.py",
+    # ASK-5842: a wait-loop nudge. A crash lets one hand-rolled sleep loop run, no secret or
+    # destructive path opens, and malformed input already allows by design.
+    "pr-progress-watch-guard.py",
     "design-engine-door.py", "enforced-claim-lint.py", "voice-lint.py",
     "voice-substance-lint.py", "voiceloop-band-lint.py", "memory-confidence-validator.py",
     "consumer-parity-check.py", "audhd-lint.py", "batch-uniformity-lint.py",
