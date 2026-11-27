@@ -68,7 +68,7 @@ def stub(tmp_path):
         if hang:
             (d / "hang").write_text("1")
         env = dict(os.environ, PATH=f"{gh.parent}:{os.environ['PATH']}", GH_STUB_DIR=str(d),
-                   PR_WATCH_POLL_SEC="0.2", PR_WATCH_MIN_SEC="1", PR_WATCH_CALL_SEC="1")
+                   PR_WATCH_POLL_SEC="0.2", PR_WATCH_MIN_SEC="1", PR_WATCH_CALL_SEC="1" if hang else "10")  # why: 1s everywhere made a slow stub start read as a timeout (flaked once)
         return subprocess.run(["bash", str(script), "7", *args], env=env, capture_output=True,
                               text=True, timeout=timeout)
     return run
