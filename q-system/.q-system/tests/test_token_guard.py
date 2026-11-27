@@ -315,3 +315,68 @@ def test_a_foreign_runtime_is_a_no_op(session_id):
     inert = run_guard(pre_tool_use(session_id), env_overrides={"CLAUDECODE": ""})
     assert inert.returncode == 0, "a foreign runtime must never be blocked"
     assert inert.stdout == "", "a foreign runtime must not even emit context"
+
+
+# --- the per-instance switch: 4 Points keeps the ceiling off (ASK-5487) -------
+# Founder, 2026-11-19 (case-057), verbatim: "Remove the 50 tool guard for 4 points".
+# The instance carries it as q-investigate/.guard-overrides.json. The fleet default
+# went off on 2026-11-21, but KIPI_TOKEN_GUARD_VOLUME_CEILING=1 turns it back on,
+# and the 4 Points ruling must hold through that too. The helper first lived only in
+# the instance's q-system copy, which every skeleton sync overwrites.
+
+
+def _instance(tmp_path, body):
+    root = tmp_path / "instance"
+    (root / "q-investigate").mkdir(parents=True)
+    if body is not None:
+        (root / "q-investigate" / ".guard-overrides.json").write_text(body)
+    return {"CLAUDE_PROJECT_DIR": str(root)}
+
+
+def test_instance_override_keeps_the_ceiling_off(session_id, tmp_path):
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    env = _instance(tmp_path, json.dumps({"volume_ceiling": "off"}))
+    result = run_guard(pre_tool_use(session_id), env_overrides=env)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("body", [None, "{not json", json.dumps({"volume_ceiling": "on"}), json.dumps(["off"])])
+def test_no_valid_override_keeps_the_ceiling(session_id, tmp_path, body):
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    result = run_guard(pre_tool_use(session_id), env_overrides=_instance(tmp_path, body))
+    assert result.returncode == 2, result.stderr
+    assert "50 tool calls" in result.stderr
+
+
+def _git_spy(tmp_path):
+    """A fake git first on PATH that records every call, so a test can see the probe."""
+    bindir = tmp_path / "spybin"
+    bindir.mkdir()
+    log = tmp_path / "git-calls.log"
+    spy = bindir / "git"
+    spy.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nexit 1\n')
+    spy.chmod(0o755)
+    return {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}, log
+
+
+# Codex review of #883: with the ceiling off, every call past the warning count still
+# ran `git log` (3s cap) for a check that could no longer refuse anything.
+def test_override_off_skips_the_commit_probe(session_id, tmp_path):
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    env = _instance(tmp_path, json.dumps({"volume_ceiling": "off"}))
+    path_env, log = _git_spy(tmp_path)
+    env.update(path_env)
+    result = run_guard(pre_tool_use(session_id), env_overrides=env)
+    assert result.returncode == 0, result.stderr
+    assert not log.exists(), f"probe ran with the ceiling off: {log.read_text()}"
+
+
+def test_ceiling_on_still_pays_for_the_commit_probe(session_id, tmp_path):
+    # The control: the spy must see the probe when the ceiling is live, or the
+    # test above proves nothing.
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    env = _instance(tmp_path, None)
+    path_env, log = _git_spy(tmp_path)
+    env.update(path_env)
+    run_guard(pre_tool_use(session_id), env_overrides=env)
+    assert log.exists() and "log" in log.read_text()
