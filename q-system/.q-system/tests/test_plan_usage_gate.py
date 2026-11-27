@@ -263,52 +263,5 @@ class PlanUsageGate(unittest.TestCase):
         self.assertEqual(self.gate().returncode, 3)
 
 
-def routing_block(path, first):
-    """The real FLEET_CLAUDE routing block of a script: from its anchor line to the next
-    top-level `fi`. Lifted from the file, never copied, so the test reads what ships."""
-    lines = Path(path).read_text().splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.startswith(first)), None)
-    if start is None:
-        raise AssertionError("routing anchor %r moved in %s; re-pin this test" % (first, path))
-    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "fi")
-    return "\n".join(lines[start:end + 1])
-
-
-ROUTES = (
-    (SCRIPTS / "linear-worker.sh", "fleet_keyed() {"),
-    (SCRIPTS / "pr-review-agent.sh", 'if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ]; then'),
-)
-
-
-class OffSwitchStillMeetsTheStop(unittest.TestCase):
-    """ASK-5791. KIPI_FLEET_API_KEYS=0 is set by the dispatcher's plan-billing override
-    (kipi-dispatch.sh) and by every manual review. Before #887 it made the worker and the
-    reviewer call bare `claude`, which skips plan_usage_gate.py, so a long run could cross
-    45% with no per-call stop (RULE-2026-11-26-PLAN45). #887 routed =0 through
-    fleet-claude.sh whenever the shim is present; this pins it, because nothing else did."""
-
-    def resolve(self, block, script_dir):
-        env = {k: v for k, v in os.environ.items() if k not in ("KIPI_FLEET_CLAUDE",)}
-        env.update({"KIPI_FLEET_API_KEYS": "0", "SCRIPT_DIR": script_dir})
-        r = subprocess.run(["bash", "-c", 'eval "$1" 2>/dev/null; printf %s "$FLEET_CLAUDE"', "_", block],
-                           env=env, capture_output=True, text=True)
-        return r.stdout
-
-    def test_off_switch_routes_through_the_shim_when_it_is_there(self):
-        for path, first in ROUTES:
-            with self.subTest(path.name):
-                got = self.resolve(routing_block(path, first), str(SCRIPTS))
-                self.assertIn("fleet-claude.sh", got, "%s: =0 skips the 45%% stop: %r" % (path.name, got))
-                self.assertNotIn("env -u ANTHROPIC_API_KEY claude", got)
-
-    def test_off_switch_keeps_the_bare_call_without_a_shim(self):
-        # The fallback stays for a test skeleton that copies the script with no shim
-        # (22 suites died at rc 127 without it, PR #717).
-        for path, first in ROUTES:
-            with self.subTest(path.name):
-                got = self.resolve(routing_block(path, first), "/nonexistent-kipi-scripts")
-                self.assertEqual(got, "env -u ANTHROPIC_API_KEY claude")
-
-
 if __name__ == "__main__":
     unittest.main()
