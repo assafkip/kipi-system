@@ -37,7 +37,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$PR" in ''|*[!0-9]*) usage ;; esac
-case "$STALL_MIN$DEADLINE_MIN" in *[!0-9]*) usage ;; esac
+# why each value alone: validating the concatenation let an empty one through as 0
+# and declared an instant false stall (PR #904 review round 1).
+for v in "$STALL_MIN" "$DEADLINE_MIN"; do
+  case "$v" in ''|*[!0-9]*) usage ;; esac
+done
+[ "$STALL_MIN" -ge 1 ] || usage
 
 POLL="${PR_WATCH_POLL_SEC:-60}"
 MIN_SEC="${PR_WATCH_MIN_SEC:-60}"
@@ -46,7 +51,9 @@ DEADLINE_SEC=$((DEADLINE_MIN * MIN_SEC))
 FIELDS="state,mergeCommit,headRefOid,reviews,comments,statusCheckRollup,mergeable,reviewDecision"
 
 # stdin: gh JSON. stdout line 1 = state, 2 = merge oid, 3 = fingerprint, 4 = reason.
-# Reason priority: red checks, conflict, changes requested, no verdict at head, pending.
+# Reason priority: red checks, conflict, changes requested, checks still running, no verdict
+# at head. Running checks come BEFORE "no verdict": the reviewer job is itself a check, so
+# blaming an absent reviewer mid-CI contradicted the rollup (PR #904 review round 1).
 summarize() {
   python3 -I -c '
 import json, sys
@@ -66,20 +73,24 @@ at_head = [r for r in reviews if (r.get("commit") or {}).get("oid") == head and 
 if red: why = "checks red: " + ", ".join(red)
 elif d.get("mergeable") == "CONFLICTING": why = "merge conflict with base"
 elif d.get("reviewDecision") == "CHANGES_REQUESTED": why = "changes requested"
+elif pend: why = "checks still running: " + ", ".join(pend)
 elif not at_head: why = "no review or verdict at head " + head[:7] + " (nothing started a reviewer)"
-elif pend: why = "checks pending: " + ", ".join(pend)
 else: why = "verdict at head, checks green, not merged (auto-merge not armed?)"
 print(d.get("state", "")); print((d.get("mergeCommit") or {}).get("oid") or ""); print(fp); print(why)
 '
 }
 
+# why a separate stderr file: gh prints its upgrade notice to stderr, and folding it into the
+# JSON made a MERGED PR read as "gh read failed" and exit 3 (PR #904 review round 1).
+ERRF="$(mktemp "${TMPDIR:-/tmp}/pr-watch-err.XXXXXX")"
+trap 'rm -f "$ERRF"' EXIT
 start=$(date +%s)
 last_change=$start
 last_fp=""
 last_why="no successful gh read yet"
 while :; do
   now=$(date +%s)
-  if [ -n "$REPO" ]; then raw="$(gh pr view "$PR" -R "$REPO" --json "$FIELDS" 2>&1)"; else raw="$(gh pr view "$PR" --json "$FIELDS" 2>&1)"; fi
+  if [ -n "$REPO" ]; then raw="$(gh pr view "$PR" -R "$REPO" --json "$FIELDS" 2>"$ERRF")"; else raw="$(gh pr view "$PR" --json "$FIELDS" 2>"$ERRF")"; fi
   rc=$?
   if [ "$rc" -eq 0 ] && out="$(printf '%s' "$raw" | summarize 2>/dev/null)" && [ -n "$out" ]; then
     state="$(printf '%s\n' "$out" | sed -n 1p)"
@@ -92,7 +103,7 @@ while :; do
     esac
     if [ "$fp" != "$last_fp" ]; then last_fp="$fp"; last_change=$now; fi
   else
-    last_why="gh read failed: $(printf '%s' "$raw" | head -c 120 | tr '\n' ' ')"
+    last_why="gh read failed: $( { cat "$ERRF"; printf '%s' "$raw"; } | head -c 120 | tr '\n' ' ')"
   fi
   now=$(date +%s)
   if [ $((now - last_change)) -ge "$STALL_SEC" ]; then
@@ -100,7 +111,7 @@ while :; do
     exit 3
   fi
   if [ $((now - start)) -ge "$DEADLINE_SEC" ]; then
-    echo "PR$PR STALLED deadline ${DEADLINE_MIN}min reached, still moving: $last_why"
+    echo "PR$PR STALLED deadline ${DEADLINE_MIN}min reached: $last_why"
     exit 3
   fi
   sleep "$POLL"
