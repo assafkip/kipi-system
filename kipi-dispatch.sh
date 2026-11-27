@@ -1047,7 +1047,7 @@ api_gate_page() {   # api_gate_page <marker> <text>: page one condition, clear t
   done
   page_once "$1" "$2"
 }
-if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEND_HELPER" ]; then
+if [ "${KIPI_FLEET_API_KEYS:-0}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEND_HELPER" ]; then
   API_ERR="$(mktemp "${TMPDIR:-/tmp}/kipi-api-gate.XXXXXX" 2>/dev/null || echo /dev/null)"
   KEY_RC=0
   KEY_LINE="$(python3 "$KEY_HELPER" probe 2>"$API_ERR")" || KEY_RC=$?
@@ -1102,6 +1102,40 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEN
       say "API BUDGET: the spend helper crashed (budget rc=$BUDGET_RC, stderr '${KEY_ERR}'); stopping the tick"
       api_gate_page api-helper-broken "kipi dispatch: fleet_api_spend.py is broken (budget rc=$BUDGET_RC, last stderr line: ${KEY_ERR:-none}), so no run starts: the daily allowance cannot be read. This is NOT a spent credit. Do: run python3 $SPEND_HELPER budget in $REPO and fix what it prints."
       exit 0 ;;
+  esac
+fi
+
+# --- PLAN WEEKLY STOP (RULE-2026-11-26-PLAN45) -------------------------------
+# Founder, 2026-11-26: "Move the fleet work to the claude account - Ensure it stops when
+# usage gets to 45% of the weekly usage". Fleet runs bill the plan by default now (the
+# API-key block above runs only with KIPI_FLEET_API_KEYS=1). A tick at or past the line
+# starts nothing; fleet-claude.sh asks the same gate before every claude call, so a run
+# already going stops at its next launch. At the line is the expected weekly state, so it
+# is logged and not paged; an unreadable gauge is a defect and pages Sana once.
+# The -f skip is for the dispatcher suites, which point KIPI_REPO at a stub checkout with
+# no scripts. It is not a pre-ruling fallback: a checkout older than this ruling has no
+# gate call in its fleet-claude.sh at all. In production the gate file is tracked in the
+# same commit as this block, and fleet-claude.sh at this commit refuses every call (rc 4)
+# when it is missing, so a missing gate still stops the work, one ticket at a time
+# (PR #885 round 3).
+PLAN_GATE="$REPO/q-system/.q-system/scripts/plan_usage_gate.py"
+if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ] && [ -f "$PLAN_GATE" ]; then
+  PLAN_GATE_RC=0
+  PLAN_GATE_LINE="$(python3 "$PLAN_GATE" --binary "${KIPI_CLAUDE_BIN:-claude}" 2>&1)" || PLAN_GATE_RC=$?
+  case "$PLAN_GATE_RC" in
+    0) page_clear plan-usage-unreadable ;;
+    3) page_clear plan-usage-unreadable
+       say "PLAN USAGE: $PLAN_GATE_LINE; no run starts this tick"
+       exit 0 ;;
+    *) say "PLAN USAGE: $PLAN_GATE_LINE (rc=$PLAN_GATE_RC); no run starts this tick"
+       # A CONSTANT BODY. page_once suppresses on an unchanged hash and alert-to-linear
+       # dedupes on words, so the gate's varying error text (401, 500, refused, bad JSON)
+       # filed one undeletable ticket per wording of one condition (PR #887 round 1).
+       # Running the gate prints the current reason. The log is not named here: a gate
+       # that dies before its verdict appends nothing, so its last line can be an old
+       # "run" (PR #887 round 2).
+       page_once plan-usage-unreadable "kipi dispatch: the plan's weekly usage cannot be read, so the fleet is stopped (RULE-2026-11-26-PLAN45 fails closed). Do: run python3 $REPO/q-system/.q-system/scripts/plan_usage_gate.py and fix what it prints; the next tick resumes by itself."
+       exit 0 ;;
   esac
 fi
 

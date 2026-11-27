@@ -117,9 +117,19 @@ def in_fleet_run(env=None):
 
 
 def _temp_roots():
-    roots = {tempfile.gettempdir(), "/tmp", "/private/tmp", "/var/folders",
-             "/private/var/folders"}
-    return {os.path.realpath(r) for r in roots}
+    """Where a test's fake `claude` lives. A root that is the user's home or holds it is
+    dropped: TMPDIR=$HOME (or /) would make the real install under ~/.local look like a
+    fake, and both the key door and the 45% plan stop would skip it (PR #885 round 3).
+    The home comes from the password db, never $HOME, which tests point at a temp dir."""
+    import pwd
+    try:
+        home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        home = os.path.realpath(os.path.expanduser("~"))
+    roots = {os.path.realpath(r) for r in (tempfile.gettempdir(), "/tmp", "/private/tmp",
+                                           "/var/folders", "/private/var/folders")}
+    return {r for r in roots
+            if not (home == r or home.startswith(r.rstrip(os.sep) + os.sep))}
 
 
 def _resolve(binary, env):
@@ -270,9 +280,25 @@ def _say_refusal(actor, res):
 def run(cmd, actor, env=None, **kw):
     """`subprocess.run(cmd, ...)`, billed to a fleet API key. For unattended jobs."""
     src = os.environ if env is None else env
-    if src.get("KIPI_FLEET_API_KEYS", "1") == "0":
-        sys.stderr.write("fleet_door: KIPI_FLEET_API_KEYS=0 -- %s bills the PLAN, not the "
-                         "API credit\n" % actor)
+    if src.get("KIPI_FLEET_API_KEYS", "0") == "0":
+        # The plan, behind the 45% weekly stop (RULE-2026-11-26-PLAN45), same as fleet-claude.sh.
+        gate = subprocess.run([sys.executable, os.path.join(HERE, "plan_usage_gate.py"),
+                               "--binary", str(list(cmd)[0]) if list(cmd) else ""],
+                              env=plan_env(src), capture_output=True, text=True)
+        if gate.returncode != 0:
+            # The same one machine line fleet-claude.sh prints, so a caller classifying stderr
+            # reads a stop as an outage; the gate's own words and any traceback ride after it
+            # on our stderr, never lost (PR #885 review round 1, minor 1).
+            rc = 3 if gate.returncode == 3 else 4
+            line = ("kipi plan gate: weekly %s (RULE-2026-11-26-PLAN45)\n"
+                    % ("stop line reached" if rc == 3 else "usage unreadable"))
+            sys.stderr.write("fleet_door: %s: %s%s" % (actor, gate.stdout, gate.stderr))
+            sys.stderr.flush()
+            return subprocess.CompletedProcess(list(cmd), rc, "" if kw.get("text") else b"",
+                                               line if kw.get("text") else line.encode())
+        # The caller's own stderr (its launchd log), not the child's captured stream, so this
+        # line never reaches an is_environmental reading the way the shim's would.
+        sys.stderr.write("fleet_door: %s bills the PLAN (%s)\n" % (actor, gate.stdout.strip()))
         sys.stderr.flush()
         return _spawn(list(cmd), list(cmd), env=plan_env(src), **kw)
     res = _spawn(door_argv(cmd, actor), list(cmd), env=door_env(cmd, src), **kw)

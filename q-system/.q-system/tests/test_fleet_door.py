@@ -104,8 +104,16 @@ class Base(unittest.TestCase):
             "KIPI_FLEET_FAKE_KEY_1": LIVE_KEY_1,
             "FAKE_RECORD": self.record,
             "ANTHROPIC_API_KEY": INHERITED,
+            # These classes test the API-key door, which is opt-in since the plan became the
+            # default (RULE-2026-11-26-PLAN45). The plan-path test sets 0 itself.
+            "KIPI_FLEET_API_KEYS": "1",
+            # A fresh 10% reading, so the plan path's weekly gate never reads the Keychain.
+            "KIPI_PLAN_USAGE_STATE": os.path.join(d, "plan-usage.json"),
         })
-        for k in ("KIPI_FLEET_FAKE_KEY_2", "KIPI_FLEET_API_KEYS", "KIPI_FLEET_KEY_SLOT",
+        with open(os.environ["KIPI_PLAN_USAGE_STATE"], "w") as fh:
+            json.dump({"pct": 10.0, "resets_at": "x", "at": time.time(),
+                       "login": "Claude Code-credentials"}, fh)
+        for k in ("KIPI_FLEET_FAKE_KEY_2", "KIPI_FLEET_KEY_SLOT",
                   "KIPI_FLEET_RUN", "FAKE_SLEEP", "KIPI_FLEET_NOW", "FAKE_READ_STDIN", "FAKE_RC"):
             os.environ.pop(k, None)
 
@@ -439,8 +447,9 @@ class TestTheShimCarriesTheTicketAsFlags(Base):
         full = dict(os.environ, KIPI_CLAUDE_BIN=self.fake)
         # Only what the case passes: a runner's own ambient ticket env (a reviewer session) is
         # not what these cases are about, and the nested whole-file run below sets it.
-        for k in ("KIPI_TICKET", "KIPI_FOCUS_GATE", "KIPI_FLEET_API_KEYS"):
+        for k in ("KIPI_TICKET", "KIPI_FOCUS_GATE"):
             full.pop(k, None)
+        full["KIPI_FLEET_API_KEYS"] = "1"   # the key door; a case passes 0 for the plan
         full.update(env)
         return subprocess.run(["bash", shim] + args, env=full, capture_output=True,
                               text=True, timeout=60)

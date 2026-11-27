@@ -79,7 +79,11 @@
 #
 # Leading whitespace is tolerated (up to 3) because the CLI pads some of these;
 # an indented quote inside agent prose does not reach that far left.
-ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]{1,3}-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary[[:space:]]*(—|–|-{1,2})[[:space:]]*try again in a moment\. if it persists, check https://status\.claude\.com\.?)?"
+# The plan's 45% weekly stop (RULE-2026-11-26-PLAN45) is the machine refusing, not the
+# ticket failing: fleet-claude.sh prints exactly this line, alone, when plan_usage_gate.py
+# says stop, so the worker halts with no attempt charged, the heartbeat files nothing per
+# instance and the reviewer holds the round (PR #885 review round 1, major 1).
+ENV_MARKERS="kipi plan gate: weekly (stop line reached|usage unreadable) \\(RULE-2026-11-26-PLAN45\\)|(you've |you have )?hit your (weekly|usage|session|[0-9]{1,3}-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary[[:space:]]*(—|–|-{1,2})[[:space:]]*try again in a moment\. if it persists, check https://status\.claude\.com\.?)?"
 # The 529 line, added 2026-09-23 (ASK-2009) from the real worker log: on
 # 2026-08-18 three runs printed ONE line that begins
 #   API Error: 529 Overloaded. This is a server-side issue, usually temporary
