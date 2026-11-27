@@ -10,11 +10,21 @@ use it:
 linear-worker.sh (before the build prompt, through the CLI) and cap-ladder.py
 (rung 0, before the rung 1 RCA, through check()).
 
-STOP only on basis "named-file". Measured 2026-11-26 on 35 real owner:sana
-backlog tickets: 6 came back already-built, all on basis "lesson", and none of
-the 6 was built (ASK-5779 "Reinstate X" matched a lesson about porting gates).
-A lesson on the topic is advice for the build, not the build. Those are logged
-as advisory and pass.
+A STOP NEEDS FOUR THINGS, because a stop ends in cap-ladder.py canceling the
+ticket. (1) basis "named-file", (2) the KNOWN_BUILT key it matched is a whole
+word in the TITLE, (3) the title opens with a build verb, (4) the cited file
+exists in this checkout. Anything short of that is logged as advisory and
+passes. Why so narrow, measured 2026-11-27 on every open owner:sana ticket:
+- a lesson match is advice for the build, not the build: 6 of 35 sampled
+  tickets matched a lesson and none was built (ASK-5779 "Reinstate X" matched
+  a lesson about porting gates);
+- the named-file table is substring keys written for pasted outside ideas.
+  Over title + description it stopped 45+ real tickets, all false: "handoff"
+  hit any ticket mentioning a handoff, "deadman" hit every launchd deadman
+  bug (ASK-1199 "launchd job is dark: ...-deadman"). A ticket reporting that
+  something is broken is about code that exists, so it is never a duplicate
+  build, and only a title that proposes building is a build proposal.
+  (PR #893 round 1, finding 1; the producer's own precision is ASK-5805.)
 
 FAILS OPEN, LOUDLY. If improve_ground.py crashes, hangs past the timeout or
 prints something that is not its JSON, the ticket proceeds and the line says
@@ -34,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -83,29 +94,43 @@ def run_ground(text: str) -> tuple[dict | None, str]:
 
 
 def stop_comment(issue: str, cites: list, reason: str) -> str:
+    """Posted by cap-ladder.py rung 0 when it cancels the ticket."""
     named = ", ".join(f"`{c}`" for c in cites)
-    return (f"**Step 0 stopped {issue}: it is already built.** improve_ground.py names {named} "
-            f"({reason}). No build session was spent on it.\n\n"
-            "The check re-runs on the ticket's current title and description each time a worker "
-            "or cap-ladder.py reaches it, so it re-enters on its own once the ticket says what it "
-            "needs beyond that file. (ticket_step0.py, ASK-5802)")
+    return (f"**Canceled at step 0: {issue} asks to build something that exists.** improve_ground.py "
+            f"names {named} ({reason}), and the title proposes building it. No build session or RCA "
+            "was spent on it. Reopen to undo; a reopened ticket whose title says what it needs beyond "
+            "that file passes step 0. (ticket_step0.py, ASK-5802)")
+
+
+BUILD_VERB = re.compile(r"^\W*(add|build|create|implement|introduce|write|make|ship|new)\b", re.IGNORECASE)
+
+
+def build_proposal_of(title: str, key: str, cites: list) -> bool:
+    """True only when the title proposes building the thing the key names and
+    the cited file is really here. See the module docstring for the measurement."""
+    in_title = bool(key) and re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", title, re.IGNORECASE)
+    exists = bool(cites) and all((REPO / c).is_file() for c in cites)
+    return bool(in_title and BUILD_VERB.match(title) and exists)
 
 
 def check(issue: str, text: str) -> dict:
-    """The one decision. Never raises."""
+    """The one decision. Never raises. `text` is the title, a blank line, then
+    the description (both callers build it that way)."""
     verdict, err = run_ground((text or "")[:MAX_TEXT])
     if verdict is None:
         return _not_checked(issue, err)
     cites = [str(c) for c in verdict.get("cites") or []]
     basis = verdict.get("basis") or ""
-    if verdict["verdict"] == "already-built" and basis == "named-file":
+    title = (text or "").split("\n", 1)[0]
+    if (verdict["verdict"] == "already-built" and basis == "named-file"
+            and build_proposal_of(title, verdict.get("matched") or "", cites)):
         return {"decision": "stop", "checked": True, "basis": basis, "cites": cites,
                 "comment": stop_comment(issue, cites, verdict.get("reason") or ""),
                 "line": f"step 0 {issue}: STOP, already built: {', '.join(cites)}"}
     if verdict["verdict"] == "already-built":
         return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
-                "line": f"step 0 {issue}: pass (advisory: a {basis or 'lesson'} covers the topic, "
-                        f"not the deliverable: {', '.join(Path(c).name for c in cites)})"}
+                "line": f"step 0 {issue}: pass (advisory: already-built on a {basis or 'lesson'} match, "
+                        f"but the title is not a build proposal for it: {', '.join(Path(c).name for c in cites)})"}
     return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
             "line": f"step 0 {issue}: pass ({verdict['verdict']})"}
 

@@ -352,6 +352,27 @@
       }
     },
     {
+      "id": "step0-already-built",
+      "source": "linear-worker",
+      "class": "durable-queue",
+      "marker": "stopped at step 0, already built",
+      "sites": 1,
+      "what": "Step 0 (ticket_step0.py, ASK-5802): the ticket's title proposes building a file improve_ground.py names as already built, and that file exists. No build session is spent. The worker records a capout once (--apply only) and skips before the dry pick.",
+      "consumer": "cap-ladder.py -- its rung 0 runs the same check on the capout and cancels the ticket with the named file as the reason (reopen to undo); a check that no longer stops lets rung 1 run as for any cap",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "def rung_zero",
+        "why": "The capout is the one record cap-ladder.py consumes, so the step-0 skip is never a dead end: the ladder cancels it with the cited file on the comment, and a reopened ticket whose title asks for more than that file passes step 0 and is worked. Founder 2026-11-26: 'chekcing if the ticket should exist should be step 0'."
+      }
+    },
+    {
       "id": "codex-outage-hold",
       "source": "linear-worker",
       "class": "infra-retry",

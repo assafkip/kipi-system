@@ -67,11 +67,24 @@ def main() -> int:
         empty.mkdir()
         full = corpus(root, LESSONS)
 
-        rc, out = step0("risk-scored auto-merge for low-risk PRs\n\nbuild it", KIPI_LESSONS_CORPORA=str(empty))
-        check("a ticket for a named file that exists STOPS (exit 3) and names the file",
+        rc, out = step0("add risk-scored auto-merge for low-risk PRs\n\nbuild it", KIPI_LESSONS_CORPORA=str(empty))
+        check("a title proposing to build a named file that exists STOPS (exit 3) and names the file",
               rc == 3 and out.get("decision") == "stop" and out.get("checked") is True
               and "q-system/.q-system/scripts/review-tier.py" in out.get("cites", [])
               and "review-tier.py" in out.get("comment", ""), (rc, out))
+
+        # PR #893 round 1, finding 1: real false stops, by their real titles.
+        for title, why in (
+                ("launchd job is dark: com.kipi.browser-session-deadman", "a broken-thing report (ASK-1199)"),
+                ("handoff-provenance-lint: widen the scan root to session handoffs and auto-memory",
+                 "no build verb (ASK-1953)"),
+                ("fix the reviewer\n\nadd a deadman to the morning brief", "the key only in the description"),
+                # Each case below is decided by ONE part of the rule alone (round 2 mutants):
+                ("session handoff for the fleet-wide Linear rollout", "key whole-word in the title, no build verb"),
+                ("add a reviewer fallback\n\nthe deadman keeps paging", "build verb, key only in the description")):
+            rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
+            check(f"a named-file match that is not a build proposal passes: {why}",
+                  rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))
 
         rc, out = step0("usage-pacer.py usage_pct() crashes on TimeoutExpired instead of returning None",
                         KIPI_LESSONS_CORPORA=str(empty))
@@ -85,9 +98,16 @@ def main() -> int:
               rc == 0 and out.get("decision") == "pass" and out.get("basis") == "lesson"
               and "advisory" in out.get("line", ""), (rc, out))
 
+        ghost = root / "ghost.py"
+        ghost.write_text("import json\nprint(json.dumps({'verdict': 'already-built', 'basis': 'named-file', "
+                         "'matched': 'deadman', 'cites': ['q-system/no-such-file.py'], 'reason': 'x'}))\n")
+        rc, out = step0("add a deadman for the sweep", KIPI_STEP0_GROUND=str(ghost))
+        check("a named-file verdict citing a file that does not exist passes (no cancel on a ghost)",
+              rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))
+
         broken = root / "broken.py"
         broken.write_text("import sys\nsys.stderr.write('boom')\nsys.exit(1)\n")
-        rc, out = step0("risk-scored auto-merge for low-risk PRs", KIPI_STEP0_GROUND=str(broken))
+        rc, out = step0("add risk-scored auto-merge for low-risk PRs", KIPI_STEP0_GROUND=str(broken))
         check("a crashing improve_ground passes, and the line says NOT CHECKED",
               rc == 0 and out.get("checked") is False and "NOT CHECKED" in out.get("line", ""), (rc, out))
 

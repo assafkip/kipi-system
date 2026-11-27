@@ -2968,14 +2968,25 @@ print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) i
   STEP0_LINE="$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["line"])' 2>/dev/null)"
   say "${STEP0_LINE:-step 0 $ISSUE: NOT CHECKED (ticket_step0.py exited $STEP0_RC with no line); the ticket proceeds unchecked}"
   if [ "$STEP0_RC" = "3" ]; then
-    # One comment per ticket, never one per tick: page_once writes the ledger,
-    # so a dry run (which must change nothing) only says the line above.
-    if [ "$APPLY" = "1" ] && page_once "$ISSUE" step0_stopped; then
-      python3 "$SYNC" progress "$ISSUE" \
-        "$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["comment"])')" \
-        --agent sana >/dev/null 2>&1 || say "WARN: the step 0 comment on $ISSUE did not post"
+    # THE STOP HANDS OFF TO cap-ladder.py, IT DOES NOT END HERE (PR #893 round 1,
+    # findings 3 and 5). A skip with only a comment was a dead end with no
+    # actor. A capout is what cap-ladder.py already consumes: its rung 0 runs
+    # this same check and cancels the ticket with the named file as the reason.
+    # Recorded once (an existing capout is left alone, so its signature stays
+    # stable), and only on --apply: a dry run changes nothing.
+    if [ "$APPLY" = "1" ] && [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" capout "" 2>/dev/null)" != "True" ]; then
+      python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "step 0: already built: $(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin)["cites"]))' 2>/dev/null)" >/dev/null 2>&1 \
+        || say "WARN: the step 0 capout for $ISSUE did not record; the next tick retries it"
     fi
-    say "skip $ISSUE: stopped at step 0, already built; no build session is spent on it"
+    # NOW, NOT AT 04:40 (founder 2026-11-27, no waits for a time of day). The
+    # cancel spends no RCA, so the ladder's nightly clock has no reason to hold
+    # it. Same attempts ledger as this run. A failure leaves the capout for the
+    # nightly run, which is the backstop, never the plan.
+    if [ "$APPLY" = "1" ]; then
+      CAP_LADDER_ATTEMPTS="$ATTEMPTS" ${KIPI_CAP_LADDER:-python3 "$SCRIPT_DIR/cap-ladder.py"} --rung0 "$ISSUE" --apply >>"$LOG" 2>&1 \
+        || say "WARN: cap-ladder.py --rung0 $ISSUE failed; its nightly run takes the capout"
+    fi
+    say "skip $ISSUE: stopped at step 0, already built; cap-ladder.py rung 0 cancels it with the file named (this tick on --apply)"
     continue
   fi
 

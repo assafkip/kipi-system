@@ -34,7 +34,7 @@ WORK="$(mktemp -d)"
 trap 'kill "${SRV_PID:-}" 2>/dev/null; wait "${SRV_PID:-}" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 cat > "$WORK/fixture-server.py" <<'PY'
-import json
+import json, os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 def issue(ident, title, created):
@@ -47,10 +47,16 @@ def issue(ident, title, created):
 
 # The built one is OLDER, so without step 0 it is the first pick.
 BOARD = [
-    issue("ASK-961", "risk-scored auto-merge for low-risk PRs", "2026-08-01T10:00:00.000Z"),
+    issue("ASK-961", "add risk-scored auto-merge for low-risk PRs", "2026-08-01T10:00:00.000Z"),
     issue("ASK-962", "usage-pacer.py usage_pct() crashes on TimeoutExpired instead of returning None",
           "2026-08-02T10:00:00.000Z"),
 ]
+
+# FIXTURE_BOARD=built-only: the --apply case. Step 0 sits before any claim,
+# comment or model call, so an --apply run over only the built ticket spends
+# nothing and must leave exactly one capout for cap-ladder.py.
+if os.environ.get("FIXTURE_BOARD") == "built-only":
+    BOARD = BOARD[:1]
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -122,9 +128,57 @@ GOT1="$(picks "$(run_worker 1)")"
   && ok "the dispatcher's one pick (--limit 1) moves past the stopped ticket" \
   || bad "the dispatcher's one pick moves past the stopped ticket" "got [$GOT1], want [ASK-962 ]"
 
-[ ! -e "$WORK/state/linear-worker-attempts.json" ] || ! grep -q step0_stopped "$WORK/state/linear-worker-attempts.json" \
-  && ok "a dry run writes no step 0 flag (dry changes nothing)" \
-  || bad "a dry run writes no step 0 flag" "$(cat "$WORK/state/linear-worker-attempts.json")"
+[ ! -e "$WORK/state/linear-worker-attempts.json" ] || ! grep -q capout "$WORK/state/linear-worker-attempts.json" \
+  && ok "a dry run records no capout for the stopped ticket (dry changes nothing)" \
+  || bad "a dry run records no capout" "$(cat "$WORK/state/linear-worker-attempts.json")"
+printf '%s\n' "$OUT" | grep -q 'skip ASK-961: stopped at step 0, already built; cap-ladder.py rung 0 cancels it' \
+  && ok "the skip names cap-ladder.py as the next actor" \
+  || bad "the skip names its consumer" "$(printf '%s\n' "$OUT" | grep -E 'skip ASK-961' | head -2)"
+
+# --apply over only the built ticket: one capout, naming the file, and a second
+# tick leaves the same capout_at (one record, so cap-ladder sees one signature).
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
+FIXTURE_BOARD=built-only python3 "$WORK/fixture-server.py" > "$WORK/port2" 2> "$WORK/server2.err" &
+SRV_PID=$!
+for _ in $(seq 1 100); do PORT="$(cat "$WORK/port2" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
+# THE CLAUDE SEAM IS A RECORDING STUB HERE, never fleet-claude.sh. Round 2 scar:
+# a mutant worker that did not stop went on to a real bounded `claude -p` run
+# and sat in run_bounded's 1800 s watchdog. A worker that fails to stop must
+# fail this test fast and spend nothing. cap-ladder.py is stubbed the same way:
+# the real --rung0 writes Linear and the ledger, and test_cap_ladder.py owns it.
+printf '#!/bin/sh\necho called >> "%s/claude-called"\nexit 1\n' "$WORK" > "$WORK/claude-stub"
+chmod +x "$WORK/claude-stub"
+# KIPI_NOTIFY stubbed on every ledger read: attempts-ledger.py can reach slack-notify.sh.
+led_get() { KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" get ASK-961 "$1" "" 2>/dev/null; }
+printf '#!/bin/sh\necho "$*" >> "%s/ladder-called"\n' "$WORK" > "$WORK/ladder-stub"
+chmod +x "$WORK/ladder-stub"
+apply_worker() { KIPI_FLEET_CLAUDE="$WORK/claude-stub" KIPI_CODEX_RUNNER="$WORK/claude-stub" \
+  KIPI_CAP_LADDER="$WORK/ladder-stub" run_worker 1 --apply; }
+# To a file, not $(...): run_bounded's watchdog `sleep` outlives a killed
+# watchdog subshell and holds a captured stdout open for 1800 s (seen under the
+# rc mutant, round 2). A plain redirect returns when the worker does.
+apply_worker > "$WORK/apply.out" 2>&1
+OUTA="$(cat "$WORK/apply.out")"
+AT1="$(led_get capout_at)"
+WHY="$(led_get capout_why)"
+[ -n "$AT1" ] && printf '%s' "$WHY" | grep -q 'step 0: already built: q-system/.q-system/scripts/review-tier.py' \
+  && ok "--apply records one capout naming the file, for cap-ladder.py to consume" \
+  || bad "--apply records a capout naming the file" "at=[$AT1] why=[$WHY] $(printf '%s\n' "$OUTA" | grep -E 'step 0|WARN|ASK-961' | head -3)"
+[ ! -e "$WORK/claude-called" ] \
+  && ok "--apply spends nothing on the stopped ticket (the claude seam was never called)" \
+  || bad "--apply spends nothing on the stopped ticket" "the claude stub was called $(wc -l < "$WORK/claude-called") time(s)"
+grep -qx -- '--rung0 ASK-961 --apply' "$WORK/ladder-called" 2>/dev/null \
+  && ok "--apply hands the stop to cap-ladder.py --rung0 in the same tick (no wait for 04:40)" \
+  || bad "--apply calls cap-ladder.py --rung0 now" "$(cat "$WORK/ladder-called" 2>/dev/null || echo 'never called')"
+sleep 1; apply_worker >/dev/null
+AT2="$(led_get capout_at)"
+[ -n "$AT1" ] && [ "$AT1" = "$AT2" ] \
+  && ok "a second tick leaves the same capout (one signature, not one per tick)" \
+  || bad "a second tick leaves the same capout" "first [$AT1] second [$AT2]"
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
+python3 "$WORK/fixture-server.py" > "$WORK/port3" 2> "$WORK/server3.err" &
+SRV_PID=$!
+for _ in $(seq 1 100); do PORT="$(cat "$WORK/port3" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
 
 for kind in broken hang; do
   OUTB="$(KIPI_STEP0_GROUND="$WORK/$kind.py" KIPI_STEP0_TIMEOUT=1 run_worker 5)"

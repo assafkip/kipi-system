@@ -1230,28 +1230,47 @@ def case_founder_asks_reach_chief() -> None:
 
 def case_step0(script: Path = LADDER) -> None:
     """Rung 0 (ASK-5802): founder 2026-11-26, "chekcing if the ticket should
-    exist should be step 0". A capped ticket whose file already exists is
-    stopped before the rung 1 RCA is paid for; a broken check stops nothing.
-    The title is improve_ground.py's own already-built fixture."""
-    built = "risk-scored auto-merge for low-risk PRs"
+    exist should be step 0". A capped ticket asking to build an existing file
+    is canceled before the rung 1 RCA is paid for, with the file named, and its
+    cap is cleared so it never sits in the ladder (PR #893 round 1, finding 2).
+    A broken check stops nothing. The title is improve_ground.py's own
+    already-built fixture, as a build proposal."""
+    built = "add risk-scored auto-merge for low-risk PRs"
     with tempfile.TemporaryDirectory() as td:
         env = make_world(Path(td))
         edit_ticket(env, "ASK-1", title=built)
-        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        led(env, "record-capout", "ASK-1", "step 0: already built")
         out = ladder(env, script=script)
-        check("step0: a dry run says rung 0 would stop it and names the file",
-              "rung 0 would stop it" in out and "review-tier.py" in out, out[-400:])
+        check("step0: a dry run says rung 0 would cancel it and names the file, and writes nothing",
+              "rung 0 would cancel it" in out and "review-tier.py" in out and not writes(env), out[-400:])
         out = ladder(env, "--apply", script=script)
-        progress = [c for c in log(env, "sync") if c[0] == "progress" and "Step 0 stopped" in c[2]]
-        check("step0: --apply stops before rung 1: no RCA, no PR closed, one comment naming the file",
+        progress = [c for c in log(env, "sync") if c[0] == "progress" and "Canceled at step 0" in c[2]]
+        check("step0: --apply cancels before rung 1: no RCA, no PR closed, one comment naming the file",
               not any(c[:2] == ["--kind", "rca"] for c in log(env, "fable"))
               and not any("close" in c for c in log(env, "gh"))
-              and len(progress) == 1 and "review-tier.py" in progress[0][2], (out[-300:], log(env, "sync")))
-        at(env, 1)
-        out = ladder(env, "--apply", script=script)
-        progress = [c for c in log(env, "sync") if c[0] == "progress" and "Step 0 stopped" in c[2]]
-        check("step0: the next night, same text and same cap: held quietly, no second comment",
-              len(progress) == 1 and "held at rung 0" in out, (out[-300:], progress))
+              and any(w.get("op") == "state" and w.get("type") == "canceled" for w in writes(env))
+              and len(progress) == 1 and "review-tier.py" in progress[0][2], (out[-300:], writes(env)))
+        check("step0: the cap is cleared, so the ticket does not sit in the ladder",
+              not ledger_row(env, "ASK-1").get("capout"), ledger_row(env, "ASK-1"))
+    with tempfile.TemporaryDirectory() as td:
+        # --rung0 (founder 2026-11-27, no waits for a time of day): the worker's
+        # call cancels a built ticket in the same tick and touches no other cap.
+        env = make_world(Path(td))
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        led(env, "record-capout", "ASK-2", "hit the 3-round cap")
+        out = ladder(env, "--rung0", "ASK-1", "--apply", script=script)
+        check("step0: --rung0 cancels the built ticket now, clears its cap, and spends no RCA",
+              any(w.get("op") == "state" and w.get("type") == "canceled" and w.get("issue") == "ASK-1"
+                  for w in writes(env))
+              and not ledger_row(env, "ASK-1").get("capout") and not log(env, "fable"), (out[-300:], writes(env)))
+        check("step0: --rung0 leaves every other cap for the nightly run",
+              ledger_row(env, "ASK-2").get("capout") is True
+              and not any(w.get("issue") == "ASK-2" for w in writes(env)), ledger_row(env, "ASK-2"))
+        reset(env)
+        out = ladder(env, "--rung0", "ASK-2", "--apply", script=script)
+        check("step0: --rung0 on a ticket step 0 passes writes nothing and names the nightly run",
+              not writes(env) and not log(env, "fable") and "nightly run takes rung 1" in out, out[-300:])
     with tempfile.TemporaryDirectory() as td:
         env = make_world(Path(td))
         (Path(td) / "broken.py").write_text("import sys\nsys.exit(1)\n")

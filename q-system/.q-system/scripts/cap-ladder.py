@@ -1070,32 +1070,63 @@ def late_lane(issue: str, rung: int, report: list) -> str:
             "requeued, and the rung is not spent")
 
 
-def rung_zero(issue: str, sigs: list, t: dict, state: dict, apply: bool) -> str:
+def rung_zero(issue: str, sigs: list, t: dict, report: list, apply: bool) -> str:
     """Rung 0 (ASK-5802): before the first RCA is paid for, ask whether the
-    ticket should exist. The founder ruled the should-exist check is step 0;
-    an RCA on a ticket whose file already exists studies the wrong question.
-    "" means go on to rung 1. A stop spends no rung: the cap and the PR stay,
-    and row["step0"] remembers the caps and the description hash, so the next
-    run does not re-post. A new cap or a changed description is checked again.
-    The state is written by main() after this returns, like every rung."""
-    held = (state.get(issue) or {}).get("step0") or {}
-    if held.get("desc_hash") == (t or {}).get("desc_hash") and set(sigs) <= set(held.get("sigs") or []):
-        # Same text, same caps: the verdict cannot have changed, and one comment is enough.
-        return f"{issue}: held at rung 0 since {held.get('at')}: already built ({', '.join(held.get('cites') or [])})"
+    ticket should exist. Founder 2026-11-26: "chekcing if the ticket should
+    exist should be step 0"; an RCA on a ticket that asks to build an existing
+    file studies the wrong question. "" means go on to rung 1.
+
+    A STOP ENDS IN A CLOSE, NEVER A HOLD (PR #893 round 1, finding 2): a hold at
+    rung 0 kept the cap, re-walked the ticket nightly, ate a climb slot and never
+    reached a decision. So a stop cancels the ticket with the named file as the
+    reason, on the same primitives as the rung 4 CLOSE (lin state, the progress
+    comment, clear_caps), and it is reversible: reopen to undo. The worker's
+    step-0 capout lands here; ticket_step0.py's four-part rule is why a stop
+    is narrow enough to close on."""
     res = step0().check(issue, (t or {}).get("text") or (t or {}).get("title") or "")
     say(res["line"])
     if res["decision"] != "stop":
         return ""
     if not apply:
-        return f"[dry] {issue}: rung 0 would stop it, already built: {', '.join(res['cites'])}"
-    rc, out = run(SYNC + ["progress", issue, res["comment"], "--agent", "sana"])
-    if rc != 0:
-        return f"{issue}: rung 0 stop could not post its comment ({out[-120:]}); the next run retries"
-    row = state.get(issue) or {}
-    row["step0"] = {"at": now().isoformat(), "cites": res["cites"], "sigs": sigs,
-                    "desc_hash": (t or {}).get("desc_hash")}
-    state[issue] = row
-    return f"{issue}: rung 0 stopped it, already built: {', '.join(res['cites'])}"
+        return f"[dry] {issue}: rung 0 would cancel it, already built: {', '.join(res['cites'])}"
+    if not lin("state", issue=issue, type="canceled"):
+        return f"{issue}: rung 0 could not cancel it; the cap stays and the next run retries"
+    run(SYNC + ["progress", issue, res["comment"], "--agent", "sana"])
+    clear_caps(issue)
+    report.append({"issue": issue, "rung": 0, "decision": "CLOSE", "cites": res["cites"]})
+    return f"{issue}: rung 0 CLOSE (Canceled, already built: {', '.join(res['cites'])})"
+
+
+def rung0_now(issue: str, apply: bool) -> int:
+    """`--rung0 ISSUE`: the worker's step-0 capout, cancelled in the same tick.
+
+    NO CLOCK FOR A CANCEL THAT COSTS NOTHING. Founder 2026-11-27: "identify any
+    unneeded holds, waits for a time of day you dont need or caps that dont help
+    and remove them". The nightly run and its --limit bound RCA spend; rung 0
+    spends no RCA, so a step-0 stop has no reason to wait for 04:40. This runs
+    rung 0 alone for one issue; if step 0 no longer stops it, nothing is written
+    and the nightly run takes rung 1 as for any cap. Under the ladder's lock, so
+    it never races a nightly run on the same ticket."""
+    lock_path = STATE.with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            say(f"{issue}: a cap-ladder run holds the lock; that run takes rung 0")
+            return 0
+        t = ticket(issue)
+        if not owned_open(t):
+            say(f"{issue}: not an open owned ticket in Linear; nothing to do")
+            return 0
+        sigs = sorted(find_caps(read_ledger(), {}, {}).get(issue) or [])
+        if not sigs:
+            say(f"{issue}: no cap on record; nothing to do")
+            return 0
+        report: list = []
+        say(rung_zero(issue, sigs, t, report, apply)
+            or f"{issue}: step 0 passes now; the nightly run takes rung 1 as for any cap")
+    return 0
 
 
 _STEP0_MOD = None
@@ -1119,7 +1150,7 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
     kind = sigs[0].split(":", 1)[0]
     why = f"{kind} cap ({', '.join(s.split(':', 1)[0] for s in sigs)})"
     if r == 1:
-        stopped = rung_zero(issue, sigs, t, state, apply)
+        stopped = rung_zero(issue, sigs, t, report, apply)
         if stopped:
             return stopped
     if not apply:
@@ -1217,6 +1248,8 @@ def main(argv=None) -> int:
                     help="add one ask to the morning status file (other jobs call this), then exit; records only, never sends")
     ap.add_argument("--send-asks", action="store_true",
                     help="send every unsent ask to chief's phone gate as one message, then exit (the one sender)")
+    ap.add_argument("--rung0", metavar="ISSUE",
+                    help="run rung 0 (step 0, ASK-5802) for one capped issue now, then exit: no RCA, no other cap")
     args = ap.parse_args(argv)
     # FIRST, before any verb that writes (round 2, minor: --resolve and
     # --founder-ask ran above this and wrote the real status file under pytest).
@@ -1256,6 +1289,8 @@ def main(argv=None) -> int:
     if args.send_asks:
         print("cap-ladder: " + notify_new_asks(True))
         return 0
+    if args.rung0:
+        return rung0_now(args.rung0, args.apply)
 
     tgts = targets()
     project_slug = {t["project"]: t["slug"] for t in tgts if t.get("project")}

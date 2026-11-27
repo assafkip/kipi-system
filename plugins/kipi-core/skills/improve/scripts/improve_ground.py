@@ -127,7 +127,7 @@ def ground(idea: str, target: str = "skill", env=None) -> dict:
     for key, path in KNOWN_BUILT.items():
         if key in low:
             return {"verdict": "already-built", "reason": f"{path} already does this", "cites": [path],
-                    "basis": "named-file", "corpora": report}
+                    "basis": "named-file", "matched": key, "corpora": report}
     strong = [(s, p) for s, p in hits if s >= MATCH_FLOOR]
     if strong:
         # basis "lesson" is weaker than "named-file" and callers that STOP work
