@@ -379,7 +379,17 @@ elif fleet_keyed; then
   # not paying for. The brakes on key spend are kipi-dispatch.sh's daily
   # budget gate and fleet_api_key.py's per-run ceiling. KIPI_FLEET_API_KEYS=0
   # puts the run back on the plan, and this brake back in front of it.
-  echo "usage breaker skipped: this run bills the fleet API key, not the plan (KIPI_FLEET_API_KEYS=0 restores both)" >>"$LOG"
+  # fleet_keyed means "route through fleet-claude.sh" (its :-1 default keeps the shim
+  # on); the shim itself bills the PLAN when the variable is unset (RULE-2026-11-26-PLAN45).
+  # So the reason depends on what the shim will do, read with the shim's own default
+  # (PR #887 round 1: an unset run logged "bills the fleet API key" while billing the plan).
+  # The old ledger breaker stays off on both paths: on the plan path the brake is
+  # plan_usage_gate.py, asked by the shim before every claude call.
+  if [ "${KIPI_FLEET_API_KEYS:-0}" != "0" ]; then
+    echo "usage breaker skipped: this run bills the fleet API key, not the plan (KIPI_FLEET_API_KEYS=0 restores both)" >>"$LOG"
+  else
+    echo "usage breaker skipped: this run bills the plan behind fleet-claude.sh's 45% weekly stop (plan_usage_gate.py, RULE-2026-11-26-PLAN45)" >>"$LOG"
+  fi
 elif [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
   # A DRY RUN ASKS WITHOUT SPENDING (ASK-2010; claude review of PR #472, minor).
   # kipi-dispatch.sh runs this script with no --apply to pick the next issue and

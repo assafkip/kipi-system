@@ -1128,7 +1128,11 @@ if [ "${KIPI_FLEET_API_KEYS:-0}" = "0" ] && [ -f "$PLAN_GATE" ]; then
        say "PLAN USAGE: $PLAN_GATE_LINE; no run starts this tick"
        exit 0 ;;
     *) say "PLAN USAGE: $PLAN_GATE_LINE (rc=$PLAN_GATE_RC); no run starts this tick"
-       page_once plan-usage-unreadable "kipi dispatch: the plan's weekly usage cannot be read, so the fleet is stopped (RULE-2026-11-26-PLAN45 fails closed). Reading: $PLAN_GATE_LINE. Do: run python3 $REPO/q-system/.q-system/scripts/plan_usage_gate.py and fix what it prints; the next tick resumes by itself."
+       # A CONSTANT BODY. page_once suppresses on an unchanged hash and alert-to-linear
+       # dedupes on words, so the gate's varying error text (401, 500, refused, bad JSON)
+       # filed one undeletable ticket per wording of one condition (PR #887 round 1).
+       # The wording lives in the gate log instead.
+       page_once plan-usage-unreadable "kipi dispatch: the plan's weekly usage cannot be read, so the fleet is stopped (RULE-2026-11-26-PLAN45 fails closed). The reason is the last line of ~/.local/state/kipi/plan-usage-gate.log. Do: run python3 $REPO/q-system/.q-system/scripts/plan_usage_gate.py and fix what it prints; the next tick resumes by itself."
        exit 0 ;;
   esac
 fi

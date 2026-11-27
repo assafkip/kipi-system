@@ -203,6 +203,17 @@ grep -q "usage breaker skipped: this run bills the fleet API key" "$TMP/state6/l
   && ok "the skip is written to the worker log, with its reason" \
   || bad "the keyed run skipped the brake silently"
 
+# 6c. RULE-2026-11-26-PLAN45: with the variable UNSET the shim bills the PLAN behind
+#     plan_usage_gate.py, so the log must say so, never "bills the fleet API key"
+#     (PR #887 round 1, minor: the unset run logged the key reason on a plan run).
+mkdir -p "$TMP/state6c"
+: > "$TMP/argv-unset.txt"
+urc="$(unset KIPI_FLEET_API_KEYS; run_worker "$(argstub 3 "$TMP/argv-unset.txt")" "$TMP/state6c")"
+grep -q "usage breaker skipped: this run bills the plan behind fleet-claude.sh's 45% weekly stop" "$TMP/state6c/linear-worker.log" 2>/dev/null \
+  && ! grep -q "bills the fleet API key" "$TMP/state6c/linear-worker.log" 2>/dev/null \
+  && ok "an unset run names the plan's 45% stop as its brake (rc=$urc)" \
+  || bad "an unset run logged the wrong billing reason: $(grep 'usage breaker' "$TMP/state6c/linear-worker.log" 2>/dev/null)"
+
 # 6b. MUTATION: the keyed skip cut out. The same keyed run must now be braked,
 #     or case 6 is reading something other than the skip.
 MUT6="$TMP/worker-no-keyed-skip.sh"

@@ -217,6 +217,30 @@ class PlanUsageGate(unittest.TestCase):
         self.assertIn("security", r.stdout)
         self.assertTrue(os.path.exists(os.path.join(home, ".local/state/kipi/plan-usage-gate.log")))
 
+    def test_a_keychain_failure_names_security_and_the_item(self):
+        # PR #887 round 1: security's rc and stderr were dropped, so every Keychain
+        # failure read "Expecting value: line 1 column 1 (char 0)".
+        env, home = self._sentinel_env()
+        sec = os.path.join(self.tmp, "security")
+        with open(sec, "w") as fh:
+            fh.write("#!/bin/sh\necho 'The specified item could not be found in the keychain.' >&2\nexit 44\n")
+        os.chmod(sec, 0o755)
+        r = subprocess.run([sys.executable, str(GATE), "--binary", "/usr/bin/true"],
+                           env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("Keychain item 'Claude Code-credentials' (rc 44", r.stdout)
+        self.assertIn("could not be found", r.stdout)
+
+    def test_the_unreadable_page_body_is_constant(self):
+        # PR #887 round 1, major: the page interpolated the gate's varying error text, so
+        # page_once's hash changed per wording and alert-to-linear filed one undeletable
+        # ticket per wording. The page_once line must carry no gate output.
+        src = (REPO / "kipi-dispatch.sh").read_text()
+        lines = [ln for ln in src.splitlines() if "page_once plan-usage-unreadable" in ln]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertNotIn("$PLAN_GATE_LINE", lines[0])
+        self.assertNotIn("$PLAN_GATE_RC", lines[0])
+
     def test_tmpdir_holding_home_is_not_a_temp_root(self):
         # TMPDIR=$HOME made the real install under ~/.local read as a fake (round 3 minor).
         import pwd

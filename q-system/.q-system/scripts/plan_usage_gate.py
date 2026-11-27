@@ -85,9 +85,14 @@ def token(cfg):
         return cfg["token"]  # a test never reaches the Keychain
     svc = login()
     acct = os.environ.get("USER") or os.path.basename(os.path.expanduser("~"))
-    raw = subprocess.run(["security", "find-generic-password", "-s", svc, "-a", acct, "-w"],
-                         capture_output=True, text=True, timeout=10).stdout.strip()
-    oauth = json.loads(raw).get("claudeAiOauth") or {}
+    got = subprocess.run(["security", "find-generic-password", "-s", svc, "-a", acct, "-w"],
+                         capture_output=True, text=True, timeout=10)
+    if got.returncode != 0:
+        # Name the tool and the item. A bare json.loads("") read "Expecting value: line 1
+        # column 1 (char 0)", which named neither (PR #887 round 1).
+        raise RuntimeError("security could not read Keychain item '%s' (rc %d: %s)"
+                           % (svc, got.returncode, got.stderr.strip()[:200]))
+    oauth = json.loads(got.stdout.strip()).get("claudeAiOauth") or {}
     if not oauth.get("accessToken"):
         raise RuntimeError("no plan login token in Keychain item '%s'" % svc)
     return oauth["accessToken"]
