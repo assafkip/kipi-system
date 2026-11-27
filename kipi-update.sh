@@ -713,6 +713,7 @@ system_owned_paths_for_run() {
   done < <(managed_plugin_names)
 }
 FAILED_NAMES=""
+INSTANCE_FAIL_NOTE=""
 FAILED_IDS=""
 
 MODEL_SKIPPED_ROOT=""
@@ -1566,8 +1567,9 @@ count_instance_failure() {
   # 2-6 prd-os versions behind for weeks and each run skipped a different subset
   # (measured 2026-08-04). A count is not a report.
   FAILED_NAMES="$FAILED_NAMES
-    - ${name:-<unnamed>} (${path:-unknown path})${POST_SYNC_FAILED_STEP:+ [post-sync step failed: $POST_SYNC_FAILED_STEP]}"
+    - ${name:-<unnamed>} (${path:-unknown path})${POST_SYNC_FAILED_STEP:+ [post-sync step failed: $POST_SYNC_FAILED_STEP]}${INSTANCE_FAIL_NOTE:+ [$INSTANCE_FAIL_NOTE]}"
   POST_SYNC_FAILED_STEP=""
+  INSTANCE_FAIL_NOTE=""
   # Names only, one per line, for the sweep-history row (ASK-776). Paths stay
   # out: the row is a fleet record, and a name is all a reader needs.
   FAILED_IDS="${FAILED_IDS}${name:-<unnamed>}
@@ -1861,11 +1863,19 @@ SH
     }
   done
 
+  # No background gc after a MODELED commit. The model's sync commit is ~1900
+  # files, which trips git's auto maintenance; its detached repack was still
+  # writing .git/objects/bitmap-ref-tips_* when cleanup_dry_model removed the
+  # tree, the removal failed, and set -e ended the run after the FIRST instance.
+  # Pristine origin/main does it too with two clean instances (ASK-5795). The env
+  # route cannot carry this: this call strips GIT_CONFIG_COUNT on purpose.
+  local gc_off=()
+  [ "${MODEL_RUN:-0}" = "1" ] && gc_off=(-c gc.auto=0 -c maintenance.auto=false -c gc.autoDetach=false)
   set +e
   env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
     GUARDED_HOOK_DIR="$guard_dir" \
     GUARDED_ORIGINAL_HOOKS="$original_hooks" \
-    git -C "$target" -c core.hooksPath="$guard_dir" \
+    git -C "$target" -c core.hooksPath="$guard_dir" ${gc_off[@]+"${gc_off[@]}"} \
       commit --no-gpg-sign -m "$message" </dev/null | dry_filter
   # PIPESTATUS[0], not $?: with dry_filter on the end of the pipe, $? is sed's
   # status and a FAILED commit would read as success. sp-a4a933ad's tagging must
@@ -2354,8 +2364,9 @@ fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
 # `never-commit` paths are untracked INSIDE the instance loop (ASK-605), so an
 # instance blocked by nothing else must not abort the run before that loop. The
 # first version of that fix aborted the whole fleet here (PR #430 review). A
-# MIXED instance still aborts: fleet-unblock clears its other paths, and on the
-# next run it is never-commit-only, so this cannot deadlock.
+# MIXED instance aborts a run scoped to it with --only; in a fleet run it is
+# skipped and reported (ASK-5795), and fleet-unblock clears its other paths so
+# the next run sees it never-commit-only.
 def _in_loop_only(r):
     kinds = {b.get("kind") for b in (r.get("blocked_by") or [])}
     return bool(kinds) and kinds <= {"never-commit"}
@@ -2403,8 +2414,21 @@ for r in gated:
 # run. In a fleet run it must NOT abort the others -- PR #396's lesson, one
 # instance's refusal stopping every sync. The names go to a file the loop reads,
 # and each is skipped UNWRITTEN there.
-open(sys.argv[3], "w").write("".join(r["name"] + "\n" for r in gated))
-sys.exit(3 if (gated and only) else (2 if fleet else 0))
+open(sys.argv[3], "w").write("".join(r["name"] + "\n" for r in gated + (fleet if not only else [])))
+# One "name<TAB>reason" line per instance the loop must skip. The loop prints it
+# on stdout AND stderr and carries it into the summary, so a skip is never silent.
+# (ASK-5795, 2026-11-27: one instance's token-guard.py edit aborted the
+# unattended 08:00 run for all 15 instances; fleet-unblock cannot attribute it,
+# so the abort could never clear itself and 7 instances stayed stale 9 days.)
+# Scoped to --only, a blocked target still aborts: there is nothing else to run.
+with open(sys.argv[3] + ".why", "w") as fh:
+    for r in gated:
+        fh.write("%s\tblocked by its own pre-commit gate(s): %s\n" % (r["name"], ", ".join(r.get("gates_red") or [])))
+    if not only:
+        for r in fleet:
+            paths = ", ".join(str(b.get("path")) for b in (r.get("blocked_by") or [])[:3])
+            fh.write("%s\tblocked by updater exhaust: %s (fleet-unblock.py --apply, or commit it)\n" % (r["name"], paths))
+sys.exit(3 if (gated and only) else (2 if (fleet and only) else 0))
 PYEOF
   if [ "$rc" -eq 3 ]; then
     echo ""
@@ -2415,7 +2439,7 @@ PYEOF
   fi
   if [ "$rc" -eq 2 ]; then
     echo ""
-    echo "ABORT: instance(s) named above carry the updater's own exhaust."
+    echo "ABORT: the instance this run is scoped to carries the updater's own exhaust."
     echo "This is what the audit CAN see -- a dirty tree inside the synced"
     echo "pathspec. It does NOT cover a stale skeleton or a dangling symlink;"
     echo "those are separate gates, above and inside the loop."
@@ -2448,7 +2472,11 @@ while IFS='|' read -r name path prefix itype declared; do
   fi
   echo "--- $name ($itype) ---"
   if [ -n "${GATED_FILE:-}" ] && grep -qxF -- "$name" "$GATED_FILE" 2>/dev/null; then
-    echo "  SKIPPED UNWRITTEN: its own pre-commit gate is red (named in the reach preflight above)"
+    SKIP_WHY="$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' "$GATED_FILE.why" 2>/dev/null || true)"
+    SKIP_WHY="${SKIP_WHY:-blocked by its own pre-commit gate (named in the reach preflight above)}"
+    echo "  SKIPPED UNWRITTEN: $SKIP_WHY"
+    echo "kipi-update: $name SKIPPED UNWRITTEN: $SKIP_WHY" >&2
+    INSTANCE_FAIL_NOTE="skipped: $SKIP_WHY"
     count_instance_failure
     echo ""
     continue
