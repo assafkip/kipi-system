@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "slug": "voiceloop-rule-section-ids",
+  "reason": "ASK-5783: two sections of voice-loop-anywhere.md had no Rule-ID line, so rule_gate.py stripped them after every tool call and claude-integrity-tripwire.py restored them and flagged it unsanctioned, in an endless loop. Each section gets its own unique id and the enforcer line, both held by test_voice_loop_naming.py. Additive insert_after only.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/test/test_voice_loop_naming.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/voice-loop-anywhere.md",
+      "op": "insert_after",
+      "anchor": "## Naming (ASK-5398)\n",
+      "insert": "\nRule-ID: RULE-2026-11-26-VOICELOOP-NAMING-SECTION\nEnforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py\n",
+      "reason": "Gives the Naming section its own Rule-ID and enforcer so rule_gate stops stripping it."
+    },
+    {
+      "file": ".claude/rules/voice-loop-anywhere.md",
+      "op": "insert_after",
+      "anchor": "## What the status does and does not cover\n",
+      "insert": "\nRule-ID: RULE-2026-11-26-VOICELOOP-STATUS-COVERAGE\nEnforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py\n",
+      "reason": "Gives the status-coverage section its own Rule-ID and enforcer so rule_gate stops stripping it."
+    }
+  ]
+}

@@ -11,6 +11,9 @@ Enforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py
 
 ## Naming (ASK-5398)
 
+Rule-ID: RULE-2026-11-26-VOICELOOP-NAMING-SECTION
+Enforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py
+
 `voiceloop-band-lint.py` and the word lists in `voice-lint.py`, `voice-substance-lint.py` and `voice-stop-gate.py` are advisory linters. No exit counts them as the voice check: band-lint exits 0 on every path, NOT CHECKED included, and a word list sees vocabulary only. The voice loop is the full path, `plugins/kipi-core/scripts/voice_full_gate.py` (`gate_draft --full`). A send is verified by that entry point through `voice-send-check.py`.
 
 The voice engine is two halves. `voice-lint.py` owns banned vocabulary and
@@ -54,6 +57,9 @@ to blocking is a founder decision made in the open, once the population is
 clean enough to survive it.
 
 ## What the status does and does not cover
+
+Rule-ID: RULE-2026-11-26-VOICELOOP-STATUS-COVERAGE
+Enforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py
 
 Read it narrowly. `test_voiceloop_band_lint.py` pins the hook's CONTRACT: that
 it never blocks, that a finding is actually surfaced rather than swallowed, that
