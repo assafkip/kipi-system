@@ -19,5 +19,26 @@ assert len(hits("one flag, one flag")) == 2, "control: each whole occurrence cou
 assert len(hits("Two quick ones: one flags it.")) == 1, "control: a plural still fires"
 plurals = [v for v in vl.check_banned_phrases("These are game-changers.") if "game-changer" in v["detail"]]
 assert plurals, "control: the plural 'game-changers' still fires"
-print("PASS: banned phrases match whole words only; whole-phrase controls still fire")
+
+# ASK-4616: two banned phrases are meant as PREFIXES and the whole-word fix above
+# silently stopped them firing on their commonest AI form, 'let's dive into' and
+# 'just checking into'. They keep a substring match at the tail; every other
+# phrase stays whole-word, which the 'one flag' assertions above pin.
+def phrase_hits(text, phrase):
+    return [v["detail"] for v in vl.check_banned_phrases(text) if f"'{phrase}'" in v["detail"]]
+
+assert len(phrase_hits("Let's dive into the numbers.", "let's dive in")) == 1, \
+    "prefix phrase must fire on 'let's dive into'"
+assert len(phrase_hits("just checking into the hotel", "just checking in")) == 1, \
+    "prefix phrase must fire on 'just checking into'"
+assert len(phrase_hits("Let's dive in.", "let's dive in")) == 1, \
+    "control: the bare prefix phrase still fires"
+assert len(phrase_hits("Just checking in on the deck.", "just checking in")) == 1, \
+    "control: the bare prefix phrase still fires"
+assert phrase_hits("We will dive into it.", "let's dive in") == [], \
+    "control: a prefix phrase still needs its own left boundary"
+assert vl.PREFIX_PHRASES <= set(vl.BANNED_PHRASES), \
+    "every prefix phrase must be a banned phrase, or its pattern is never built"
+
+print("PASS: banned phrases match whole words only, prefix phrases match their tail, controls fire")
 PY
