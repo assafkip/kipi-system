@@ -180,6 +180,17 @@ python3 "$WORK/fixture-server.py" > "$WORK/port3" 2> "$WORK/server3.err" &
 SRV_PID=$!
 for _ in $(seq 1 100); do PORT="$(cat "$WORK/port3" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
 
+# Round 2, minor 5: a reopen wins. With step0_canceled on the ticket (cap-ladder
+# set it when rung 0 canceled), step 0 stands down and the ticket is picked.
+KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" claim-flag ASK-961 step0_canceled >/dev/null 2>&1
+KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" clear-capout ASK-961 >/dev/null 2>&1
+OUTR="$(run_worker 5)"
+printf '%s\n' "$OUTR" | grep -q 'step 0 ASK-961: stands down, reopened after a step-0 cancel' \
+  && [ "$(picks "$OUTR")" = "ASK-961 ASK-962 " ] \
+  && ok "a reopened ticket is not re-stopped: step 0 stands down and it is picked" \
+  || bad "a reopened ticket is not re-stopped" "got [$(picks "$OUTR")] $(printf '%s\n' "$OUTR" | grep ASK-961 | head -2)"
+KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" clear-flag ASK-961 step0_canceled >/dev/null 2>&1
+
 for kind in broken hang; do
   OUTB="$(KIPI_STEP0_GROUND="$WORK/$kind.py" KIPI_STEP0_TIMEOUT=1 run_worker 5)"
   GOTB="$(picks "$OUTB")"

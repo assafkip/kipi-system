@@ -2967,6 +2967,13 @@ print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) i
     | python3 "$SCRIPT_DIR/ticket_step0.py" --issue "$ISSUE" 2>>"$LOG")" || STEP0_RC=$?
   STEP0_LINE="$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["line"])' 2>/dev/null)"
   say "${STEP0_LINE:-step 0 $ISSUE: NOT CHECKED (ticket_step0.py exited $STEP0_RC with no line); the ticket proceeds unchecked}"
+  # A REOPEN WINS (PR #893 round 2, minor 5). cap-ladder.py sets step0_canceled
+  # when rung 0 cancels; a ticket open again after that was reopened on purpose,
+  # so step 0 stands down for it instead of re-canceling every tick.
+  if [ "$STEP0_RC" = "3" ] && [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" step0_canceled "" 2>/dev/null)" = "True" ]; then
+    say "step 0 $ISSUE: stands down, reopened after a step-0 cancel; the ticket proceeds"
+    STEP0_RC=0
+  fi
   if [ "$STEP0_RC" = "3" ]; then
     # THE STOP HANDS OFF TO cap-ladder.py, IT DOES NOT END HERE (PR #893 round 1,
     # findings 3 and 5). A skip with only a comment was a dead end with no

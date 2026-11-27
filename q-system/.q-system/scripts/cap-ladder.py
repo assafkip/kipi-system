@@ -1070,28 +1070,55 @@ def late_lane(issue: str, rung: int, report: list) -> str:
             "requeued, and the rung is not spent")
 
 
-def rung_zero(issue: str, sigs: list, t: dict, report: list, apply: bool) -> str:
+def step0_capout(entry: dict) -> bool:
+    """A capout step 0 wrote itself (linear-worker.sh writes "step 0: ...")."""
+    return str((entry or {}).get("capout_why") or "").startswith("step 0:")
+
+
+def release_step0(issue: str, apply: bool, why: str) -> str:
+    """Step 0 no longer stops a ticket whose only cap is step 0's own: release
+    that capout, spend no rung (PR #893 round 2, finding 1: it escalated to a
+    paid rung-1 RCA, a PR close/reopen and a false cap comment)."""
+    if not apply:
+        return f"[dry] {issue}: {why}; would release its step-0 capout, no rung spent"
+    ledger(["clear-capout", issue])
+    return f"{issue}: {why}; its step-0 capout is released, no rung spent, the worker takes it"
+
+
+def rung_zero(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, report: list, apply: bool) -> str:
     """Rung 0 (ASK-5802): before the first RCA is paid for, ask whether the
     ticket should exist. Founder 2026-11-26: "chekcing if the ticket should
     exist should be step 0"; an RCA on a ticket that asks to build an existing
     file studies the wrong question. "" means go on to rung 1.
 
-    A STOP ENDS IN A CLOSE, NEVER A HOLD (PR #893 round 1, finding 2): a hold at
-    rung 0 kept the cap, re-walked the ticket nightly, ate a climb slot and never
-    reached a decision. So a stop cancels the ticket with the named file as the
-    reason, on the same primitives as the rung 4 CLOSE (lin state, the progress
-    comment, clear_caps), and it is reversible: reopen to undo. The worker's
-    step-0 capout lands here; ticket_step0.py's four-part rule is why a stop
-    is narrow enough to close on."""
+    A STOP ENDS IN A CLOSE, NEVER A HOLD (PR #893 round 1, finding 2), on the
+    rung-4 CLOSE's steps: the lane PR closed with its branch kept, the reason
+    posted (rc checked, before the cancel, so a cancel never lands without its
+    reason), then the cancel and clear_caps. Reversible: reopen to undo, and a
+    reopen WINS: the step0_canceled flag makes step 0 stand down for that
+    ticket here and in the worker (round 2, minor 5). A step-0 capout that
+    step 0 no longer stops is released, never climbed (round 2, finding 1)."""
+    entry = read_ledger().get(issue) or {}
+    if entry.get("step0_canceled"):
+        return release_step0(issue, apply, "reopened after a step-0 cancel, so step 0 stands down") \
+            if step0_capout(entry) else ""
     res = step0().check(issue, (t or {}).get("text") or (t or {}).get("title") or "")
     say(res["line"])
     if res["decision"] != "stop":
-        return ""
+        return release_step0(issue, apply, "step 0 no longer stops it") if step0_capout(entry) else ""
     if not apply:
         return f"[dry] {issue}: rung 0 would cancel it, already built: {', '.join(res['cites'])}"
+    branch = f"{LANE_PREFIX}{issue.lower()}"
+    if pr and pr["headRefName"].lower() == branch and not close_pr(
+            slug, pr, f"Closed by {JOB}, rung 0: {issue} is canceled as already built. "
+                      f"Branch {branch} is kept. Reopen the ticket to undo."):
+        return f"{issue}: rung 0 could not close PR #{pr['number']}; nothing canceled, the next run retries"
+    rc, out = run(SYNC + ["progress", issue, res["comment"], "--agent", "sana"])
+    if rc != 0:
+        return f"{issue}: rung 0 could not post its reason ({out[-120:]}); nothing canceled, the next run retries"
     if not lin("state", issue=issue, type="canceled"):
-        return f"{issue}: rung 0 could not cancel it; the cap stays and the next run retries"
-    run(SYNC + ["progress", issue, res["comment"], "--agent", "sana"])
+        return f"{issue}: rung 0 posted its reason but the cancel failed; the next run retries"
+    ledger(["claim-flag", issue, "step0_canceled"])
     clear_caps(issue)
     report.append({"issue": issue, "rung": 0, "decision": "CLOSE", "cites": res["cites"]})
     return f"{issue}: rung 0 CLOSE (Canceled, already built: {', '.join(res['cites'])})"
@@ -1113,7 +1140,9 @@ def rung0_now(issue: str, apply: bool) -> int:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            say(f"{issue}: a cap-ladder run holds the lock; that run takes rung 0")
+            # That run read the ledger before its lock, so it may not see this
+            # capout (round 2, minor 4); the worker calls --rung0 every tick.
+            say(f"{issue}: a cap-ladder run holds the lock; the worker's next tick calls --rung0 again")
             return 0
         t = ticket(issue)
         if not owned_open(t):
@@ -1123,8 +1152,13 @@ def rung0_now(issue: str, apply: bool) -> int:
         if not sigs:
             say(f"{issue}: no cap on record; nothing to do")
             return 0
+        pr, slug = None, ""
+        for tg in targets():
+            for cand in open_prs(tg["slug"]):
+                if issue_of_branch(cand.get("headRefName", "")) == issue:
+                    pr, slug = cand, tg["slug"]
         report: list = []
-        say(rung_zero(issue, sigs, t, report, apply)
+        say(rung_zero(issue, sigs, t, pr, slug, report, apply)
             or f"{issue}: step 0 passes now; the nightly run takes rung 1 as for any cap")
     return 0
 
@@ -1149,8 +1183,8 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
     r = int(row.get("rung", 0)) + 1
     kind = sigs[0].split(":", 1)[0]
     why = f"{kind} cap ({', '.join(s.split(':', 1)[0] for s in sigs)})"
-    if r == 1:
-        stopped = rung_zero(issue, sigs, t, report, apply)
+    if r == 1 or step0_capout(read_ledger().get(issue) or {}):
+        stopped = rung_zero(issue, sigs, t, pr, slug, report, apply)
         if stopped:
             return stopped
     if not apply:

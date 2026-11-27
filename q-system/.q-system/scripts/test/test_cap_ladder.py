@@ -1245,13 +1245,59 @@ def case_step0(script: Path = LADDER) -> None:
               "rung 0 would cancel it" in out and "review-tier.py" in out and not writes(env), out[-400:])
         out = ladder(env, "--apply", script=script)
         progress = [c for c in log(env, "sync") if c[0] == "progress" and "Canceled at step 0" in c[2]]
-        check("step0: --apply cancels before rung 1: no RCA, no PR closed, one comment naming the file",
+        gh = log(env, "gh")
+        check("step0: --apply cancels before rung 1: no RCA, the lane PR closed (branch kept, none reopened), "
+              "one comment naming the file",
               not any(c[:2] == ["--kind", "rca"] for c in log(env, "fable"))
-              and not any("close" in c for c in log(env, "gh"))
+              and any("close" in c and "10" in c for c in gh)
+              and not any("--delete-branch" in c or "create" in c for c in gh)
               and any(w.get("op") == "state" and w.get("type") == "canceled" for w in writes(env))
-              and len(progress) == 1 and "review-tier.py" in progress[0][2], (out[-300:], writes(env)))
-        check("step0: the cap is cleared, so the ticket does not sit in the ladder",
-              not ledger_row(env, "ASK-1").get("capout"), ledger_row(env, "ASK-1"))
+              and len(progress) == 1 and "review-tier.py" in progress[0][2], (out[-300:], gh, writes(env)))
+        check("step0: the cap is cleared and step0_canceled is set, so the ticket does not sit in the ladder",
+              not ledger_row(env, "ASK-1").get("capout") and ledger_row(env, "ASK-1").get("step0_canceled"),
+              ledger_row(env, "ASK-1"))
+        # Round 2, minor 5: a reopen wins. The worker writes a fresh step-0 capout;
+        # the ladder releases it and cancels nothing a second time.
+        reset(env)
+        at(env, 1)
+        led(env, "record-capout", "ASK-1", "step 0: already built: q-system/.q-system/scripts/review-tier.py")
+        out = ladder(env, "--apply", script=script)
+        check("step0: after a reopen, a fresh step-0 capout is released: no second cancel, no comment, no RCA",
+              not writes(env) and not log(env, "sync") and not log(env, "fable")
+              and not ledger_row(env, "ASK-1").get("capout"), (out[-300:], writes(env)))
+    with tempfile.TemporaryDirectory() as td:
+        # Round 2, finding 1: a step-0 capout that step 0 no longer stops (the
+        # title changed) is released, never climbed into a paid RCA.
+        env = make_world(Path(td))
+        led(env, "record-capout", "ASK-1", "step 0: already built: q-system/.q-system/scripts/review-tier.py")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a step-0 capout step 0 no longer stops is released: no RCA, no PR touched, no comment",
+              not log(env, "fable") and not any("close" in c for c in log(env, "gh")),
+              out[-300:])
+        check("step0: ... and the capout is gone and no rung is spent",
+              not ledger_row(env, "ASK-1").get("capout") and not log(env, "fable") and not log(env, "sync")
+              and "released" in out, (out[-300:], ledger_row(env, "ASK-1")))
+    with tempfile.TemporaryDirectory() as td:
+        # The same release on a ticket ALREADY past rung 1: a step-0 capout is
+        # step 0's own at any rung, never a paid rung 2 RCA.
+        env = make_world(Path(td))
+        Path(env["CAP_LADDER_STATE"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(env["CAP_LADDER_STATE"]).write_text(json.dumps({"ASK-1": {"rung": 1, "last_at": "2026-11-01T04:40:00+00:00"}}))
+        led(env, "record-capout", "ASK-1", "step 0: already built: q-system/.q-system/scripts/review-tier.py")
+        out = ladder(env, "--apply", script=script)
+        check("step0: at rung 1 already, a step-0 capout step 0 no longer stops is released, no rung 2 RCA",
+              not log(env, "fable") and not ledger_row(env, "ASK-1").get("capout") and "released" in out, out[-300:])
+    with tempfile.TemporaryDirectory() as td:
+        # Round 2, finding 2: the reason is posted before the cancel; a failed post cancels nothing.
+        env = make_world(Path(td))
+        (Path(td) / "badsync").write_text("import sys\nsys.exit(1)\n")
+        env["CAP_LADDER_SYNC"] = f"{sys.executable} {td}/badsync"
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a failed reason post cancels nothing and keeps the cap for the next run",
+              not any(w.get("op") == "state" for w in writes(env)) and ledger_row(env, "ASK-1").get("capout")
+              and "nothing canceled" in out, (out[-300:], writes(env)))
     with tempfile.TemporaryDirectory() as td:
         # --rung0 (founder 2026-11-27, no waits for a time of day): the worker's
         # call cancels a built ticket in the same tick and touches no other cap.
