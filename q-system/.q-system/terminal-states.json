@@ -825,46 +825,6 @@
       }
     },
     {
-      "id": "dispatch-plan-weekly-stop",
-      "source": "kipi-dispatch",
-      "class": "infra-retry",
-      "marker": "PLAN USAGE: $PLAN_GATE_LINE; no run",
-      "sites": 1,
-      "what": "The plan's weekly usage is at or past the founder's 45% stop line (RULE-2026-11-26-PLAN45). The tick starts nothing and pages nobody: it is the expected weekly state, not a defect.",
-      "consumer": "com.kipi.dispatch -- every tick re-reads plan_usage_gate.py; the weekly reset drops usage under the line and the next tick runs on its own",
-      "liveness_check": {
-        "kind": "launchd",
-        "label": "com.kipi.dispatch",
-        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
-        "max_age_s": 3600
-      },
-      "reentry": {
-        "path": "kipi-dispatch.sh",
-        "marker": "PLAN_GATE_LINE=\"$(python3 \"$PLAN_GATE\"",
-        "why": "The gate is re-read on every tick, so the stop lifts by itself once the seven-day window resets."
-      }
-    },
-    {
-      "id": "dispatch-plan-usage-unreadable",
-      "source": "kipi-dispatch",
-      "class": "infra-failure",
-      "marker": "PLAN USAGE: $PLAN_GATE_LINE (rc=",
-      "sites": 1,
-      "what": "plan_usage_gate.py could not read the plan's weekly usage (no token, HTTP error, bad body), so the fleet stops (fails closed, RULE-2026-11-26-PLAN45) and pages plan-usage-unreadable once.",
-      "consumer": "com.kipi.dispatch -- every tick re-reads the gate; Sana's Linear triage gets the one page via slack-notify.sh, and page_clear turns the recovery into silence",
-      "liveness_check": {
-        "kind": "launchd",
-        "label": "com.kipi.dispatch",
-        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
-        "max_age_s": 3600
-      },
-      "reentry": {
-        "path": "kipi-dispatch.sh",
-        "marker": "PLAN_GATE_LINE=\"$(python3 \"$PLAN_GATE\"",
-        "why": "A transient read failure clears on the next tick without anything acting; a lasting one stays paged until fixed."
-      }
-    },
-    {
       "id": "dispatch-memory-gate",
       "source": "kipi-dispatch",
       "class": "transient",

@@ -103,9 +103,6 @@ run_gate() {
     export KIPI_FLEET_EVENTS="${GATE_EVENTS:-$WORK/$label-events.jsonl}"
     export KIPI_FLEET_STATE="$state"
     export KIPI_DISPATCH_RESET_HOUR=7
-    # The key gate runs only with the key path on since the plan became the default
-    # (RULE-2026-11-26-PLAN45); every case here is about that gate.
-    export KIPI_FLEET_API_KEYS=1
     . "$GATE"
     echo "through keys=${KIPI_FLEET_API_KEYS:-unset}" > "$WORK/$label.through" ) >"$WORK/$label.out" 2>&1
 }
@@ -397,7 +394,7 @@ pb_case pbnone NOFILE
 # A key with credit: the file is never read, keys stay on.
 KIPI_FLEET_PLAN_BILLING_FILE="$WORK/pbfuture-pb" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 \
   KIPI_FLEET_NOW="$NOW12" run_gate pbcredit
-if through pbcredit && grep -q 'keys=1' "$WORK/pbcredit.through" \
+if through pbcredit && grep -q 'keys=unset' "$WORK/pbcredit.through" \
    && ! paged "$WORK/pbcredit-pages" "PLAN BILLING"; then
   ok "case 13d: a key with credit ignores the file"
 else

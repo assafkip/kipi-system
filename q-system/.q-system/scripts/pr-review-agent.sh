@@ -187,13 +187,8 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ]; then
   FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
   [ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
 else
-  # Through the shim when it is here, so the 45% weekly stop applies (RULE-2026-11-26-PLAN45).
-  if [ -f "$SCRIPT_DIR/fleet-claude.sh" ]; then
-    FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-bash $SCRIPT_DIR/fleet-claude.sh}"
-  else
-    echo "pr-review-agent: KIPI_FLEET_API_KEYS=0 and no fleet-claude.sh -- the review bills the PLAN with no weekly stop" >&2
-    FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
-  fi
+  echo "pr-review-agent: KIPI_FLEET_API_KEYS=0 -- the review bills the PLAN, not the API credit" >&2
+  FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
 fi
 CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
