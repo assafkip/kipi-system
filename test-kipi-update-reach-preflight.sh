@@ -51,11 +51,6 @@ build_fleet() {
   cp "$REAL"/*.py "$REAL"/*.sh "$skel/" 2>/dev/null
   cp "$REAL"/*.json "$REAL"/*.yml "$skel/" 2>/dev/null
   cp -R "$REAL/plugins" "$skel/plugins" 2>/dev/null
-  # The updater reads the skeleton's .gitignore AFTER the first instance's sync
-  # and exits when it is absent. A one-instance fixture never got that far, so it
-  # never needed it; a two-instance fixture (case B4) stopped after "clean" and
-  # never reached "second", which read as the fix not working (ASK-5795).
-  cp "$REAL/.gitignore" "$skel/.gitignore" 2>/dev/null
   chmod +x "$skel/kipi-update.sh"
   g init -q "$skel" && g -C "$skel" add -A && g -C "$skel" commit -qm init
 
@@ -151,7 +146,7 @@ has "$OUT" "NOT UPDATED" && has "$OUT" "- second" \
   && ok "the summary names the skipped instance" || bad "summary does not name it"
 [ "$RC" -ne 0 ] && ok "exit is non-zero ($RC), so the skip is never silent" \
   || bad "exit 0 with a skipped instance: silent"
-has "$ERR" "second" && ok "the skip reached stderr" || bad "nothing on stderr about the skip"
+has "$ERR" "second SKIPPED UNWRITTEN" && ok "the skip reached stderr" || bad "nothing on stderr about the skip"
 
 echo "== B5. --only the blocked instance: still ABORT (nothing else to run) =="
 SK="$(build_fleet "$T/b5" WOULD-SYNC BLOCKED-FLEET)"
@@ -261,6 +256,8 @@ else
   has "$OUT" "--- clean (" \
     && bad "the mutant SURVIVED: the good instance still ran under abort-all" \
     || ok "the mutant is killed: abort-all stops the good instance"
+  has "$OUT" "ABORT:" && ok "and it stopped by ABORT, not by an unrelated fixture failure" \
+    || bad "the good instance did not run, but not by ABORT: case G proves nothing"
 fi
 
 echo ""

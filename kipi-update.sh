@@ -2364,8 +2364,9 @@ fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
 # `never-commit` paths are untracked INSIDE the instance loop (ASK-605), so an
 # instance blocked by nothing else must not abort the run before that loop. The
 # first version of that fix aborted the whole fleet here (PR #430 review). A
-# MIXED instance still aborts: fleet-unblock clears its other paths, and on the
-# next run it is never-commit-only, so this cannot deadlock.
+# MIXED instance aborts a run scoped to it with --only; in a fleet run it is
+# skipped and reported (ASK-5795), and fleet-unblock clears its other paths so
+# the next run sees it never-commit-only.
 def _in_loop_only(r):
     kinds = {b.get("kind") for b in (r.get("blocked_by") or [])}
     return bool(kinds) and kinds <= {"never-commit"}
@@ -2471,7 +2472,7 @@ while IFS='|' read -r name path prefix itype declared; do
   fi
   echo "--- $name ($itype) ---"
   if [ -n "${GATED_FILE:-}" ] && grep -qxF -- "$name" "$GATED_FILE" 2>/dev/null; then
-    SKIP_WHY="$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' "$GATED_FILE.why" 2>/dev/null)"
+    SKIP_WHY="$(awk -F'\t' -v n="$name" '$1 == n { print $2; exit }' "$GATED_FILE.why" 2>/dev/null || true)"
     SKIP_WHY="${SKIP_WHY:-blocked by its own pre-commit gate (named in the reach preflight above)}"
     echo "  SKIPPED UNWRITTEN: $SKIP_WHY"
     echo "kipi-update: $name SKIPPED UNWRITTEN: $SKIP_WHY" >&2
