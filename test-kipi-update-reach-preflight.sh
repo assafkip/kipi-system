@@ -51,6 +51,11 @@ build_fleet() {
   cp "$REAL"/*.py "$REAL"/*.sh "$skel/" 2>/dev/null
   cp "$REAL"/*.json "$REAL"/*.yml "$skel/" 2>/dev/null
   cp -R "$REAL/plugins" "$skel/plugins" 2>/dev/null
+  # The updater reads the skeleton's .gitignore AFTER the first instance's sync
+  # and exits when it is absent. A one-instance fixture never got that far, so it
+  # never needed it; a two-instance fixture (case B4) stopped after "clean" and
+  # never reached "second", which read as the fix not working (ASK-5795).
+  cp "$REAL/.gitignore" "$skel/.gitignore" 2>/dev/null
   chmod +x "$skel/kipi-update.sh"
   g init -q "$skel" && g -C "$skel" add -A && g -C "$skel" commit -qm init
 
@@ -104,6 +109,14 @@ build_fleet() {
 }
 
 run_update() { local skel="$1"; shift; ( cd "$skel" && ./kipi-update.sh --dry-run "$@" 2>&1 ); }
+# Sets OUT (stdout+stderr), ERR (stderr alone) and RC (the exit code).
+run_update_rc() {
+  local skel="$1"; shift
+  local e="$T/err.$$"
+  OUT="$( cd "$skel" && ./kipi-update.sh --dry-run "$@" 2>"$e"; echo "RC=$?" )"
+  RC="${OUT##*RC=}"; OUT="${OUT%RC=*}"
+  ERR="$(cat "$e")"; OUT="$OUT$ERR"
+}
 
 echo "== A. clean fleet: the verdict prints and the run proceeds =="
 SK="$(build_fleet "$T/a" WOULD-SYNC)"
@@ -113,13 +126,38 @@ has "$OUT" "reach preflight: 1 of 1 clear of dirty-tree blockers" \
   || bad "no verdict on a clean fleet"
 has "$OUT" "ABORT:" && bad "a clean fleet was refused" || ok "a clean fleet is not refused"
 
-echo "== B. BLOCKED-FLEET: refuse before any instance is touched =="
+echo "== B. BLOCKED-FLEET, whole fleet: skip the blocked one, never abort the run =="
+# ASK-5795 scar (2026-11-27): ONE instance (one client instance, a token-guard.py
+# edit the skeleton never wrote) aborted the unattended 08:00 run for all 15, so
+# 7 instances went without voice-send-check.py for 9 days. fleet-unblock rightly
+# refuses what it cannot attribute, so the abort could never clear itself.
 SK="$(build_fleet "$T/b" BLOCKED-FLEET)"
 OUT="$(run_update "$SK")"
 has "$OUT" "clean: BLOCKED by updater exhaust" \
-  && ok "names the blocked instance" || bad "did NOT refuse on updater exhaust"
-has "$OUT" "--- clean" && bad "entered an instance despite a known blocker" \
-  || ok "no instance was entered"
+  && ok "names the blocked instance" || bad "did NOT report the updater exhaust"
+has "$OUT" "ABORT:" && bad "a fleet run aborted over one blocked instance" \
+  || ok "no fleet-wide abort"
+
+echo "== B4. one good + one BLOCKED-FLEET: the good one syncs, the blocked one is reported =="
+SK="$(build_fleet "$T/b4" WOULD-SYNC BLOCKED-FLEET)"
+run_update_rc "$SK"
+has "$OUT" "ABORT:" && bad "aborted the whole fleet" || ok "no abort"
+has "$OUT" "--- clean (" && ok "the good instance was entered and synced" \
+  || bad "the good instance never ran: one blocker stopped the fleet"
+has "$OUT" "--- second" && has "$OUT" "SKIPPED UNWRITTEN: blocked by updater exhaust" \
+  && ok "the blocked instance is skipped, with its reason" \
+  || bad "the blocked instance was not skipped with a reason"
+has "$OUT" "NOT UPDATED" && has "$OUT" "- second" \
+  && ok "the summary names the skipped instance" || bad "summary does not name it"
+[ "$RC" -ne 0 ] && ok "exit is non-zero ($RC), so the skip is never silent" \
+  || bad "exit 0 with a skipped instance: silent"
+has "$ERR" "second" && ok "the skip reached stderr" || bad "nothing on stderr about the skip"
+
+echo "== B5. --only the blocked instance: still ABORT (nothing else to run) =="
+SK="$(build_fleet "$T/b5" WOULD-SYNC BLOCKED-FLEET)"
+OUT="$(run_update "$SK" --only second)"
+has "$OUT" "ABORT:" && ok "a run aimed at the blocked instance still refuses" \
+  || bad "scoped run on a blocked instance did not refuse"
 has "$OUT" "fleet-unblock.py --apply" && ok "names the remedy" || bad "no remedy named"
 
 echo "== B2. BLOCKED-FOUNDER alone must NOT refuse (review finding 1) =="
@@ -202,6 +240,27 @@ else
   has "$OUT" "BLOCKED by updater exhaust" \
     && bad "the mutant SURVIVED: the refusal fires without the call site" \
     || ok "the mutant is killed: no call site, no refusal"
+fi
+
+echo "== G. MUTATION: restore abort-all, case B4 must go RED (ASK-5795) =="
+SK="$(build_fleet "$T/g" WOULD-SYNC BLOCKED-FLEET)"
+BEFORE="$(wc -c < "$SK/kipi-update.sh")"
+python3 - "$SK/kipi-update.sh" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+needle = "sys.exit(3 if (gated and only) else (2 if (fleet and only) else 0))"
+assert needle in s, "mutation target not found; the mutant was NOT applied"
+p.write_text(s.replace(needle, "sys.exit(3 if (gated and only) else (2 if fleet else 0))"))
+PY
+AFTER="$(wc -c < "$SK/kipi-update.sh")"
+if [ "$BEFORE" -eq "$AFTER" ]; then
+  bad "mutant not applied (byte count unchanged) -- case G proves nothing"
+else
+  ok "mutant applied ($BEFORE -> $AFTER bytes)"
+  run_update_rc "$SK"
+  has "$OUT" "--- clean (" \
+    && bad "the mutant SURVIVED: the good instance still ran under abort-all" \
+    || ok "the mutant is killed: abort-all stops the good instance"
 fi
 
 echo ""
