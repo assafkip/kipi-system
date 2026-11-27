@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "slug": "wire-improve-ground-gate",
+  "reason": "ASK-5804: founder 2026-11-26, \"I dont want just a memory note - it needs a hook.\" Wires improve-ground-gate.py PreToolUse on Write in both settings files, so improve_ground.py runs on its own before a new script, hook or gate file is created. Timeout 10s; improve_ground measured 0.55 to 1.08s and the hook caps it at 5s. Additive insert_after only.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/improve-ground-gate.py",
+      "q-system/.q-system/tests/test_improve_ground_gate.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "read-first-gate.py\\\"\",\n            \"timeout\": 10\n          }\n        ]\n      },\n",
+      "insert": "      {\n        \"matcher\": \"Write\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/improve-ground-gate.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/improve-ground-gate.py\\\"\",\n            \"timeout\": 10\n          }\n        ]\n      },\n",
+      "reason": "Runs improve_ground before a new file under scripts/, plugins/*/hooks|scripts or ~/.config/kipi is created; blocks on already-built."
+    },
+    {
+      "file": "settings-template.json",
+      "op": "insert_after",
+      "anchor": "read-first-gate.py\\\"\",\n            \"timeout\": 10\n          }\n        ]\n      },\n",
+      "insert": "      {\n        \"matcher\": \"Write\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/improve-ground-gate.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/improve-ground-gate.py\\\"\",\n            \"timeout\": 10\n          }\n        ]\n      },\n",
+      "reason": "The template pair, so kipi update ships the switch and not only the script."
+    }
+  ]
+}
