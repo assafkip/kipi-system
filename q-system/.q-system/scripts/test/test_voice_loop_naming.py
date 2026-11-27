@@ -59,3 +59,64 @@ def test_the_rule_names_its_own_enforcer_and_id():
     text = RULE.read_text()
     assert "Rule-ID: RULE-2026-11-18-VOICELOOP-NAMING" in text
     assert "Enforced by:" in text and "test_voice_loop_naming.py" in text
+
+
+# ---------------------------------------------------------------------------
+# ASK-5783: the two sections below had no Rule-ID line, so rule_gate.py stripped them after
+# every tool call and claude-integrity-tripwire.py restored them and called it unsanctioned:
+# an endless loop. Each section now carries its own id, and the id is only honest if the
+# section's claims are true, so each test also opens the thing the section names.
+SECTION_IDS = {
+    "## Naming (ASK-5398)": "RULE-2026-11-26-VOICELOOP-NAMING-SECTION",
+    "## What the status does and does not cover": "RULE-2026-11-26-VOICELOOP-STATUS-COVERAGE",
+}
+PLUGIN_SCRIPTS = REPO / "plugins" / "kipi-core" / "scripts"
+
+
+def section(text: str, heading: str) -> str:
+    """Body of one `## ` section, up to the next `## ` heading or the end."""
+    lines = text.splitlines()
+    start = lines.index(heading)
+    body = []
+    for ln in lines[start + 1:]:
+        if ln.startswith("## "):
+            break
+        body.append(ln)
+    return "\n".join(body)
+
+
+def test_section_helper_stops_at_the_next_heading():
+    # control: the helper must not leak a later section's id into an earlier one.
+    doc = "## A\nx\n## B\nRule-ID: Z\n"
+    assert "Rule-ID" not in section(doc, "## A")
+    assert "Rule-ID: Z" in section(doc, "## B")
+
+
+def test_each_section_carries_its_own_id_and_enforcer():
+    text = RULE.read_text()
+    for heading, rid in SECTION_IDS.items():
+        body = section(text, heading)
+        assert f"Rule-ID: {rid}" in body, (heading, rid)
+        assert "Enforced by: q-system/.q-system/scripts/test/test_voice_loop_naming.py" in body, heading
+        assert text.count(rid) == 1, rid  # ids are unique across the file
+
+
+def test_naming_section_claims_are_true():
+    gate = PLUGIN_SCRIPTS / "voice_full_gate.py"
+    assert gate.is_file()
+    assert re.search(r"^def check\(", gate.read_text(), re.M)
+    # gate_draft lives in the consulting repo, so voice_full_gate.py is its named wrapper, not its home.
+    assert "gate_draft" in gate.read_text()
+    shim = SCRIPTS / "voice-send-check.py"
+    assert shim.is_file() and "voice_send_check.py" in shim.read_text()
+    assert (PLUGIN_SCRIPTS / "voice_send_check.py").is_file()
+    assert "voice-send-check.py" in section(RULE.read_text(), "## Naming (ASK-5398)")
+
+
+def test_status_coverage_section_claims_are_true():
+    pinned = SCRIPTS / "test" / "test_voiceloop_band_lint.py"
+    assert pinned.is_file()
+    lint = SCRIPTS / "voiceloop-band-lint.py"
+    assert 'SKIP_MARKER = "voiceloop-band-lint-skip"' in lint.read_text()
+    body = section(RULE.read_text(), "## What the status does and does not cover")
+    assert "test_voiceloop_band_lint.py" in body
