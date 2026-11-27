@@ -258,6 +258,12 @@ def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
     if not (isinstance(t, int) and TIMEOUT_MIN_S <= t <= TIMEOUT_MAX_S):
         errors.append(f"timeout_s out of bounds [{TIMEOUT_MIN_S},{TIMEOUT_MAX_S}]: {p}")
     validate_quarantine(entry, errors)
+    # ASK-5808: `serial: true` takes a test out of the pool. It is the answer to
+    # "fails only when pooled", never a quiet skip, so it must carry its reason.
+    if "serial" in entry:
+        reason = entry.get("serial_reason")
+        if entry["serial"] is not True or not (isinstance(reason, str) and reason.strip()):
+            errors.append(f"serial must be true and come with a non-empty serial_reason: {p}")
 
 
 # A declared test's runner has to be the one that actually EXECUTES it.
@@ -790,12 +796,85 @@ def failure_tail(text):
                       f"last {TAIL_LINES} lines:", *tail])
 
 
+CAPGATE_WORKERS_ENV = "KIPI_CAPGATE_WORKERS"
+DEFAULT_CAPGATE_WORKERS = 4
+# A typo like 4000 would launch that many test subprocesses at once and the first
+# failed Popen would exit 1, which is this gate's own RED code (PR #900 review,
+# minor 2). Clamped with a note, never silently.
+MAX_CAPGATE_WORKERS = 16
+
+
+def capgate_workers():
+    """(pool size, note-or-None). 1 means serial. A bad value falls back to the
+    default WITH a note: a typo in CI must not silently turn into a 40 minute
+    serial run, and must not crash the gate either."""
+    raw = os.environ.get(CAPGATE_WORKERS_ENV)
+    if raw is None or raw.strip() == "":
+        return DEFAULT_CAPGATE_WORKERS, None
+    try:
+        n = int(raw)
+        if n < 1:
+            raise ValueError(raw)
+        if n > MAX_CAPGATE_WORKERS:
+            return MAX_CAPGATE_WORKERS, (
+                f"{CAPGATE_WORKERS_ENV}={raw!r} is above the cap, "
+                f"using {MAX_CAPGATE_WORKERS}")
+        return n, None
+    except ValueError:
+        return DEFAULT_CAPGATE_WORKERS, (
+            f"{CAPGATE_WORKERS_ENV}={raw!r} is not a positive integer, "
+            f"using {DEFAULT_CAPGATE_WORKERS}")
+
+
+def run_jobs(jobs, root, env, workers):
+    """Run (path, cmd, timeout, serial) jobs; return results in JOB order.
+
+    run_contained is untouched: it already drains its own pipes on threads and
+    owns its process group, so one call per worker is safe. A `serial: true`
+    entry runs alone, after the pool has drained, for a test that cannot share
+    the machine. workers == 1 takes the plain loop, so "1 means serial" is the
+    old code path and not a pool of one.
+    """
+    results = [None] * len(jobs)
+
+    def one(i):
+        _path, cmd, timeout, _serial = jobs[i]
+        return run_contained(cmd, root, env, timeout)
+
+    pooled = [i for i, j in enumerate(jobs) if not j[3]]
+    alone = [i for i, j in enumerate(jobs) if j[3]]
+    if workers <= 1 or len(pooled) <= 1:
+        for i in pooled:
+            results[i] = one(i)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        # Ctrl-C waits for in-flight tests (bounded by each timeout_s) on purpose
+        # (PR #900 review, minor 3, rejected): shutdown(wait=False) would leave
+        # their process groups running with nobody to reap them, which is the
+        # orphan leak run_contained exists to prevent. CI cancel kills the runner.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for i, r in zip(pooled, pool.map(one, pooled)):
+                results[i] = r
+    for i in alone:
+        results[i] = one(i)
+    return results
+
+
 def run_tests(root, manifest, mode, errors, notes, only=None):
     skeleton_only = set(manifest.get("skeleton_only", []))
     # KIPI_TEST=1: the shell suites' "under a test" signal (pytest sets its own).
     # attempts-ledger.py refuses a live-ledger write while it is set (ASK-4052).
     env = dict(os.environ, QROOT=str(root / "q-system"), KIPI_TEST="1")
     ran = quarantined = skipped = not_selected = 0
+    # PLAN FIRST, RUN SECOND (ASK-5808). Measured 2026-11-27: this loop was 2,562 s
+    # of a 25 to 43 min `Skeleton Validation`, 266 tests one subprocess at a time
+    # on a 4-core runner. The plan pass keeps every decision that reads the
+    # manifest (select, quarantine, zero-execution) in manifest order and records
+    # each as a slot; only the subprocess runs go to the pool. Results are folded
+    # back into errors/notes from THIS thread in slot order, so the output is the
+    # serial output apart from timing. Workers never touch errors/notes/ran.
+    slots = []   # ("note"|"error", text) or ("job", index into jobs)
+    jobs = []    # (path, cmd, timeout, serial)
     for entry in manifest.get("expected_tests", []):
         path = entry.get("path", "")
         if only is not None and path not in only:
@@ -807,18 +886,18 @@ def run_tests(root, manifest, mode, errors, notes, only=None):
         q = entry.get("quarantine")
         if q:
             quarantined += 1
-            notes.append(f"QUARANTINED (until {q['expires']}, {q['spillover_id']}): "
-                         f"{path} — {q['reason']}")
+            slots.append(("note", f"QUARANTINED (until {q['expires']}, {q['spillover_id']}): "
+                                  f"{path} — {q['reason']}"))
             continue
         full = root / path
         if not full.is_file():
             continue  # already reported by the diff
         if executes_nothing(entry, full):
-            errors.append(
+            slots.append(("error",
                 f"zero-execution test: {path} defines test functions but has "
                 f"no __main__ block, so `python3 {path}` binds them and exits "
                 f"0 without running one. Declare runner pytest, or add a "
-                f"__main__ entry point (ASK-1145).")
+                f"__main__ entry point (ASK-1145)."))
             continue
         runner = entry["runner"]
         if runner == "pytest":
@@ -831,18 +910,33 @@ def run_tests(root, manifest, mode, errors, notes, only=None):
         else:
             cmd = ["bash", str(full)]
         timeout = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
-        r = run_contained(cmd, root, env, timeout)
-        if r.timed_out:
-            # the partial output often names the hang (a prompt, a URL being
-            # polled) — discarding it made timeouts undiagnosable (codex,
-            # sag-runner-contract)
-            tail = failure_tail(r.stdout + r.stderr)
-            errors.append(f"test-timeout ({timeout}s): {path}" + (f"\n{tail}" if tail else ""))
-            continue
-        ran += 1
-        if r.returncode != 0:
-            tail = failure_tail(r.stdout + r.stderr)
-            errors.append(f"test-failed rc={r.returncode}: {path}\n{tail}")
+        slots.append(("job", len(jobs)))
+        jobs.append((path, cmd, timeout, entry.get("serial") is True))
+
+    workers, workers_note = capgate_workers()
+    if workers_note:
+        notes.append(workers_note)
+    results = run_jobs(jobs, root, env, workers)
+
+    for kind, val in slots:
+        if kind == "note":
+            notes.append(val)
+        elif kind == "error":
+            errors.append(val)
+        else:
+            path, _cmd, timeout, _serial = jobs[val]
+            r = results[val]
+            if r.timed_out:
+                # the partial output often names the hang (a prompt, a URL being
+                # polled) — discarding it made timeouts undiagnosable (codex,
+                # sag-runner-contract)
+                tail = failure_tail(r.stdout + r.stderr)
+                errors.append(f"test-timeout ({timeout}s): {path}" + (f"\n{tail}" if tail else ""))
+                continue
+            ran += 1
+            if r.returncode != 0:
+                tail = failure_tail(r.stdout + r.stderr)
+                errors.append(f"test-failed rc={r.returncode}: {path}\n{tail}")
     notes.append(f"tests: ran={ran} quarantined={quarantined} "
                  f"skipped-skeleton-only={skipped}"
                  + (f" not-selected-for-this-diff={not_selected}" if only is not None else ""))

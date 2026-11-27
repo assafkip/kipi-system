@@ -4,7 +4,7 @@
 Every section builds a THROWAWAY sandbox repo in a tempdir and runs the real
 gate against it via subprocess — never against the live repo (fable-discipline
 test isolation). Sections map to the PRD's binding contracts and are
-selectable: --only schema|overlay|quarantine|wiring|runner|mode|negative-proof.
+selectable: --only schema|overlay|quarantine|wiring|runner|mode|negative-proof|pool.
 
 The negative-proof section is the F-matrix (finding-7): F1 undeclared-caught,
 F3 skeleton-only skip + undeclared-fails-in-instance, F2 unwired-caught,
@@ -95,9 +95,9 @@ def entry(rel, **kw):
     return e
 
 
-def run_gate(root, *args):
+def run_gate(root, *args, env=None):
     r = subprocess.run([sys.executable, str(GATE), "--repo-root", str(root), *args],
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True, timeout=120, env=env)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -943,6 +943,119 @@ def sec_diff_scope():
         check("only: refuses --diff-base alongside", rc == 2 and "pass one" in out)
 
 
+def sec_pool():
+    """ASK-5808: the declared tests run in a bounded pool, and nothing a reader
+    of the serial output relied on moves. Each case pins one decision point; the
+    barrier case is the one a pool of one cannot pass, so forcing the size to 1
+    (the mutant) turns it red and not merely slower."""
+    import os
+    barrier = (
+        'import os, sys, time\n'
+        'd = os.environ["BARRIER_DIR"]\n'
+        'open(os.path.join(d, os.path.basename(__file__)), "w").close()\n'
+        # 5 s, not 20: the workers=1 mutant case waits this out once per test, and
+        # the file's own timeout_s is 180 (PR #900 review, minor 1).
+        'end = time.time() + 5\n'
+        'while time.time() < end:\n'
+        '    if len(os.listdir(d)) >= 4:\n'
+        '        sys.exit(0)\n'
+        '    time.sleep(0.1)\n'
+        'print("barrier-never-met-xyz"); sys.exit(1)')
+
+    def barrier_repo(tmp, workers):
+        root = make_repo(tmp)
+        rels = [add_test(root, f"q-system/.q-system/scripts/test_bar{i}.py", barrier)
+                for i in range(4)]
+        write_manifest(root, base_manifest(expected_tests=[entry(r) for r in rels]))
+        bdir = pathlib.Path(tmp) / "barrier"
+        bdir.mkdir()
+        env = dict(os.environ, BARRIER_DIR=str(bdir), KIPI_CAPGATE_WORKERS=str(workers))
+        return root, env
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root, env = barrier_repo(tmp, 4)
+        rc, out = run_gate(root, env=env)
+        check("pool: 4 tests that need each other all pass at workers=4", rc == 0)
+    with tempfile.TemporaryDirectory() as tmp:
+        root, env = barrier_repo(tmp, 1)
+        rc, out = run_gate(root, env=env)
+        check("pool: MUTANT workers=1 turns the concurrency pin RED",
+              rc == 1 and "barrier-never-met-xyz" in out)
+
+    def mixed_repo(tmp):
+        root = make_repo(tmp)
+        ok1 = add_test(root, "q-system/.q-system/scripts/test_ok1.py")
+        bad = add_test(root, "q-system/.q-system/scripts/test_bad.py",
+                       'print("boom-detail-xyz"); import sys; sys.exit(3)')
+        hang = add_test(root, "q-system/.q-system/scripts/test_hang.py",
+                        'print("hanging-on-xyz", flush=True)\nimport time; time.sleep(30)')
+        ok2 = add_test(root, "q-system/.q-system/scripts/test_ok2.py")
+        write_manifest(root, base_manifest(expected_tests=[
+            entry(ok1), entry(bad), entry(hang, timeout_s=5), entry(ok2)]))
+        return root
+
+    outs = {}
+    for w in (1, 4):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = mixed_repo(tmp)
+            rc, out = run_gate(root, env=dict(os.environ, KIPI_CAPGATE_WORKERS=str(w)))
+            # the two runs use two tempdirs; the path is the only thing allowed to differ
+            outs[w] = (rc, out.replace(tmp, "TMP"))
+    rc4, out4 = outs[4]
+    check("pool: a failing and a timed-out entry are both reported at workers=4",
+          rc4 == 1 and "test-failed rc=3" in out4 and "boom-detail-xyz" in out4
+          and "test-timeout (5s)" in out4 and "hanging-on-xyz" in out4)
+    check("pool: errors keep manifest order (failed before timed-out)",
+          out4.index("test_bad.py") < out4.index("test_hang.py"))
+    check("pool: ran= counts only completed tests (2 ok + 1 failed, timeout excluded)",
+          "ran=3" in out4)
+    check("pool: output is byte-identical to the serial path",
+          outs[1] == outs[4])
+
+    # Two tests that fight over one directory stand in for a test that writes a
+    # shared repo path or a fixed /tmp name. `serial: true` is the answer the
+    # ticket asks for, not a skip, and it has to actually separate them.
+    excl = ('import os, sys, time\n'
+            'lock = os.environ["LOCK_DIR"]\n'
+            'try:\n    os.mkdir(lock)\nexcept FileExistsError:\n'
+            '    print("shared-path-clash-xyz"); sys.exit(1)\n'
+            'time.sleep(1.5)\nos.rmdir(lock)')
+    for serial, expect_rc in ((False, 1), (True, 0)):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_repo(tmp)
+            a = add_test(root, "q-system/.q-system/scripts/test_ex1.py", excl)
+            b = add_test(root, "q-system/.q-system/scripts/test_ex2.py", excl)
+            kw = ({"serial": True, "serial_reason": "both mkdir one shared lock dir"}
+                  if serial else {})
+            write_manifest(root, base_manifest(expected_tests=[entry(a, **kw), entry(b, **kw)]))
+            env = dict(os.environ, LOCK_DIR=str(pathlib.Path(tmp) / "lock"),
+                       KIPI_CAPGATE_WORKERS="4")
+            rc, out = run_gate(root, env=env)
+            check(f"pool: two clashing tests {'with' if serial else 'without'} "
+                  f"serial: true -> rc {expect_rc}", rc == expect_rc)
+    for kw, expect in (({"serial": True}, 1), ({"serial": True, "serial_reason": "  "}, 1),
+                       ({"serial": "yes", "serial_reason": "x"}, 1),
+                       ({"serial": True, "serial_reason": "writes a fixed path"}, 0)):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_repo(tmp)
+            t = add_test(root, "q-system/.q-system/scripts/test_ok.py")
+            write_manifest(root, base_manifest(expected_tests=[entry(t, **kw)]))
+            rc, out = run_gate(root, "--check-only")
+            check(f"pool: serial entry {sorted(kw)} validates rc {expect}"
+                  + (" (reason named)" if expect == 1 else ""),
+                  rc == expect and (expect == 0 or "serial_reason" in out))
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        t = add_test(root, "q-system/.q-system/scripts/test_ok.py")
+        write_manifest(root, base_manifest(expected_tests=[entry(t)]))
+        rc, out = run_gate(root, env=dict(os.environ, KIPI_CAPGATE_WORKERS="banana"))
+        check("pool: a bad KIPI_CAPGATE_WORKERS falls back with a note, not a crash",
+              rc == 0 and "KIPI_CAPGATE_WORKERS='banana'" in out)
+        rc, out = run_gate(root, env=dict(os.environ, KIPI_CAPGATE_WORKERS="4000"))
+        check("pool: KIPI_CAPGATE_WORKERS=4000 is clamped to 16 with a note",
+              rc == 0 and "above the cap, using 16" in out)
+
+
 SECTIONS = {
     "schema": sec_schema, "overlay": sec_overlay, "replay": sec_replay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
@@ -950,6 +1063,7 @@ SECTIONS = {
     "skeleton_only_absent": sec_skeleton_only_absent,
     "scan-scope": sec_scan_scope,
     "diff-scope": sec_diff_scope,
+    "pool": sec_pool,
 }
 
 

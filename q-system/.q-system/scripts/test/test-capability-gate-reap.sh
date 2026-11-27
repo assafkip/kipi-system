@@ -111,8 +111,13 @@ pgrep -f "sleep $HANG_SENTINEL" >/dev/null 2>&1 \
 ok "timeout kills the whole process group, grandchildren included"
 
 # --- wiring: the unit above is the one the gate actually uses -----------------
-grep -q 'r = run_contained(' "$GATE" \
-  || fail "run_tests no longer calls run_contained; this suite would be testing dead code"
+# ASK-5808: the call moved from run_tests into run_jobs so the pool can reach it.
+# Both halves are pinned, or a rename of either would leave this suite testing
+# a run_contained nothing calls.
+grep -q 'return run_contained(cmd, root, env, timeout)' "$GATE" \
+  || fail "run_jobs no longer calls run_contained; this suite would be testing dead code"
+grep -q 'results = run_jobs(jobs, root, env, workers)' "$GATE" \
+  || fail "run_tests no longer hands its jobs to run_jobs; run_contained is unreachable"
 grep -q 'start_new_session=True' "$GATE" \
   || fail "no start_new_session: without its own session there is no group to kill"
 grep -q 'os.killpg' "$GATE" || fail "gate no longer kills the process group"
