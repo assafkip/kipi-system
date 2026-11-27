@@ -54,6 +54,14 @@ def fixture(tmp, landed_days_ago):
     run(["git", "config", "remote.origin.url", url], env, shared)
     run(["git", "config", f"url.{origin}.insteadOf", url], env, shared)
     run(["git", "checkout", "-q", "-b", "a feature branch"], env, shared)
+    # The stranded sync commit also DELETES a tracked file. Real shape, not
+    # hypothetical: on one client instance, one of the 19 unlanded updater
+    # commits (ca8a02ed, 2026-11-09) carried rule_gate's deletion of 5
+    # .claude/rules files that origin/main still has. A lander that pushed the
+    # shared branch's commits would land that deletion. This lander cuts from
+    # origin and re-runs the updater, so neither the added nor the deleted side
+    # can reach the PR.
+    run(["git", "rm", "-q", "synced-old.txt"], env, shared)
     commit(shared, env, TAG, time.time(), "synced-new.txt")
     (shared / "README").write_text("human edit, uncommitted")
     (shared / "case-051").mkdir()
@@ -111,6 +119,14 @@ case "$1 $2" in "pr list") echo 0;; "pr create") echo https://github.com/acme/in
     branches = run(["git", "branch", "--list", "kipi/skeleton-sync-*"], env, origin).stdout.split()
     assert branches, "no landing branch reached origin"
     files = run(["git", "ls-tree", "-r", "--name-only", branches[-1]], env, origin).stdout
+    # DELETION FIRST, and on its own line. The stranded commit removed
+    # synced-old.txt on the shared branch; it is still on the landing branch,
+    # because the branch was cut from origin and never merged that history.
+    # Asserted before the add-side check because losing a file main still has is
+    # the worse outcome, and a combined `and` would short-circuit this away: the
+    # worktree-base mutant trips the add-side clause first and this would never
+    # be reached.
+    assert "synced-old.txt" in files, "a stranded deletion reached the landing branch"
     assert "q-system/new.txt" in files and "synced-new.txt" not in files
     after = {k: run(["git", *a], env, shared).stdout for k, a in {
         "head": ["rev-parse", "HEAD"], "branch": ["symbolic-ref", "--short", "HEAD"],
