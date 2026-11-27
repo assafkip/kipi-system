@@ -238,8 +238,9 @@ class PlanUsageGate(unittest.TestCase):
         src = (REPO / "kipi-dispatch.sh").read_text()
         lines = [ln for ln in src.splitlines() if "page_once plan-usage-unreadable" in ln]
         self.assertEqual(len(lines), 1, lines)
-        self.assertNotIn("$PLAN_GATE_LINE", lines[0])
-        self.assertNotIn("$PLAN_GATE_RC", lines[0])
+        # By name, not by spelling: ${PLAN_GATE_LINE} interpolates too (PR #887 round 2).
+        self.assertNotIn("PLAN_GATE_LINE", lines[0])
+        self.assertNotIn("PLAN_GATE_RC", lines[0])
 
     def test_tmpdir_holding_home_is_not_a_temp_root(self):
         # TMPDIR=$HOME made the real install under ~/.local read as a fake (round 3 minor).
