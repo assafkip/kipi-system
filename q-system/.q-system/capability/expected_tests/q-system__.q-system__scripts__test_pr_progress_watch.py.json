@@ -2,5 +2,6 @@
   "path": "q-system/.q-system/scripts/test_pr_progress_watch.py",
   "runner": "pytest",
   "serial": true,
+  "serial_reason": "wall-clock deadline and stall assertions (1s per minute) turn flaky under 4-worker pool contention",
   "timeout_s": 120
 }
