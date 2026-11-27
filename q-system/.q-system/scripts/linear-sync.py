@@ -853,7 +853,9 @@ def worker_history(state_dir: str, identifier: str) -> str:
     a person working in their own checkout updates nothing on the ticket. A row
     in the attempts ledger is proof the fleet worker, the redrives or converge
     took the issue, so a started ticket WITHOUT one was started by someone the
-    fleet cannot see, and nothing here may release it. Measured 2026-11-06: none
+    fleet cannot see. Since ASK-5845 that alone no longer holds it forever:
+    started_hold_reason releases it after 24h of age AND 6h without a Linear
+    update, a lane marker, a live claim or an open PR. Measured 2026-11-06: none
     of the 19 lane tickets ASK-3815 to ASK-3833 has a row; every started ticket
     the fleet worked (ASK-2058, ASK-1876, ASK-2810, ASK-3036, ASK-142, ASK-767)
     has one. FAIL CLOSED: an unreadable ledger proves nothing.
@@ -874,15 +876,51 @@ def worker_history(state_dir: str, identifier: str) -> str:
             "proves nobody is on it")
 
 
+# A STARTED TICKET THE FLEET NEVER RAN IS ABANDONED AFTER 6 QUIET HOURS (ASK-5845).
+# This used to hold it forever: "no worker history" was a hold, so a ticket a
+# session started and then walked away from sat In Progress for good. Measured
+# 2026-11-27: 36 owner:sana tickets started, 30 with no Linear update for 2 to 36
+# days, and the worker logged that hold 222 times in 4000 lines. The lane worry
+# that motivated the hold is covered by positive signals, so a clock plus
+# absence is enough: a lane writes a marker (lane_marker), a run holds a claim
+# (live_claim), a PR holds the ticket (open_prs), and a person at work touches
+# the ticket (updatedAt). Any of the four holds it.
+STARTED_ABANDONED_QUIET_HOURS = 6
+NO_HISTORY_PREFIX = "no worker history"
+ISSUE_UPDATED_Q = """query($id:String!){issue(id:$id){updatedAt}}"""
+
+
+def quiet_hours(issue: dict, now) -> tuple:
+    """(hours since the last Linear update, "") or (0.0, why it is unknown).
+
+    The worker board page does not select updatedAt (linear-worker.sh is owned
+    by another change), so a missing field is read per candidate here. FAIL
+    CLOSED: a read that fails or returns no stamp is "unknown", never "quiet".
+    """
+    stamp = issue.get("updatedAt")
+    if not stamp:
+        try:
+            data = graphql(ISSUE_UPDATED_Q, {"id": issue.get("id") or issue.get("identifier") or ""}) or {}
+        except Exception as exc:
+            return 0.0, f"its last update could not be read ({str(exc)[:120]})"
+        stamp = (data.get("issue") or {}).get("updatedAt")
+    updated = _parse_stamp(stamp)
+    if updated is None:
+        return 0.0, "Linear gave no updatedAt, so its quiet time is unknown"
+    return (now - updated).total_seconds() / 3600.0, ""
+
+
 def started_hold_reason(issue: dict, now=None, state_dir: str = "") -> str:
     """"" when a STARTED issue is abandoned and a drain may take it; else why not.
 
-    Abandoned means ALL of: started longer than STARTED_STALE_HOURS ago, the
-    fleet has run it before (worker_history), no live worker claim on its tree,
-    and no open PR. `state_dir` is the worker's KIPI_STATE_DIR: its worktrees/
-    and its attempts ledger are both read from there. Cheap checks first; the
-    Linear read runs only for a ticket that passed every local one. Any doubt
-    holds the ticket (fail closed).
+    Two ways to be abandoned. The fleet ran it (a ledger row): started longer
+    than STARTED_STALE_HOURS ago, no live worker claim, no open PR. The fleet
+    never ran it: no Linear update for STARTED_ABANDONED_QUIET_HOURS, no lane
+    marker, no live claim, no open PR. `state_dir` is the worker's
+    KIPI_STATE_DIR: its worktrees/ and its attempts ledger are both read from
+    there. Cheap checks first; the Linear reads run only for a ticket that
+    passed every local one. Any doubt holds the ticket (fail closed): an
+    unreadable or missing ledger is NOT "no history", it holds.
     """
     if ((issue.get("state") or {}).get("type") or "") != "started":
         return "not in a started state"
@@ -890,16 +928,34 @@ def started_hold_reason(issue: dict, now=None, state_dir: str = "") -> str:
     started = _parse_stamp(issue.get("startedAt"))
     if started is None:
         return "Linear gave no startedAt, so its age is unknown"
+    ident = issue.get("identifier") or ""
+    history = worker_history(state_dir, ident)
+    never_ran = history.startswith(NO_HISTORY_PREFIX)
+    if history and not never_ran:
+        return history
     hours = (now - started).total_seconds() / 3600.0
+    # The 24h lane window applies to EVERY started ticket, ledger row or not
+    # (PR #906 review, finding 1): updatedAt equals startedAt on a ticket a person
+    # moved by hand, so the 6h quiet clock alone would be a 6h window, and a lane
+    # that has not yet pushed a PR would get an agent on top of it. The measured
+    # abandoned tickets are 2 to 36 days old, far past it.
     if hours < STARTED_STALE_HOURS:
         return (f"started {hours:.1f}h ago, inside the {STARTED_STALE_HOURS}h window "
                 f"a lane gets before the worker may take it")
-    history = worker_history(state_dir, issue.get("identifier") or "")
-    if history:
-        return history
-    claim = live_claim(os.path.join(state_dir, "worktrees"), issue.get("identifier") or "")
+    if never_ran:
+        marker = lane_marker(ident, now)
+        if marker:
+            return marker
+    claim = live_claim(os.path.join(state_dir, "worktrees"), ident)
     if claim:
         return claim
+    if never_ran:
+        quiet, unknown = quiet_hours(issue, now)
+        if unknown:
+            return unknown
+        if quiet < STARTED_ABANDONED_QUIET_HOURS:
+            return (f"{NO_HISTORY_PREFIX}, but updated {quiet:.1f}h ago, inside the "
+                    f"{STARTED_ABANDONED_QUIET_HOURS}h quiet window")
     try:
         prs = open_prs(issue.get("id") or issue.get("identifier") or "")
     except Exception as exc:

@@ -6,9 +6,10 @@
      origin/main, never from the shared checkout.
      Install: install-plist.sh com.kipi.cap-ladder, with its pinned flag.
 
-     04:40 on purpose: after the DoR drafter (03:00) and the worktree reaper (04:10),
-     and before the 07:00 budget reset, so a cap re-entered tonight is in the first
-     dispatches of the next budget day. The limit bounds the Fable RCA calls a night.
+     EVERY 2 HOURS (ASK-5845, was daily 04:40): a capped PR waited up to 24h for its
+     next rung, and a live run on it added another day. The 04:40 slot protected
+     nothing: the limit, not the clock, bounds the Fable RCA calls, so a limit of 5 stays
+     and it now bounds each run. StartInterval 7200 seconds.
      No double hyphen in this comment: XML forbids one there. -->
 <plist version="1.0">
 <dict>
@@ -18,7 +19,7 @@
     <string>/bin/bash</string><string>-lc</string>
     <string>cd __KIPI_REPO__ &amp;&amp; python3 q-system/.q-system/scripts/cap-ladder.py --apply --limit 5</string>
   </array>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>40</integer></dict>
+  <key>StartInterval</key><integer>7200</integer>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>__HOME__/.config/kipi/cap-ladder.out</string>
   <key>StandardErrorPath</key><string>__HOME__/.config/kipi/cap-ladder.err</string>

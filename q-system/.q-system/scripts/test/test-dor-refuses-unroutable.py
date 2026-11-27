@@ -186,8 +186,11 @@ def run_started(mod, label):
         started("ASK-821", 1, desc="a lane moved this to In Progress an hour ago"),
         started("ASK-822", 24 * 30, desc="## Definition of Ready\nOutcome: x",
                 labels=(mod.NEEDS_SCOPE_LABEL,)),
-        started("ASK-823", 24 * 30, desc="a lane moved this by hand a month ago"),
+        started("ASK-823", 24 * 30, desc="a person started this and touched it an hour ago"),
     ]
+    # ASK-5845: no fleet history is held only while Linear saw an update inside 6h.
+    # Set it on the node so the hold is for that reason, never "no updatedAt".
+    board[3]["updatedAt"] = (now - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
 
     def fake_graphql(query, variables):
         if "attachments(" in query:
@@ -223,7 +226,7 @@ def run_started(mod, label):
         bad("leaves an hour-old started ticket alone (ASK-821)",
             "the drafter would rewrite a live lane ticket")
     if "ASK-823" not in got:
-        ok("leaves alone a month-old started ticket the fleet never ran (ASK-823, no worker history)")
+        ok("leaves alone a started ticket the fleet never ran that Linear updated an hour ago (ASK-823)")
     else:
         bad("leaves a ticket with no worker history alone (ASK-823)",
             "the drafter would rewrite a ticket a lane or a person started")

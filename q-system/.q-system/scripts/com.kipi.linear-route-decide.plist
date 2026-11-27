@@ -7,7 +7,8 @@
      origin/main, never from the shared checkout.
      Install: install-plist.sh com.kipi.linear-route-decide.
 
-     05:20 after cap-ladder (04:40), so the two model passes never overlap.
+     05:20. Cap-ladder now runs every 2 hours (ASK-5845), so the two model passes
+     can overlap; the daily model cap bounds the spend, not the schedule.
      The limit bounds the model calls a night. Measured 2026-11-09 02:36Z, 20
      report-only asks: the board walk 18s, a median decision 9s, and 2 asks hit
      the 180s timeout, so 20 took 10.5 minutes. The 350 tickets no rule routes

@@ -1791,15 +1791,16 @@ def test_apply_routes_a_dormant_in_progress_ticket_back_to_backlog(tmp_path):
     m = json.loads(res.stdout)
     assert m["dormant_threshold_days"] == 7
     assert m["dormant_started"] == ["ASK-30", "ASK-31", "ASK-35"], m
-    assert m["dormant_routed"] == ["ASK-30"], m
-    assert "no worker history" in m["dormant_route_held"]["ASK-35"], m
+    # ASK-5845: ASK-35 has no marker, claim, PR or update for 6h, so it is routed.
+    assert m["dormant_routed"] == ["ASK-30", "ASK-35"], m
+    assert "ASK-35" not in m["dormant_route_held"], m
     assert "ASK-31" in m["dormant_route_held"], m
     assert "sana/ask-31-lane" in m["dormant_route_held"]["ASK-31"], m
     assert m["started_owner_sana"] and "ASK-32" in m["started_owner_sana"], m
     states = [w for w in fx.writes if w[0] == "state"]
-    assert states == [("state", "ASK-30", "backlog")], fx.writes
+    assert states == [("state", "ASK-30", "backlog"), ("state", "ASK-35", "backlog")], fx.writes
     comments = [w for w in fx.writes if w[0] == "comment"]
-    assert len(comments) == 1 and comments[0][1] == "ASK-30", fx.writes
+    assert [c[1] for c in comments] == ["ASK-30", "ASK-35"], fx.writes
     body = comments[0][2]
     assert "\n" not in body, body
     assert "Back to Backlog from In Progress. Exit: dormant (no activity in 30 days" in body, body
@@ -1813,7 +1814,7 @@ def test_report_only_routes_nothing_and_says_what_it_would(tmp_path):
         fx.close()
     assert res.returncode == health.EXIT_OK, res.stdout + res.stderr
     m = json.loads(res.stdout)
-    assert m["dormant_would_route"] == ["ASK-30"], m
+    assert m["dormant_would_route"] == ["ASK-30", "ASK-35"], m
     assert m["dormant_routed"] == [], m
     assert fx.writes == [], fx.writes
 
@@ -1830,8 +1831,8 @@ def test_a_routed_ticket_is_not_routed_twice(tmp_path):
     finally:
         fx.close()
     assert first.returncode == health.EXIT_OK and second.returncode == health.EXIT_OK
-    assert before == 2 and len(fx.writes) == 2, fx.writes
-    assert json.loads(second.stdout)["dormant_started"] == ["ASK-31", "ASK-35"]
+    assert before == 4 and len(fx.writes) == 4, fx.writes
+    assert json.loads(second.stdout)["dormant_started"] == ["ASK-31"]
 
 
 def test_mutant_that_skips_the_hold_rule_is_caught(tmp_path):

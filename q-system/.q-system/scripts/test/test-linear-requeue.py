@@ -63,7 +63,11 @@ class Recorder:
     """Answers the queries requeue makes, records every mutation."""
 
     def __init__(self, state="started", update_ok=True, comment_ok=True, states=None,
-                 attachments=None, fail_attachments=False):
+                 attachments=None, fail_attachments=False, updated_at=None,
+                 fail_updated=False):
+        # Default: updated 30 days before NOW, so a ticket with no history is quiet.
+        self.updated_at = updated_at or (NOW - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+        self.fail_updated = fail_updated
         self.state = state
         self.update_ok, self.comment_ok = update_ok, comment_ok
         self.states = states if states is not None else [
@@ -88,6 +92,10 @@ class Recorder:
             if self.fail_attachments:
                 raise RuntimeError("fixture: attachments unavailable")
             return {"issue": {"attachments": {"nodes": self.attachments}}}
+        if "updatedAt" in query:
+            if self.fail_updated:
+                raise RuntimeError("fixture: updatedAt unavailable")
+            return {"issue": {"updatedAt": self.updated_at}}
         names = {"started": "In Progress", "backlog": "Backlog", "completed": "Done",
                  "canceled": "Canceled"}
         return {"issue": {"id": "uuid-1", "identifier": "ASK-1",
@@ -256,9 +264,11 @@ check(got == "", "an empty claim file (a released claim) does not", got)
 print("== worker history (the positive release signal)")
 mod = with_recorder(Recorder())
 os.remove(claim)
-got = mod.started_hold_reason(started(24 * 30, ident="ASK-2"), NOW, trees)
+fresh = (NOW - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+mod_fresh = with_recorder(Recorder(updated_at=fresh))
+got = mod_fresh.started_hold_reason(started(24 * 30, ident="ASK-2"), NOW, trees)
 check("no worker history" in got,
-      "a month-old started ticket the fleet never ran is held (a lane or a person started it)", got)
+      "a started ticket the fleet never ran is held while Linear updated it inside 6h", got)
 empty_state = tempfile.mkdtemp()
 got = mod.started_hold_reason(started(24 * 30), NOW, empty_state)
 check("no attempts ledger here" in got, "no ledger file proves nothing, so it holds", got)
@@ -268,15 +278,66 @@ got = mod.started_hold_reason(started(24 * 30), NOW, trees)
 check("unreadable" in got, "a corrupt ledger holds it (fail closed)", got)
 with open(LEDGER, "w") as fh:
     json.dump({"ASK-1": {}}, fh)
-got = mod.started_hold_reason(started(24 * 30), NOW, trees)
+got = mod.worker_history(trees, "ASK-1")
 check("no worker history" in got, "an empty row is no history", got)
 with open(LEDGER, "w") as fh:
     json.dump({"ASK-1": {"rounds": 1}}, fh)
 got = mod.started_hold_reason(started(24 * 30), NOW, trees)
 check(got == "", "with a row back, the same ticket is released", got)
 
+print("== abandoned: no fleet history, quiet 6h (ASK-5845)")
+# ASK-7 has no ledger row, no marker, no claim. Each case changes ONE thing.
+quiet_state = tempfile.mkdtemp()
+os.makedirs(os.path.join(quiet_state, "worktrees"))
+with open(os.path.join(quiet_state, "linear-worker-attempts.json"), "w") as fh:
+    json.dump({"ASK-1": {"rounds": 1}}, fh)
+lanes = tempfile.mkdtemp()
+os.environ["KIPI_LANES_DIR"] = lanes
+
+
+def abandoned_case(mod_):
+    # Month-old startedAt: past the 24h lane window, so these cases test the 6h quiet rule.
+    return mod_.started_hold_reason(started(24 * 30, ident="ASK-7"), NOW, quiet_state)
+
+
+got = abandoned_case(with_recorder(Recorder()))
+check(got == "", "stale, no history, no marker, no claim, no PR: released", got)
+
+got = abandoned_case(with_recorder(Recorder(updated_at=fresh)))
+check("quiet window" in got, "a fresh Linear update holds it", got)
+
+got = abandoned_case(with_recorder(Recorder(attachments=[
+    {"url": "https://github.com/x/r/pull/5", "metadata": {"status": "open", "branch": "lane"}}])))
+check("open PR https://github.com/x/r/pull/5" in got, "an open PR holds it", got)
+
+with open(os.path.join(lanes, "ASK-7.json"), "w") as fh:
+    json.dump({"agent": "lane-a", "until": (NOW + timedelta(hours=2)).isoformat()}, fh)
+got = abandoned_case(with_recorder(Recorder()))
+check("lane marker" in got, "a live lane marker holds it", got)
+os.remove(os.path.join(lanes, "ASK-7.json"))
+
+got = abandoned_case(with_recorder(Recorder(fail_updated=True)))
+check("could not be read" in got, "an unreadable updatedAt holds it (fail closed)", got)
+
+exact = (NOW - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+got = abandoned_case(with_recorder(Recorder(updated_at=exact)))
+check(got == "", "exactly 6h quiet is released (threshold inclusive)", got)
+
+got = with_recorder(Recorder()).started_hold_reason(started(12, ident="ASK-7"), NOW, quiet_state)
+check("inside the 24h window" in got,
+      "a never-run ticket started 12h ago is held by the 24h lane window even when quiet", got)
+
 print("== negative self-test")
 src = open(SYNC).read()
+thr = "if quiet < STARTED_ABANDONED_QUIET_HOURS:"
+if thr not in src:
+    bad("threshold anchor present", "the 6h check moved; update this self-test")
+else:
+    thr_path = os.path.join(tempfile.mkdtemp(), "linear-sync.py")
+    with open(thr_path, "w") as fh:
+        fh.write(src.replace(thr, "if quiet < 0:"))
+    got = abandoned_case(with_recorder(Recorder(updated_at=fresh), load(thr_path, "ls_thr_mutant")))
+    check(got == "", "mutant killed: with the 6h threshold gone a fresh update no longer holds, so the fresh case can fail", got)
 anchor = '''    if (state.get("type") or "") != "started":
         return "unchanged",'''
 if anchor not in src:

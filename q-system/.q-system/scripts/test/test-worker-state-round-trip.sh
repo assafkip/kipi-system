@@ -68,6 +68,9 @@ def issue(ident, state, started_hours=None, project="kipi-system"):
             "description": "## Definition of Ready\nOutcome: x",
             "state": {"name": NAMES[state], "type": state},
             "startedAt": ago(started_hours) if started_hours is not None else None,
+            # Linear stamps updatedAt on the move that sets startedAt, so a ticket
+            # nobody touched since has updatedAt == startedAt (PR #906 review r2).
+            "updatedAt": ago(started_hours) if started_hours is not None else None,
             "project": {"name": project}, "team": {"id": "team-fixture"},
             "labels": {"nodes": [{"id": "lab-sana", "name": "owner:sana"}]}}
 
@@ -346,14 +349,11 @@ picked ASK-959 && bad "control: a completed ticket is never picked" "ASK-959 pic
 # claim, no PR, and no row in the attempts ledger: a lane or a person started
 # it, and the clock alone must not hand it to the fleet.
 if picked ASK-962; then
-  bad "case 10: a ticket the fleet never ran is not released by age alone" \
-      "THE DEFECT: ASK-962 (hand-moved 30 days ago, no worker history) was picked"
+  ok "case 10: a month-old ticket the fleet never ran, quiet 6h or more, is released (ASK-5845)"
 else
-  ok "case 10: a ticket the fleet never ran is not released by age alone"
+  bad "case 10: an abandoned no-history ticket is released" \
+      "THE DEFECT: ASK-962 was held forever (no worker history)"
 fi
-grep -q 'ASK-962 (no worker history: started outside the fleet worker' <<<"$held_line" \
-  && ok "case 10b: the held line says there is no worker history" \
-  || bad "case 10b: the held line names the missing history" "held line: $held_line"
 if picked ASK-963; then
   bad "case 11: a fleet ticket started an hour ago waits out the window" "ASK-963 picked"
 else
@@ -480,13 +480,13 @@ cp "$REPO_SCRIPTS/linear-sync.py" "$MUT/linear-sync.py"
 python3 - "$MUT/linear-sync.py" <<'MUTC'
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = '    history = worker_history(state_dir, issue.get("identifier") or "")'
+old = '    never_ran = history.startswith(NO_HISTORY_PREFIX)'
 assert old in s, "mutation anchor missing"
-open(p, "w").write(s.replace(old, '    history = ""'))
+open(p, "w").write(s.replace(old, '    never_ran = False'))
 MUTC
 M="$(dry_with "$MUT")"
-grep -q '\[dry\] would work ASK-962 ' <<<"$M" \
-  && ok "mutant killed: without the history rule the month-old lane ticket ASK-962 is picked, so case 10 can go red" \
+! grep -q '\[dry\] would work ASK-962 ' <<<"$M" \
+  && ok "mutant killed: with the old forever hold back ASK-962 is not picked, so case 10 can go red" \
   || bad "mutant 9c survived" "case 10 cannot tell the history rule from none"
 
 echo
