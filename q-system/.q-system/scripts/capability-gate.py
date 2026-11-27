@@ -798,6 +798,10 @@ def failure_tail(text):
 
 CAPGATE_WORKERS_ENV = "KIPI_CAPGATE_WORKERS"
 DEFAULT_CAPGATE_WORKERS = 4
+# A typo like 4000 would launch that many test subprocesses at once and the first
+# failed Popen would exit 1, which is this gate's own RED code (PR #900 review,
+# minor 2). Clamped with a note, never silently.
+MAX_CAPGATE_WORKERS = 16
 
 
 def capgate_workers():
@@ -811,6 +815,10 @@ def capgate_workers():
         n = int(raw)
         if n < 1:
             raise ValueError(raw)
+        if n > MAX_CAPGATE_WORKERS:
+            return MAX_CAPGATE_WORKERS, (
+                f"{CAPGATE_WORKERS_ENV}={raw!r} is above the cap, "
+                f"using {MAX_CAPGATE_WORKERS}")
         return n, None
     except ValueError:
         return DEFAULT_CAPGATE_WORKERS, (
@@ -840,6 +848,10 @@ def run_jobs(jobs, root, env, workers):
             results[i] = one(i)
     else:
         from concurrent.futures import ThreadPoolExecutor
+        # Ctrl-C waits for in-flight tests (bounded by each timeout_s) on purpose
+        # (PR #900 review, minor 3, rejected): shutdown(wait=False) would leave
+        # their process groups running with nobody to reap them, which is the
+        # orphan leak run_contained exists to prevent. CI cancel kills the runner.
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for i, r in zip(pooled, pool.map(one, pooled)):
                 results[i] = r

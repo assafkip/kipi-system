@@ -953,7 +953,9 @@ def sec_pool():
         'import os, sys, time\n'
         'd = os.environ["BARRIER_DIR"]\n'
         'open(os.path.join(d, os.path.basename(__file__)), "w").close()\n'
-        'end = time.time() + 20\n'
+        # 5 s, not 20: the workers=1 mutant case waits this out once per test, and
+        # the file's own timeout_s is 180 (PR #900 review, minor 1).
+        'end = time.time() + 5\n'
         'while time.time() < end:\n'
         '    if len(os.listdir(d)) >= 4:\n'
         '        sys.exit(0)\n'
@@ -1049,6 +1051,9 @@ def sec_pool():
         rc, out = run_gate(root, env=dict(os.environ, KIPI_CAPGATE_WORKERS="banana"))
         check("pool: a bad KIPI_CAPGATE_WORKERS falls back with a note, not a crash",
               rc == 0 and "KIPI_CAPGATE_WORKERS='banana'" in out)
+        rc, out = run_gate(root, env=dict(os.environ, KIPI_CAPGATE_WORKERS="4000"))
+        check("pool: KIPI_CAPGATE_WORKERS=4000 is clamped to 16 with a note",
+              rc == 0 and "above the cap, using 16" in out)
 
 
 SECTIONS = {
