@@ -703,10 +703,31 @@ def lin(op: str, **kw):
     raise ValueError(op)
 
 
+def own_chain() -> set:
+    """The argv of this process and every ancestor, as `ps -o args=` prints it."""
+    chain, pid = set(), os.getpid()
+    for _ in range(16):
+        rc, line = run(["ps", "-o", "ppid=,args=", "-p", str(pid)], timeout=5)
+        ppid, _, args = line.strip().partition(" ")
+        if rc != 0 or not args:
+            break
+        chain.add(args.strip())
+        if not ppid.isdigit() or int(ppid) <= 1:
+            break
+        pid = int(ppid)
+    return chain
+
+
 def live(issue: str, pr: dict | None) -> bool:
     rc, table = run(PS, timeout=20)
     if rc != 0:
         return True   # cannot see the table: assume live, the cost is one night
+    # MY OWN CALL CHAIN IS NOT A SECOND WRITER (PR #899 round 1, finding 1).
+    # `cap-ladder.py --issue ASK-n`, and a worker run as `--issue ASK-n`,
+    # matched "--issue ASK-n" below, so the worker's same-tick call was held
+    # by itself on every tick. The suite's ps fixture never lists the caller.
+    chain = own_chain()
+    table = "\n".join(l for l in table.splitlines() if l.strip() not in chain)
     pats = [rf"converge\.sh\s+--issue\s+{issue}(\s|$)", rf"--issue\s+{issue}(\s|$)"]
     if pr:
         pats.append(rf"pr-review-agent\.sh\s+{pr['number']}(\s|$)")
@@ -955,6 +976,7 @@ def decide(issue: str, kind: str, why: str, pr: dict | None, slug: str, tgts: li
 
 
 CLOSE_FLAG = "close_reason_posted"
+PR_UNCLOSED = "RED: the cancel landed but the PR did not close"
 
 
 def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: int, row: dict) -> str:
@@ -1010,11 +1032,17 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
                 return f"{issue}: CLOSE could not post its reason ({out[-120:]}); nothing canceled, the next run retries"
         if not lin("state", issue=issue, type="canceled"):
             return f"{issue}: CLOSE posted its reason but the cancel failed; the cap stays and the next run retries"
-        if pr:
-            close_pr(slug, pr, f"Closed by {JOB}: {issue} CLOSE on cap ladder rung {r}. "
-                               f"Branch {pr['headRefName']} is kept. RCA: {rca_ref}.")
+        # A PR THAT WOULD NOT CLOSE IS RED, NOT SILENT (PR #899 round 1, finding
+        # 4). The ticket is canceled, so no later run revisits it; pr-owner.py
+        # closes a canceled ticket's PR (close-comment), and the report says so.
+        unclosed = bool(pr) and not close_pr(
+            slug, pr, f"Closed by {JOB}: {issue} CLOSE on cap ladder rung {r}. "
+                      f"Branch {pr['headRefName']} is kept. RCA: {rca_ref}.")
         ledger(["clear-flag", issue, CLOSE_FLAG])
         clear_caps(issue)
+        if unclosed:
+            return (f"{issue}: CLOSE (Canceled, RCA {rca_ref}); {PR_UNCLOSED} #{pr['number']}, "
+                    f"pr-owner.py closes a canceled ticket's PR")
         return f"{issue}: CLOSE (Canceled, RCA {rca_ref})"
     # BLOCKED-ON. The hold goes on FIRST: if it does not land, nothing is cleared,
     # so the cap record still keeps the worker off and the next run retries.
@@ -1170,6 +1198,11 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
         if d0:
             if not apply:
                 return f"[dry] {issue}: rung 0 would cancel it, already built: {', '.join(d0['cites'])}"
+            # The step-0 check takes up to KIPI_STEP0_TIMEOUT; a lane that started
+            # meanwhile wins, as at every other rung (PR #899 round 1, finding 3).
+            late = late_lane(issue, int(row.get("rung", 0)), report)
+            if late:
+                return late
             out = apply_decision(issue, d0, t, pr, slug, 0, row)
             if "retries" in out:
                 report.append({"issue": issue, "rung": 0, "decision": "CLOSE", "red": True, "note": out})
@@ -1179,7 +1212,8 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
             row.update(rung=0, last_at=now().isoformat(), handled=sigs,
                        decision={k: v for k, v in d0.items() if k != "comment"})
             state[issue] = row
-            report.append({"issue": issue, "rung": 0, "decision": "CLOSE", "cites": d0["cites"]})
+            report.append({"issue": issue, "rung": 0, "decision": "CLOSE", "cites": d0["cites"],
+                           **({"red": True, "note": out} if PR_UNCLOSED in out else {})})
             return f"{out} at rung 0, already built: {', '.join(d0['cites'])}"
     if not apply:
         return f"[dry] {issue}: would take rung {r} ({rung_name(r)}) on its {why}"
@@ -1394,7 +1428,9 @@ def main(argv=None) -> int:
             if args.apply:
                 write_state(state)
             say(f"run complete for {args.issue}: {len(caps)} capped, {done} climbed{'' if args.apply else ' (dry)'}")
-            return 0
+            # A RED ROW IS EXIT 1 (PR #899 round 1, finding 5): there is no report
+            # file here, so the caller's `|| WARN` is the only place it shows.
+            return 1 if any(r.get("red") for r in report) else 0
         # THE HELD TICKETS: no event, no run, one line naming what it waits on.
         for issue, row in sorted(state.items()):
             # A release keeps its ask open on purpose: the question is still real

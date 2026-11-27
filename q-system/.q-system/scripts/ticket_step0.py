@@ -98,8 +98,8 @@ def stop_comment(issue: str, cites: list, reason: str) -> str:
     named = ", ".join(f"`{c}`" for c in cites)
     return (f"**Canceled at step 0: {issue} asks to build something that exists.** improve_ground.py "
             f"names {named} ({reason}), and the title proposes building it. No build session or RCA "
-            "was spent on it. Reopen to undo; a reopened ticket whose title says what it needs beyond "
-            "that file passes step 0. (ticket_step0.py, ASK-5802)")
+            "was spent on it. Reopen to undo: step 0 then stands down for this ticket and the worker "
+            "takes it as written. (ticket_step0.py, ASK-5802)")
 
 
 BUILD_VERB = re.compile(r"^\W*(add|build|create|implement|introduce|write|make|ship|new)\b", re.IGNORECASE)

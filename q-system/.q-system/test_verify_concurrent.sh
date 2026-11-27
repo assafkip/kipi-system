@@ -180,6 +180,29 @@ if printf '%s' "$OUT" | grep -q 'NOTHING WAS CHECKED'; then
 else
   check "forced worktree clash: says no verdict reached" 0 1
 fi
+
+# --- CASE 5b: each run gets its own worktree admin name ---------------------
+# PR #899 verify, 2026-11-27: every run used "$TMP/wt", so concurrent runs raced
+# for .git/worktrees/wt and one read the other's half-written commondir ("failed
+# to read .../worktrees/wt/commondir", exit 1). The race is too rare to force,
+# so this pins its cause: two runs must hand git two different basenames.
+{
+  echo '#!/usr/bin/env bash'
+  echo 'prev=""; grab=""'
+  echo 'for a in "$@"; do'
+  echo '  if [ -n "$grab" ]; then echo "$a" >> "'"$D"'/wt-adds"; grab=""; fi'
+  echo '  if [ "$prev" = "add" ] && [ "$a" = "--detach" ]; then grab=1; fi'
+  echo '  prev="$a"'
+  echo 'done'
+  echo "exec $REALGIT \"\$@\""
+} > "$D/stub/git"
+chmod +x "$D/stub/git"
+: > "$D/wt-adds"
+for _ in 1 2; do ( cd "$D/wt-1" && PATH="$D/stub:$PATH" bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 ); done
+NAMES="$(while read -r p; do basename "$p"; done < "$D/wt-adds" | sort -u | wc -l | tr -d ' ')"
+ADDS="$(wc -l < "$D/wt-adds" | tr -d ' ')"
+check "two runs: two worktree adds seen" 2 "$ADDS"
+check "two runs: two distinct worktree admin names" 2 "$NAMES"
 rm -rf "$D"
 
 # --- CASE 6: no tracked .json is not a silent exit 1 ----------------------

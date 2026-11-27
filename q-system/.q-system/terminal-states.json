@@ -1411,7 +1411,8 @@
         "max_age_days": 28,
         "covers": [
           "attempts-cap-stuck",
-          "ladder-hold"
+          "ladder-hold",
+          "step0-already-built"
         ],
         "what": "A ticket whose 3 worker attempts are spent, or whose PR is capped (rounds, review rounds, rebase rounds, the review-redrive machine tier).",
         "exits": [

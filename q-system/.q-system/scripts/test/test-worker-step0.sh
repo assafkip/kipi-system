@@ -131,7 +131,7 @@ GOT1="$(picks "$(run_worker 1)")"
 [ ! -e "$WORK/state/linear-worker-attempts.json" ] || ! grep -q capout "$WORK/state/linear-worker-attempts.json" \
   && ok "a dry run records no capout for the stopped ticket (dry changes nothing)" \
   || bad "a dry run records no capout" "$(cat "$WORK/state/linear-worker-attempts.json")"
-printf '%s\n' "$OUT" | grep -q 'skip ASK-961: stopped at step 0, already built; cap-ladder.py rung 0 cancels it' \
+printf '%s\n' "$OUT" | grep -q 'skip ASK-961: stopped at step 0, already built; handed to cap-ladder.py rung 0' \
   && ok "the skip names cap-ladder.py as the next actor" \
   || bad "the skip names its consumer" "$(printf '%s\n' "$OUT" | grep -E 'skip ASK-961' | head -2)"
 

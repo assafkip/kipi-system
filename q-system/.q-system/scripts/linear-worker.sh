@@ -3002,7 +3002,7 @@ print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) i
       CAP_LADDER_ATTEMPTS="$ATTEMPTS" ${KIPI_CAP_LADDER:-python3 "$SCRIPT_DIR/cap-ladder.py"} --issue "$ISSUE" --apply >>"$LOG" 2>&1 \
         || say "WARN: cap-ladder.py --issue $ISSUE failed; its nightly run takes the capout"
     fi
-    say "skip $ISSUE: stopped at step 0, already built; cap-ladder.py rung 0 cancels it with the file named (this tick on --apply)"
+    say "skip $ISSUE: stopped at step 0, already built; handed to cap-ladder.py rung 0, which cancels it with the file named (its line above, or a WARN, says whether it did)"
     continue
   fi
 

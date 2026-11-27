@@ -32,6 +32,7 @@ from pathlib import Path
 SCRIPTS = Path(os.environ.get("CAP_LADDER_TEST_ROOT") or Path(__file__).resolve().parent.parent)
 LADDER = SCRIPTS / "cap-ladder.py"
 LEDGER = SCRIPTS / "attempts-ledger.py"
+STEP0_GROUND = SCRIPTS.parent.parent.parent / "plugins/kipi-core/skills/improve/scripts/improve_ground.py"
 FAILS: list = []
 
 
@@ -55,6 +56,8 @@ elif a[:2] == ["pr", "view"]:
     p = [p for p in w.get(slug, []) if str(p["number"]) == a[2]]
     print(p[0]["state"] if p else "CLOSED")
 elif a[:2] == ["pr", "close"]:
+    if w.get("close_fails"):
+        sys.stderr.write("HTTP 502: Bad Gateway\n"); sys.exit(1)
     for p in w.get(slug, []):
         if str(p["number"]) == a[2]:
             p["state"] = "CLOSED"
@@ -1349,6 +1352,57 @@ def case_step0(script: Path = LADDER) -> None:
             check(f"step0: --issue under a {guard} hold cancels nothing and closes no PR",
                   not writes(env) and not any("close" in c for c in log(env, "gh"))
                   and ledger_row(env, "ASK-1").get("capout"), (out[-300:], writes(env), log(env, "gh")))
+    with tempfile.TemporaryDirectory() as td:
+        # PR #899 round 1, finding 1: with the REAL process table, --issue saw its
+        # own argv ("--issue ASK-1") and held itself on every tick.
+        env = make_world(Path(td))
+        env["CAP_LADDER_PS"] = "ps -Ao args="
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+        check("step0: --issue under the real ps is not held by its own command line",
+              any(w.get("op") == "state" and w.get("type") == "canceled" for w in writes(env))
+              and "a run is live" not in out, (out[-300:], writes(env)))
+    with tempfile.TemporaryDirectory() as td:
+        # PR #899 round 1, finding 3: a lane that starts while step 0 runs wins.
+        # The stand-in check writes the marker, then answers like the real one.
+        env = make_world(Path(td))
+        ground = Path(td) / "lane_then_ground.py"
+        ground.write_text(
+            "import json, os, subprocess, sys\n"
+            f"d = {env['KIPI_LANES_DIR']!r}\nos.makedirs(d, exist_ok=True)\n"
+            "open(os.path.join(d, 'ASK-1.json'), 'w').write(json.dumps({'issue': 'ASK-1', 'agent': 'sana-lane1',"
+            " 'since': '2026-11-08T20:00:00Z', 'pr': '10', 'until': '2026-11-09T06:00:00Z'}))\n"
+            f"sys.exit(subprocess.run([sys.executable, {str(STEP0_GROUND)!r}] + sys.argv[1:]).returncode)\n")
+        env["KIPI_STEP0_GROUND"] = str(ground)
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a lane that starts during the step-0 check holds the cancel and the PR",
+              "STOP" in out and not writes(env) and not any("close" in c for c in log(env, "gh"))
+              and ledger_row(env, "ASK-1").get("capout"), (out[-300:], writes(env), log(env, "gh")))
+    with tempfile.TemporaryDirectory() as td:
+        # PR #899 round 1, findings 4 and 5: a PR that will not close is RED, and
+        # --issue exits 1 on a red row so the worker's `|| WARN` fires.
+        env = make_world(Path(td))
+        world = Path(td) / "gh-world.json"
+        wj = json.loads(world.read_text()); wj["close_fails"] = True; world.write_text(json.dumps(wj))
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        p = subprocess.run([sys.executable, str(script), "--issue", "ASK-1", "--apply"],
+                           env=env, capture_output=True, text=True, timeout=120)
+        check("step0: a PR that will not close is RED and --issue exits 1",
+              p.returncode == 1 and "PR did not close" in p.stdout + p.stderr
+              and any(w.get("op") == "state" for w in writes(env)), (p.returncode, (p.stdout + p.stderr)[-300:]))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        env["CAP_LADDER_LINEAR_FAIL"] = "state"
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        p = subprocess.run([sys.executable, str(script), "--issue", "ASK-1", "--apply"],
+                           env=env, capture_output=True, text=True, timeout=120)
+        check("step0: a failed cancel under --issue exits 1",
+              p.returncode == 1 and "cancel failed" in p.stdout + p.stderr, (p.returncode, (p.stdout + p.stderr)[-300:]))
     with tempfile.TemporaryDirectory() as td:
         # PR #893 round 3, minor 5: a step-0 release spends no RCA, so it takes no
         # --limit slot and a real cap still climbs the same night.
