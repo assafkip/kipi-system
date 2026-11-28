@@ -127,6 +127,19 @@ def test_the_scar_ticket_now_blocks_on_the_switch_that_exists(tmp_path):
     assert r.returncode == 2 and "kipi-dispatch.sh" in r.stderr, r.stderr
 
 
+def test_a_tilde_cite_blocks_on_the_file_under_home(tmp_path):
+    """PR #916 round 1, minor 2: improve_ground cites ~/.config/kipi/usage-pacer.py
+    as a ~ path; the gate expands it against HOME. No file there, no block."""
+    doc = "Add a second weekly cap so the fleet stops at 60% of the plan."
+    r = _run(tmp_path, _target(tmp_path), _script(doc))
+    assert r.returncode == 0, r.stderr
+    pacer = tmp_path / "home/.config/kipi/usage-pacer.py"
+    pacer.parent.mkdir(parents=True)
+    pacer.write_text("# the cap\n")
+    r = _run(tmp_path, _target(tmp_path, "repo/plugins/kipi-core/scripts/new_thing2.py"), _script(doc))
+    assert r.returncode == 2 and "usage-pacer.py" in r.stderr and "/home/" not in r.stderr.split("already built:")[1].splitlines()[0], r.stderr
+
+
 def test_a_lesson_only_cite_is_advisory_not_a_block(tmp_path):
     """The corpus is test_improve_ground.py's own covered-idea fixture: recall
     weighs only terms shared by two lessons, so a lone invented lesson scores 0."""

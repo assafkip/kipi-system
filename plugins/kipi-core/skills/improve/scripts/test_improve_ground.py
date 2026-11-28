@@ -180,7 +180,20 @@ def test_the_existing_billing_and_cap_switches_are_named(ig, tmp_path, idea, cit
     out = ig.ground(idea, "script", env=_empty(tmp_path))
     assert out["verdict"] == "already-built" and out["basis"] == "named-file"
     hit = [c for c in out["cites"] if c.endswith(cite)]
-    assert hit and Path(hit[0]).is_absolute(), out["cites"]
+    # A ~ path, never this machine's /Users path (PR #916 round 1, minor 2). That
+    # the gate finds the file under HOME is test_improve_ground_gate.py's to pin.
+    assert hit and hit[0].startswith("~/"), out["cites"]
+
+
+@pytest.mark.parametrize("idea,key", [
+    # PR #916 round 1: the repo spells these with a hyphen, and in the plural.
+    ("teach the usage-pacer a second account", "usage pacer"),
+    ("move plan-billing to a config file", "plan billing"),
+    ("two custom connectors for the CRM", "custom connector"),
+])
+def test_a_hyphen_or_plural_still_matches(ig, tmp_path, idea, key):
+    out = ig.ground(idea, "script", env=_empty(tmp_path))
+    assert out["verdict"] == "already-built" and key in out["matches"], out
 
 
 def test_this_file_runs_its_own_tests_under_python3():

@@ -201,7 +201,8 @@ def code_cites(cites: list, roots: list) -> list:
     """The cites that name an existing script or hook, never a lesson or a .md."""
     found = []
     for cite in cites:
-        p = Path(cite)
+        # A ~ cite names a file outside the repo (improve_ground KNOWN_BUILT, ASK-5805).
+        p = Path(os.path.expanduser(cite))
         candidates = [p] if p.is_absolute() else [r / p for r in roots]
         if p.suffix in CODE_SUFFIXES and any(c.is_file() for c in candidates):
             found.append(_display(str(cite), roots))

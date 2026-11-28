@@ -54,8 +54,11 @@ MATCH_FLOOR = 0.18
 # gone: it cited q-system/memory/last-handoff.md, a session note, not a built
 # capability, and it matched any docstring that mentions a handoff (cap-ladder.py,
 # pr-owner.py and wait-has-consumer.py were all false already-built).
-# A value is one cite or a tuple of cites. A path under ~ is expanded, so a
-# cite outside the repo names a real file.
+# A space in a key also matches a hyphen ("usage pacer" hits usage-pacer.py),
+# and a trailing "s" is allowed ("custom connectors"), PR #916 round 1.
+# A value is one cite or a tuple of cites. A cite outside the repo stays a ~
+# path, never this machine's /Users path: it lands in Linear comments and in an
+# agent's instruction (PR #916 round 1, minor 2). improve-ground-gate.py expands it.
 KNOWN_BUILT = {
     "risk-scored auto-merge": "q-system/.q-system/scripts/review-tier.py",
     "auto merge": "q-system/.q-system/scripts/review-tier.py",
@@ -80,8 +83,7 @@ KNOWN_BUILT = {
 
 
 def _cites(value) -> list:
-    vals = value if isinstance(value, tuple) else (value,)
-    return [os.path.expanduser(v) if v.startswith("~") else v for v in vals]
+    return list(value) if isinstance(value, tuple) else [value]
 
 
 def known_built_hits(text: str) -> list:
@@ -96,7 +98,8 @@ def known_built_hits(text: str) -> list:
     low = (text or "").lower()
     hits = []
     for key in KNOWN_BUILT:
-        m = re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", low)
+        body = r"[\s-]+".join(re.escape(w) for w in key.split())
+        m = re.search(rf"(?<![\w-]){body}s?(?![\w-])", low)
         if m:
             hits.append((m.start(), key))
     return sorted(hits)
