@@ -161,8 +161,21 @@ def test_cache_is_set_in_parent_shell_and_cleaned(tmp_path):
     out2 = subprocess.run(["bash", "-c", script2], capture_output=True, text=True, cwd=repo)
     assert "RC_NONZERO" in out2.stdout
     assert out2.stdout.count("RC_NONZERO_AGAIN") == 2  # a cached failure still answers "not shipped"
-    # ASK-5855: the failed build is cached for the run: 1 WARN line, not one per lookup.
+    # ASK-5855: a failed build warns ONCE per ref, not once per lookup.
     assert out2.stderr.count("WARN: shipped-blob map unavailable") == 1, out2.stderr
+    # PR #911 review: the failure itself is not cached, so a fault that clears is
+    # retried in the SAME run: fail once, fix the toolchain mid-run, look up again.
+    helper = ROOT / "kipi-update-shipped-blobs.py"
+    script3 = (
+        script2.split("fleet_authored_blob")[0]
+        + 'fleet_authored_blob f.md "$SCRIPT_DIR/f.md" || echo FIRST_FAILED\n'
+        + f'cp "{helper}" "$SCRIPT_DIR/" && git -C "$SCRIPT_DIR" add f.md\n'
+        + 'git -C "$SCRIPT_DIR" -c user.email=t@t -c user.name=t commit -qm f\n'
+        + 'fleet_authored_blob f.md "$SCRIPT_DIR/f.md" && echo RETRY_OK\n'
+    )
+    out3 = subprocess.run(["bash", "-c", script3], capture_output=True, text=True, cwd=repo)
+    assert "FIRST_FAILED" in out3.stdout, out3.stdout + out3.stderr
+    assert "RETRY_OK" in out3.stdout, out3.stdout + out3.stderr
     # The EXIT cleanup is the consumer of that variable: it must remove it.
     cleanup = "\n".join(src).split("cleanup_updater_temps() {")[1].split("\n}\n")[0]
     assert 'rm -f -- "$SHIPPED_BLOB_MAP"' in cleanup
@@ -243,9 +256,14 @@ def assert_hashes_match(repo, paths, hash_fn):
     assert hash_fn(str(repo), paths) == [old_hash(repo, p) for p in paths]
 
 
-def test_hash_paths_match_per_file_hash_object(tmp_path):
+def test_hash_paths_match_per_file_hash_object(tmp_path, capsys):
     repo, paths = hash_inputs(tmp_path)
+    dangling = tmp_path / "inst/q-system/dangling.md"
+    dangling.symlink_to(tmp_path / "nowhere")
+    paths.append(str(dangling))
     assert_hashes_match(repo, paths, sb.hash_paths)
+    # PR #911 review: a missing file or dangling link must not abort the batch.
+    assert "stdin-paths failed" not in capsys.readouterr().err
     present = [p for p in paths if Path(p).exists() and "\n" not in p]
     assert_hashes_match(repo, present, sb.hash_paths)  # the all-batch path too
 
@@ -294,7 +312,8 @@ def old_filter(repo, inst, mapf, records):
     script = (src[start:end] + per_file +
               f'SCRIPT_DIR="{repo}"; SKELETON_BRANCH=main; PROVENANCE_OK=1\n'
               f'SHIPPED_BLOB_MAP="{mapf}"; SHIPPED_BLOB_REF=HEAD\n'
-              f'instance_ahead_filter_per_file "{inst}"\n')
+              f'instance_ahead_filter_per_file "{inst}"\n'
+              'printf "%s" "$AHEAD_KEPT"\n')
     stdin = "".join("\t".join(r) + "\n" for r in records)
     out = subprocess.run(["bash", "-c", script], input=stdin, capture_output=True,
                          text=True, check=True).stdout

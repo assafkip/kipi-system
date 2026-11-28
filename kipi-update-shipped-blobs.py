@@ -16,6 +16,7 @@ deleted path came back empty and never equalled the instance's hash.
 merge whose blob exists on no side is still a shipped blob. `--no-renames` keeps a
 moved path's blob under its new name, as `rev-parse <commit>:<path>` saw it.
 """
+import os
 import subprocess
 import sys
 
@@ -79,7 +80,11 @@ def hash_paths(repo: str, paths: list[str]) -> list[str]:
     """
     if not paths:
         return []
-    batchable = [p for p in paths if "\n" not in p]
+    # Only readable regular files ride the batch (PR #911 review): one dangling
+    # symlink or vanished file would abort it and send EVERY path to the per-file
+    # call. The rest take the per-file call, which answers "" for them as before.
+    batchable = [p for p in paths if "\n" not in p and os.path.isfile(p)
+                 and os.access(p, os.R_OK)]
     by_path: dict[str, str] = {}
     if batchable:
         res = subprocess.run(["git", "-C", repo, "hash-object", "--stdin-paths"],
@@ -89,6 +94,9 @@ def hash_paths(repo: str, paths: list[str]) -> list[str]:
         blobs = res.stdout.decode().split()
         if res.returncode == 0 and len(blobs) == len(batchable):
             by_path = dict(zip(batchable, blobs))
+        else:
+            print(f"WARN: hash-object --stdin-paths failed (rc {res.returncode}); "
+                  f"hashing {len(batchable)} file(s) one by one", file=sys.stderr)
     return [by_path[p] if p in by_path else _hash_one(repo, p) for p in paths]
 
 
@@ -104,7 +112,8 @@ def load_map(map_file: str) -> set[str]:
 def filter_ahead(repo: str, root: str, map_file: str, records: list[list[str]]) -> list[list[str]]:
     """Keep the records the old per-file loop would have reported, in input order.
 
-    A record is [kind, shown, blob_rel, file]. Dropped when `shown` is untracked in
+    A record is [kind, shown, blob_rel, file, skel_file]; skel_file is "" for a
+    deletion and is only passed through. Dropped when `shown` is untracked in
     root (the `ls-files --error-unmatch ... || continue`), or when the bytes at
     `file` equal a blob the skeleton shipped at `blob_rel` (fleet_authored_blob).
     """

@@ -430,19 +430,19 @@ fleet_ship_ref() {
 # a different ref rebuilds it.
 SHIPPED_BLOB_MAP=""
 SHIPPED_BLOB_REF=""
-# A FAILED BUILD IS CACHED TOO (PR #908 review, ASK-5855). Without this every lookup
-# retried the git log pass and printed the same WARN again: one line per file per
-# instance, thousands of identical lines burying the one that mattered. The ref it
-# failed for is remembered; a different ref still gets a fresh attempt.
-SHIPPED_BLOB_FAILED_REF=""
+# A FAILED BUILD WARNS ONCE PER REF (PR #908 review, ASK-5855). Without this every
+# lookup printed the same WARN again: one line per file per instance, thousands of
+# identical lines burying the one that mattered. The WARN is cached, not the
+# failure (PR #911 review): caching the result let one transient fault make every
+# file in every later instance read as ahead. Each call still retries the build,
+# which costs one git log pass per scan scope now that lookups are batched.
+SHIPPED_BLOB_WARNED_REF=""
 shipped_blob_map_ensure() {
   local ship_ref="$1"
   if [ -n "$SHIPPED_BLOB_MAP" ] && [ "$SHIPPED_BLOB_REF" = "$ship_ref" ] &&
       [ -s "$SHIPPED_BLOB_MAP" ]; then
     return 0
   fi
-  [ -n "$SHIPPED_BLOB_FAILED_REF" ] && [ "$SHIPPED_BLOB_FAILED_REF" = "$ship_ref" ] &&
-    return 1
   [ -n "$SHIPPED_BLOB_MAP" ] && rm -f -- "$SHIPPED_BLOB_MAP"
   SHIPPED_BLOB_MAP="$(mktemp "${TMPDIR:-/tmp}/kipi-shipped-blobs.XXXXXX")" || return 1
   SHIPPED_BLOB_REF=""
@@ -452,9 +452,11 @@ shipped_blob_map_ensure() {
   # Say what failed on stderr before returning.
   if ! python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" "$SCRIPT_DIR" "$ship_ref" \
       > "$SHIPPED_BLOB_MAP" 2>"$SHIPPED_BLOB_MAP.err" || [ ! -s "$SHIPPED_BLOB_MAP" ]; then
-    echo "  WARN: shipped-blob map unavailable for $ship_ref ($(head -c 300 "$SHIPPED_BLOB_MAP.err" 2>/dev/null)); files will read as instance-ahead, which is a skeleton toolchain fault, not instance work" >&2
+    if [ "$SHIPPED_BLOB_WARNED_REF" != "$ship_ref" ]; then
+      echo "  WARN: shipped-blob map unavailable for $ship_ref ($(head -c 300 "$SHIPPED_BLOB_MAP.err" 2>/dev/null)); files will read as instance-ahead, which is a skeleton toolchain fault, not instance work" >&2
+      SHIPPED_BLOB_WARNED_REF="$ship_ref"
+    fi
     rm -f -- "$SHIPPED_BLOB_MAP.err"
-    SHIPPED_BLOB_FAILED_REF="$ship_ref"
     return 1
   fi
   rm -f -- "$SHIPPED_BLOB_MAP.err"
@@ -601,49 +603,54 @@ instance_ahead_scan() {
   local src="$1" dest="$2" skel_rel="$3" inst_rel="$4" root="$5" name="$6"
   shift 6
   [ -d "$src" ] && [ -d "$dest" ] || return 0
-  local candidates survivors
-  candidates="$(mktemp "${TMPDIR:-/tmp}/kipi-ahead-cand.XXXXXX")" || return 0
-  instance_ahead_candidates "$src" "$dest" "$skel_rel" "$inst_rel" "$@" > "$candidates"
-  if [ ! -s "$candidates" ]; then
-    rm -f -- "$candidates"
-    return 0
-  fi
-  survivors="$(mktemp "${TMPDIR:-/tmp}/kipi-ahead-keep.XXXXXX")" || {
-    rm -f -- "$candidates"
-    return 0
-  }
-  if ! instance_ahead_batch_filter "$root" < "$candidates" > "$survivors"; then
-    # Never a silent drop: a filter that could not answer falls back to the
-    # per-file checks, which are slow but were the shipped behaviour.
-    echo "  WARN: batch instance-ahead filter failed; checking file by file" >&2
-    instance_ahead_filter_per_file "$root" < "$candidates" > "$survivors"
-  fi
-  instance_ahead_report "$name" < "$survivors"
-  rm -f -- "$candidates" "$survivors"
-}
-
-# The shipped-blob map is built in THIS shell (never in $(...), PR #908 P2) and
-# only when there is something to look up, as fleet_authored_blob did.
-instance_ahead_batch_filter() {
-  local root="$1" ship_ref map=""
+  # NO TEMP FILES HERE (PR #911 review, major). A first cut staged candidates in
+  # mktemp files and returned 0 when mktemp failed, which reads exactly like
+  # "nothing ahead": a full TMPDIR switched off the voiceloop no-flag refusal.
+  # Variables and /dev/fd process substitution need no disk.
+  local candidates survivors ship_ref map=""
+  candidates="$(instance_ahead_candidates "$src" "$dest" "$skel_rel" "$inst_rel" "$@")"
+  [ -n "$candidates" ] || return 0
+  # The map is built in THIS shell (never in $(...), PR #908 P2), and only when
+  # there is something to look up, as fleet_authored_blob did.
   if ship_ref="$(fleet_ship_ref)" && shipped_blob_map_ensure "$ship_ref"; then
     map="$SHIPPED_BLOB_MAP"
   fi
-  python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" filter "$SCRIPT_DIR" "$root" "$map"
+  if ! survivors="$(printf '%s\n' "$candidates" | instance_ahead_batch_filter "$root" "$map")"; then
+    # Never a silent drop: a filter that could not answer falls back to the
+    # per-file checks, which are slow but were the shipped behaviour. The
+    # fallback runs in this shell so fleet_authored_blob's map stays here too.
+    echo "  WARN: batch instance-ahead filter failed; checking file by file" >&2
+    instance_ahead_filter_per_file "$root" < <(printf '%s\n' "$candidates")
+    survivors="$AHEAD_KEPT"
+  fi
+  [ -n "$survivors" ] || return 0
+  instance_ahead_report "$name" < <(printf '%s\n' "$survivors")
 }
 
+instance_ahead_batch_filter() {
+  python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" filter "$SCRIPT_DIR" "$1" "$2"
+}
+
+# Sets AHEAD_KEPT (a global, so the caller needs no subshell) to the records the
+# old per-file loop would have reported.
+AHEAD_KEPT=""
 instance_ahead_filter_per_file() {
   local root="$1" kind shown blob_rel file skel_file
+  AHEAD_KEPT=""
   while IFS=$'\t' read -r kind shown blob_rel file skel_file; do
+    [ -n "$kind" ] || continue
     git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
     fleet_authored_blob "$blob_rel" "$file" </dev/null && continue
-    printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$shown" "$blob_rel" "$file" "$skel_file"
+    AHEAD_KEPT="$AHEAD_KEPT$kind	$shown	$blob_rel	$file	$skel_file
+"
   done
 }
 
 instance_ahead_report() {
   local name="$1" kind shown blob_rel file skel_file detail
   while IFS=$'\t' read -r kind shown blob_rel file skel_file; do
+    # A blank line is no record: the fallback's AHEAD_KEPT ends in a newline.
+    [ -n "$kind" ] || continue
     if [ "$kind" = "del" ]; then
       echo "  instance ahead: $shown (instance-only file; the sync would delete it)"
       INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))

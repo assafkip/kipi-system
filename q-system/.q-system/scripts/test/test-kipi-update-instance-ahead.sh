@@ -104,6 +104,11 @@ assert_the_dry_run_names_every_ahead_file_and_only_those() {
   build "$work"
   bash "$sk/kipi-update.sh" --dry-run >"$work/out" 2>&1 || true
   expect_report "$work/out"
+  # ASK-5855 (PR #911 review): the per-file fallback prints the same report, so
+  # only its WARN tells a silent slide back to the 45x slower path apart.
+  if grep -q 'batch instance-ahead filter failed' "$work/out"; then
+    fail "the batch instance-ahead filter failed and the scan fell back to per-file checks"
+  fi
   echo "PASS: the dry run names the four ahead files with defs or hunks, stays quiet on the older shipped version, and repeats them in the summary"
 }
 
