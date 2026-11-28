@@ -1385,7 +1385,7 @@ say "STOP exit-2: $CAPOUT_WHY. A cap-out means the reviewer and Sana disagree pe
 # it. Only a FAILED record still pages, because then the ladder cannot see this
 # cap and the alert lane is the one consumer left.
 if python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG"; then
-  say "cap-out recorded for $ISSUE; cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes it next: a fresh RCA, then the work continues on a new PR from $BRANCH."
+  say "cap-out recorded for $ISSUE; cap-ladder.py (com.kipi.cap-ladder, every 2h) takes it next: a fresh RCA, then the work continues on a new PR from $BRANCH."
 else
   say "WARNING: record-capout failed for $ISSUE; cap-ladder.py cannot see this cap-out."
   bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT, and the cap-out could NOT be recorded in $ATTEMPTS, so cap-ladder.py cannot see it. linear-alert-triage.py takes this ticket; the fix is the ledger write." 2>/dev/null || true

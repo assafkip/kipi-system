@@ -705,7 +705,7 @@ def capout_skip(path, issue, who, pr):
         return True
     sys.stderr.write(
         "%s: %s PR #%s -- converge capped this issue (%s). Not re-entering it: "
-        "cap-ladder.py (nightly 04:40, ASK-3824) takes the cap-out, writes an "
+        "cap-ladder.py (every 2h, ASK-3824) takes the cap-out, writes an "
         "RCA, moves the work to a new PR and clears the record  (said once per "
         "cap-out; every capped issue: %s)\n"
         % (who, issue, pr, why, CAPOUT_LIST % path))

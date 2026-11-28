@@ -102,6 +102,11 @@ exit 0
 EOF
 chmod +x "$STUB/notify"
 calls() { wc -l <"$CLAUDE_LOG" | tr -d ' '; }
+# The cap-ladder kick (ASK-5788), a stub: a test never starts the live job.
+KICK_LOG="$WORK/kick.txt"; : > "$KICK_LOG"
+printf '#!/usr/bin/env bash\necho kick >> "%s"\n' "$KICK_LOG" > "$STUB/kick"; chmod +x "$STUB/kick"
+export KIPI_CAP_LADDER_KICK="$STUB/kick"
+kicks() { wc -l <"$KICK_LOG" | tr -d ' '; }
 run_reviewer() {  # run_reviewer <out-file> [extra args...]
   local out="$1"; shift
   ( cd "$WORK/skel" \
@@ -127,7 +132,16 @@ for n in 1 2 3; do
   [ "$after" = "$((before + 1))" ] \
     || fail "round $n made $((after - before)) model calls, expected 1 (the stub is not the dispatched engine, so every count below is vacuous):
 $(tail -20 "$WORK/r$n.out")"
+  if [ "$n" -lt 3 ] && [ "$(kicks)" != "0" ]; then fail "round $n kicked cap-ladder before the last round"; fi
+  # usable_round counts real reviews only; `round` counted the two blips (PR #913 round 1, finding 1).
+  _rec="$(find "$WORK" -name '*pr-1.verdict.json' -not -path '*/codex/*' | head -1)"
+  _ur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("usable_round"))' "$_rec" 2>/dev/null)"
+  [ "$_ur" = "$n" ] || fail "round $n wrote usable_round=$_ur in ${_rec:-no record}, expected $n"
 done
+[ "$(kicks)" = "1" ] || fail "round 3 ended REQUEST CHANGES and kicked cap-ladder $(kicks) time(s), expected 1:
+$(tail -20 "$WORK/r3.out")"
+ok "round 3 without an approval kicks cap-ladder once; rounds 1-2 do not"
+: > "$KICK_LOG"
 ok "positive control: rounds 1-3 each called the model once ($(calls) calls)"
 
 # Round 4: the cap.
@@ -146,7 +160,7 @@ ok "round 4 exited 0"
 
 grep -q 'pr comment' "$GH_LOG" || fail "round 4 posted no PR comment:
 $(cat "$GH_LOG")"
-grep -q 'review cap reached (3); cap-ladder.py takes this PR at its next nightly run' "$WORK/r4.out" \
+grep -q 'review cap reached (3); cap-ladder.py takes this PR (woken when the cap is first hit, else its 2h run)' "$WORK/r4.out" \
   || fail "round 4 output does not carry the cap message:
 $(tail -20 "$WORK/r4.out")"
 ok "round 4 posted the cap comment"
@@ -166,6 +180,8 @@ MARKS="$(find "$WORK/home" -name '.round-cap-*')"
 [ -s "$NOTIFY_LOG" ] && fail "the cap still filed a ticket; cap-ladder.py owns it now:
 $(cat "$NOTIFY_LOG")"
 ok "round 4 left the marker cap-ladder.py reads, and filed no ticket"
+[ "$(kicks)" = "1" ] || fail "the round-4 refusal that wrote the marker kicked cap-ladder $(kicks) time(s), expected 1"
+ok "the refusal that writes the marker kicks cap-ladder"
 
 # Round 5: still capped, still 0 calls, and the comment is not repeated.
 : > "$GH_LOG"
