@@ -161,6 +161,20 @@ CODEX_OUTAGE_MAX_AGE=86400
 # so it works in a checkout or a test skeleton that has no shim at all. Without
 # this, 22 suites that copy this script into a fixture without the shim died at
 # rc=127 (PR #717 CI, validate at c7650286).
+#
+# A HAND RUN BILLS THE PLAN UNLESS TOLD OTHERWISE (ASK-5847). The dispatcher
+# decides billing per tick (kipi-dispatch.sh's API-key gate and the dated
+# plan-billing file) and marks its runs KIPI_WORKER_INVOKER=dispatcher. A manual
+# `--issue` run had no such decision and fell to the API key, so plan billing
+# depended on someone remembering KIPI_FLEET_API_KEYS=0 (memory note
+# reviews-bill-the-plan, ASK-4857). Exported so the reviewer it calls agrees.
+manual_issue_run_bills_plan() {  # manual_issue_run_bills_plan <args...>
+  [ -z "${KIPI_FLEET_API_KEYS+x}" ] || return 1
+  [ "${KIPI_WORKER_INVOKER:-}" = "dispatcher" ] && return 1
+  local a; for a in "$@"; do [ "$a" = "--issue" ] && return 0; done
+  return 1
+}
+if manual_issue_run_bills_plan "$@"; then export KIPI_FLEET_API_KEYS=0; fi
 fleet_keyed() { [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ]; }
 if fleet_keyed; then
   FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
@@ -274,7 +288,18 @@ MAX_CONFLICT_ROUNDS=2
 # one means the reviewer is down or the head keeps moving under it. Neither is
 # fixed by a third round; both need a human.
 MAX_DRIFT_ROUNDS=2
+# THE BUILD WALL CLOCK, OVERRIDABLE, DEFAULT UNCHANGED (ASK-5847, option 3).
+# Measured 2026-11-27: 14 of about 20 runs died at rc=143, 12 of them ASK-4431,
+# whose DoR estimates half a day. The default stays 1800 until the per-run
+# "run-duration" line below says whether 30 or 90 minutes is right;
+# KIPI_WORKER_TIMEOUT sets it per run. A non-number falls back to 1800, loudly,
+# because a typo here would hand run_bounded a sleep it cannot parse.
 TIMEOUT_SECONDS=1800
+case "${KIPI_WORKER_TIMEOUT:-}" in
+  "") ;;
+  *[!0-9]*|0) echo "linear-worker: KIPI_WORKER_TIMEOUT='${KIPI_WORKER_TIMEOUT}' is not a positive whole number of seconds; using 1800" >&2 ;;
+  *) TIMEOUT_SECONDS="$KIPI_WORKER_TIMEOUT" ;;
+esac
 LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
@@ -489,8 +514,12 @@ record_run_tokens() {
   return 0
 }
 
+# RUN_ELAPSED and RUN_TIMED_OUT are set on every return (ASK-5847): the caller
+# has to know a run hit the wall clock to save its partial tree, and the exit
+# code cannot say so (a TERM'd run and a run that failed with 143 look the same).
 run_bounded() {  # run_bounded <seconds> <cmd...>
   local secs="$1"; shift
+  local started="$SECONDS"
   set -m
   "$@" &
   local job=$!
@@ -510,7 +539,59 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
   # into the same tree. run_bounded returning is the promise that the previous
   # run is over.
   reap_group "$job"
+  RUN_ELAPSED=$((SECONDS - started))
+  RUN_TIMED_OUT=0
+  [ "$RUN_ELAPSED" -ge "$secs" ] && RUN_TIMED_OUT=1
   return "$rc"
+}
+
+# commit_runner_edits <tree> <issue> <subject>: the WORKER commits what a runner
+# left uncommitted. Returns 0 only when it made a commit.
+#
+# TWO CALLERS, ONE REASON EACH (ASK-5847):
+#   - Codex's workspace-write sandbox keeps .git read-only. Measured 2026-11-27 in
+#     a probe worktree: "sandbox denied creation of Git's index.lock", and on
+#     ASK-4431 the runner parked itself blocked:capability for 14 days over it.
+#     The worker runs outside that sandbox, so Codex only edits and this commits.
+#   - A run killed at the wall clock threw its tree away and the retry started
+#     from scratch; a WIP commit lets the next attempt in this reused tree resume.
+# `add -A` respects .gitignore, so the sentinels never ride along. The commit
+# hooks run (no --no-verify): a gate that refuses this commit is said, not dodged.
+commit_runner_edits() {
+  local tree="$1" issue="$2" subject="$3"
+  [ -n "$(git -C "$tree" status --porcelain 2>/dev/null)" ] || return 1
+  git -C "$tree" add -A >>"$LOG" 2>&1 || { say "WARN: $issue: git add failed in $tree; edits left uncommitted"; return 1; }
+  if git -C "$tree" commit -q -m "$subject ($issue)" >>"$LOG" 2>&1; then
+    say "$issue: the worker committed the runner's edits: $subject"
+    return 0
+  fi
+  say "WARN: $issue: the commit of the runner's edits was refused (see $LOG); edits left in $tree"
+  return 1
+}
+
+# edits_in_last_10m <tree>: how many tracked-or-new files changed in the last 10
+# minutes, for the run-duration line. Empty when it cannot tell.
+edits_in_last_10m() {
+  [ -d "$1" ] || return 0
+  find "$1" -path "$1/.git" -prune -o -type f -mmin -10 -print 2>/dev/null | grep -c . || true
+}
+
+# codex_runner_note <issue>: what every Codex prompt carries (ASK-5847). Codex
+# cannot commit (read-only .git, see commit_runner_edits) and its Linear connector
+# needed reauth on 2026-11-27, so the issue's DoR and comments travel in the
+# prompt and the prompt says not to call Linear or git commit.
+codex_runner_note() {
+  local brief
+  brief="$(python3 "$SYNC" comments "$1" --with-description 2>/dev/null | head -c 16000)"
+  [ -n "$brief" ] || brief="(the worker could not read $1 from Linear this run; work from the branch and its PR)"
+  printf '%s' "
+RUNNER RULES FOR CODEX (they override any step above that says otherwise):
+- Do NOT call Linear (no MCP, no linear-sync.py, no kipi linear). The issue is below.
+- Do NOT run git add or git commit: your sandbox keeps .git read-only. Edit files
+  only. The worker commits what you leave in the tree when you exit.
+
+=== $1, read by the worker from Linear ===
+$brief"
 }
 
 # reap_group <pgid>: return only when that process group is empty.
@@ -3654,7 +3735,10 @@ Anything real you find and are not fixing: capture it, never just mention it:
   primary_run() {
     if [ "$(ladder_runner_for "$ISSUE")" = "codex" ]; then
       say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
-      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT$(codex_runner_note "$ISSUE")"
+      local crc_primary=$?
+      commit_runner_edits "$TREE" "$ISSUE" "Codex (cap-ladder rung 2) edits, committed by the worker" || true
+      return $crc_primary
     else
       # --session-id (ASK-4649/4675): the worker has to know WHICH transcript this run
       # wrote, or token cost per run cannot be read. A fresh uuid per launch, never one
@@ -3669,7 +3753,22 @@ Anything real you find and are not fixing: capture it, never just mention it:
       return $prc
     fi
   }
-  if primary_run; then
+  primary_run; PRIMARY_RC=$?
+  # THE WALL CLOCK SAVES THE TREE, AND EVERY RUN SAYS HOW LONG IT TOOK (ASK-5847).
+  # One greppable line per run is the data that decides 30 vs 90 minutes later:
+  #   grep 'run-duration' ~/.config/kipi/linear-worker.log
+  # edits_last_10m > 0 on a timeout means the run was still producing when killed.
+  RUN_WIP=""
+  EDITS10="$(edits_in_last_10m "$TREE")"
+  RUN_OUTCOME="ok"; [ "$PRIMARY_RC" = "0" ] || RUN_OUTCOME="fail rc=$PRIMARY_RC"
+  if [ "${RUN_TIMED_OUT:-0}" = "1" ]; then
+    RUN_OUTCOME="timeout, nothing uncommitted to save"
+    if commit_runner_edits "$TREE" "$ISSUE" "WIP: the worker's ${TIMEOUT_SECONDS}s wall clock ended this run; partial tree saved so the next attempt resumes"; then
+      RUN_WIP=1; RUN_OUTCOME="timeout, WIP committed"
+    fi
+  fi
+  say "run-duration $ISSUE secs=${RUN_ELAPSED:-?} limit=${TIMEOUT_SECONDS}s edits_last_10m=${EDITS10:-?} outcome=$RUN_OUTCOME"
+  if [ "$PRIMARY_RC" = "0" ]; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -3692,7 +3791,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
         --agent "$AGENT" >/dev/null 2>&1 || true
     fi
   else
-    rc=$?
+    rc=$PRIMARY_RC
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     if is_environmental "$AGENT_OUT"; then
       # NOT bump_attempt. An exhausted account is a property of the machine,
@@ -3889,10 +3988,11 @@ what she could not?
    'Not doing' line is binding on you exactly as it was on her.
 3. Reproducer first: observe it RED, then make it green, then paste the real
    command output. A fix with no check that could have caught the bug is a patch.
-4. Commit on $BRANCH with $ISSUE in the message (the commit-msg gate requires it).
-   A COMMIT IS HOW THIS RUN IS SCORED. Exiting 0 having changed nothing reads as
+4. Leave your edits in the tree. The worker commits them on $BRANCH, with $ISSUE
+   in the message, when you exit (a Codex sandbox cannot write .git).
+   A CHANGE IS HOW THIS RUN IS SCORED. Exiting 0 having changed nothing reads as
    a refusal, and the issue gets parked -- which is the correct outcome if you
-   genuinely cannot proceed, and the wrong one if you simply did not commit.
+   genuinely cannot proceed, and the wrong one if you simply changed nothing.
 5. If you are ALSO not equipped -- the capability is missing for you too, not
    merely awkward -- say so in a file and stop:
      printf '%s' \"<the exact capability YOU lack, and what refused it>\" > $TREE/.codex-blocked-capability
@@ -3907,7 +4007,7 @@ what she could not?
 
 NEVER route around a refused permission by another route (writing through a shell
 to dodge a guard, disabling a gate). A gate that is inconvenient is a gate doing
-its job -- if the guard is the blocker, that is exactly what step 5 is for."
+its job -- if the guard is the blocker, that is exactly what step 5 is for.$(codex_runner_note "$ISSUE")"
       # run_bounded, not a bare call: an unbounded second runner at 3am is the
       # failure mode loop-exits.md exit 7 exists for. ONE invocation, no retry --
       # a dead Codex must cost one timeout, not a spend loop. With the Opus
@@ -3927,6 +4027,8 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       else
         crc=$?
       fi
+      # Before the outcome is scored on HEAD moving: Codex edits, the worker commits.
+      commit_runner_edits "$TREE" "$ISSUE" "Codex (second runner) edits, committed by the worker" || true
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
       SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""; CODEX_DOWN_MARK=""
       # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
@@ -3945,6 +4047,8 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
           crc=$?
         fi
         CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+        # Same prompt, so the stand-in was also told to leave its edits to the worker.
+        commit_runner_edits "$TREE" "$ISSUE" "Opus stand-in (second runner) edits, committed by the worker" || true
       fi
       CODEX_ENV=""
       # codex_env_reason, not is_environmental: Codex prints a transcript, and
@@ -4283,7 +4387,12 @@ $SCOPE_WHY
     fi
   fi
 
-  if [ -z "$PR_NUM" ]; then
+  # A WIP SAVED AT THE WALL CLOCK IS NOT A PR (ASK-5847). It is pushed above so it
+  # survives the tree, but opening a PR would hand half a build to the reviewer
+  # and spend a review round on it. The next attempt resumes and opens the PR.
+  if [ -z "$PR_NUM" ] && [ -n "$RUN_WIP" ] && [ "${AHEAD:-0}" -gt 0 ]; then
+    say "$ISSUE: the run timed out with a WIP commit; no PR yet, the next attempt resumes from $BRANCH"
+  elif [ -z "$PR_NUM" ]; then
     if [ "${AHEAD:-0}" -gt 0 ]; then
       say "$ISSUE: $AHEAD commit(s) pushed but no PR; opening it (the agent left it unopened)"
       (cd "$TREE" && gh pr create --head "$BRANCH" --base "$DEFAULT_BRANCH" \
@@ -4321,12 +4430,19 @@ Review runs next. Do not merge without it." >/dev/null 2>&1) || true
     # decides whether this worker can be trusted unattended. Without it the
     # question "does it converge or oscillate?" is answered by memory, and memory
     # is what this whole system exists to replace.
-    ROUNDS="$(python3 -c "
+    # A ROUND IS COUNTED ONLY WHEN THE REVIEWER WROTE A VERDICT (ASK-5847). It was
+    # bumped before the call, so a reviewer refused for credit (rc=5, measured
+    # 2026-11-27 on ASK-5802) still logged "REQUEST CHANGES (round N)" off the OLD
+    # record. The record's checksum before and after is the evidence a verdict
+    # was written; pr-review-agent.sh keeps its own disk round count the same way.
+    ROUND_RECORD="$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM")"
+    ROUND_RECORD_BEFORE="$(cksum < "$ROUND_RECORD" 2>/dev/null || true)"
+    ROUNDS_PREV="$(python3 -c "
 import json
 try: d=json.load(open('$ATTEMPTS'))
 except Exception: d={}
-e=d.setdefault('$ISSUE',{}); e['rounds']=e.get('rounds',0)+1
-json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || echo "?")"
+print(int(d.get('$ISSUE',{}).get('rounds',0)))" 2>/dev/null || echo 0)"
+    ROUNDS=$((ROUNDS_PREV + 1))
     say "review PR #$PR_NUM for $ISSUE (round $ROUNDS)"
     # CLAUDE REVIEWS SANA'S WORK (founder-directed 2026-09-06, "forget codex go
     # with the claude fallback"). This REVERSES ASK-221 / the 2026-07-29 directive.
@@ -4379,6 +4495,17 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
     elif [ "$REVIEW_RC" != "0" ]; then
       say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    fi
+    if [ -s "$ROUND_RECORD" ] && [ "$(cksum < "$ROUND_RECORD" 2>/dev/null)" != "$ROUND_RECORD_BEFORE" ]; then
+      ROUNDS="$(python3 -c "
+import json
+try: d=json.load(open('$ATTEMPTS'))
+except Exception: d={}
+e=d.setdefault('$ISSUE',{}); e['rounds']=e.get('rounds',0)+1
+json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || echo "?")"
+    else
+      ROUNDS="$ROUNDS_PREV (this run wrote no verdict, rc=$REVIEW_RC, so no round was counted)"
+      say "$ISSUE: the reviewer wrote no verdict for PR #$PR_NUM (rc=$REVIEW_RC); review round not counted"
     fi
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
@@ -4491,6 +4618,10 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       # The sentinel files cannot carry it: they are deleted before this line.
       # The ledger can -- both scripts already share it, through one locked writer.
       python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" refused_no_pr >/dev/null 2>&1 || true
+    elif [ -n "$RUN_WIP" ]; then
+      # The timeout was charged once at step 4; a second charge here for "no PR"
+      # would spend two of three attempts on one killed run.
+      say "$ISSUE: WIP saved on $BRANCH; the timeout is this run's one charged attempt"
     else
       bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
       N3="$(attempts_for "$ISSUE")"

@@ -373,6 +373,19 @@ TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # round counter reads these files back with review_md_name_glob, and the last
 # time this line spelled the shape itself the two drifted for good (ASK-1957).
 REVIEW="$(review_md_path "$ENGINE_DIR" "$REVIEW_SLUG" "$PR" "$(date +%Y%m%d-%H%M%S)")"
+# A RUN THAT WRITES NO VERDICT IS NOT A ROUND (ASK-5847). review_round counts the
+# .md files beside this one, and every exit below that leaves no verdict record
+# (exit 9 for a runner refusal, a failed engine) used to leave its partial .md
+# behind. Measured 2026-11-27 on ASK-5802: a reviewer run refused with rc=5
+# ("every known key's cycle credit is spent") still spent a review round, so a
+# credit outage walked a PR toward the 3-round cap with no review read. The file
+# is kept for the operator under a name the round glob does not match, the same
+# move the codex branch already makes with .codex-failed.
+retire_unverdicted_review() {
+  [ -e "$REVIEW" ] || return 0
+  mv -f "$REVIEW" "$REVIEW.no-verdict" 2>/dev/null || true
+  echo "$(TS) no verdict this run, so no round spent; partial output kept at $REVIEW.no-verdict" >&2
+}
 
 # Same bash wall clock as the worker: macOS ships no `timeout` without coreutils,
 # and a review that never returns is worse than one that fails.
@@ -1995,6 +2008,7 @@ if [ "$ENGINE" != "codex" ]; then
       # machine outage. Exit 9, the machine's code: no status is posted (absent
       # is not approved), and the worker marks env_halt for converge.
       echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      retire_unverdicted_review
       exit 9
     else
       REVIEW_UNUSABLE=1
@@ -2004,9 +2018,11 @@ if [ "$ENGINE" != "codex" ]; then
     rc=$?
     if is_environmental "$(cat "$REVIEW" 2>/dev/null)"; then
       echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      retire_unverdicted_review
       exit 9
     fi
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
+    retire_unverdicted_review
     exit "$rc"
   fi
 elif run_engine codex "$REVIEW"; then
@@ -2051,6 +2067,7 @@ else
   else
     rc=$?
     echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
+    retire_unverdicted_review
     exit "$rc"
   fi
 fi

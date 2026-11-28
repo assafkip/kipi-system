@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-worker-codex-commit-timeout.sh",
+ "runner": "bash",
+ "timeout_s": 120
+}
