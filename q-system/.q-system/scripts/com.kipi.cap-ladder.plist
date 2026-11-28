@@ -20,6 +20,15 @@
     <string>cd __KIPI_REPO__ &amp;&amp; python3 q-system/.q-system/scripts/cap-ladder.py --apply --limit 5</string>
   </array>
   <key>StartInterval</key><integer>7200</integer>
+  <!-- THE PATH pr-owner has (ASK-5788, PR #913 round 1): with none, every cap RCA
+       logged "claude binary not found" and the delta review exited 127. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>__HOME__/.config/kipi/cap-ladder.out</string>
   <key>StandardErrorPath</key><string>__HOME__/.config/kipi/cap-ladder.err</string>

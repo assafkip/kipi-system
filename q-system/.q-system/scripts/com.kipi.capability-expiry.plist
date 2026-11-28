@@ -5,8 +5,8 @@
      install-plist.sh. Pinned (job-checkouts.json), so it runs from its own tree at
      origin/main, never from the shared checkout.
 
-     04:20, before cap-ladder.py (04:40): a block this job hands to the ladder as a
-     capout is climbed the same night. A probe that passes clears its label; a
+     04:20, ahead of cap-ladder.py (every 2h): a block this job hands to the ladder as a
+     capout is climbed within 2h. A probe that passes clears its label; a
      block with no probe takes its route by capability kind at day 14. A nonzero
      exit (2: Linear refused an unblock) is what launchd-health reads.
      No double hyphen in this comment: XML forbids one there. -->

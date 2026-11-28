@@ -102,7 +102,7 @@ The alert is recorded only when the sink's own line names a ticket (round 3,
 major): see outside_alert() for why exit 0 is not that proof.
 
 A PR THE CAP LADDER OWNS IS YIELDED (ASK-3824). cap-ladder.py (com.kipi.cap-ladder,
-nightly 04:40, PR #662) is the one consumer of every cap: a capout, 3 attempts, a
+every 2h, PR #662) is the one consumer of every cap: a capout, 3 attempts, a
 paged conflict, an escalated review, a review round cap. Two writers on one PR
 is how it gets reworked by one job while the other splits its ticket. So any PR
 its ladder_owns() claims gets `ladder`, nothing else. Before PR #662 is in this
@@ -738,7 +738,10 @@ def ladder_check(pr: dict, state_dir: str | None = None) -> str:
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             _LADDER_MODS[str(CAP_LADDER)] = mod
-        return mod.ladder_owns(pr["slug"], int(pr["number"]), pr["branch"], sd) or ""
+        # Title and head too (ASK-5788): a capped PR on a branch with no ASK id is
+        # the ladder's by its title, and an approval of the current head is no cap.
+        return mod.ladder_owns(pr["slug"], int(pr["number"]), pr["branch"], sd,
+                               title=pr.get("title") or "", head=pr.get("head") or None) or ""
     except Exception as exc:
         raise RuntimeError(f"cap-ladder.py could not answer ({type(exc).__name__}: {exc})") from exc
 

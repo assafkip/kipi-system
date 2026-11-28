@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Nightly owner:assaf route (ASK-3961). TEMPLATE: __KIPI_REPO__ and __HOME__ are
      materialized by install-plist.sh. Pinned (job-checkouts.json). 04:30, after the
-     capability re-test and before cap-ladder.py (04:40), which writes the founder asks
+     capability re-test and before a cap-ladder.py run (every 2h), which writes the founder asks
      this job hands it. No double hyphen in this comment: XML forbids one there. -->
 <plist version="1.0">
 <dict>

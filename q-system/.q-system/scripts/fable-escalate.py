@@ -276,6 +276,26 @@ def build_packet(trigger, reason, transcript_path):
 # the call
 # --------------------------------------------------------------------------
 
+# LAUNCHD'S PATH HAS NO ~/.local/bin (ASK-5788). cap-ladder runs this under
+# launchd, where shutil.which("claude") finds nothing: every cap RCA on ASK-4431
+# (rungs 1 to 4, 2026-11-27/28) logged "claude binary not found", so rungs 1-3
+# climbed with no RCA and rung 4 had no decision to record. Same scar as
+# linear-alert-triage.py CLAUDE_CANDIDATES (ASK-3823).
+CLAUDE_CANDIDATES = ("~/.local/bin/claude", "~/.claude/local/claude",
+                     "/opt/homebrew/bin/claude", "/usr/local/bin/claude")
+
+
+def claude_binary():
+    found = shutil.which("claude")
+    if found:
+        return found
+    for cand in CLAUDE_CANDIDATES:
+        path = os.path.expanduser(cand)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
 def call_fable(packet, timeout):
     """(triage, failure). Never raises, never hangs, never leaks a child.
 
@@ -307,7 +327,7 @@ def call_fable(packet, timeout):
     if not command and _fixture_refusal():
         return None, _fixture_refusal()
 
-    command = command or shutil.which("claude")
+    command = command or claude_binary()
     if not command or not os.path.exists(command):
         return None, "claude binary not found"
 

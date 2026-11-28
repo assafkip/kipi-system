@@ -1536,3 +1536,22 @@ def test_a_configured_channel_answers_true(monkeypatch, tmp_path):
 def test_no_key_still_answers_false(monkeypatch, tmp_path):
     """The paired negative: the fix must not turn every machine into a channel."""
     assert _channel_answer(monkeypatch, tmp_path, "") is False
+
+
+def test_claude_is_found_off_a_launchd_path(monkeypatch, tmp_path):
+    """ASK-5788 REPRODUCER. Under launchd PATH has no ~/.local/bin, so
+    shutil.which found nothing and every cap RCA on ASK-4431 failed with
+    "claude binary not found". Red before the fix: call_fable used
+    shutil.which alone."""
+    home = tmp_path / "home"
+    (home / ".local/bin").mkdir(parents=True)
+    exe = home / ".local/bin/claude"
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    mod = _escalate_module()
+    monkeypatch.setattr(mod, "CLAUDE_CANDIDATES", ("~/.local/bin/claude",))
+    assert mod.claude_binary() == str(exe)
+    exe.unlink()
+    assert mod.claude_binary() is None
