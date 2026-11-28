@@ -570,8 +570,24 @@ commit_runner_edits() {
     say "$issue: the worker committed the runner's edits: $subject"
     return 0
   fi
+  # Unstage, so the reused tree's index does not carry a half-made commit into
+  # the next run (PR #912 review round 2). The edits stay in the working tree.
+  git -C "$tree" reset -q -- . >>"$LOG" 2>&1 || true
   say "WARN: $issue: the commit of the runner's edits was refused (see $LOG); edits left in $tree"
-  return 1
+  return 2
+}
+
+# tree_fingerprint <tree>: one line that changes when any edit a runner could
+# make changes (tracked diff, status, untracked file bytes), sentinels excluded.
+# The second runner's commit is taken only when this moved across its run, so
+# leftovers it did not touch never score as a continuation (PR #912 rounds 1-2).
+tree_fingerprint() {
+  {
+    git -C "$1" status --porcelain -- . "${RUNNER_SENTINEL_EXCLUDES[@]}"
+    git -C "$1" diff HEAD -- . "${RUNNER_SENTINEL_EXCLUDES[@]}"
+    git -C "$1" ls-files -o --exclude-standard -- . "${RUNNER_SENTINEL_EXCLUDES[@]}" \
+      | while IFS= read -r f; do cksum "$1/$f"; done
+  } 2>/dev/null | cksum
 }
 
 # edits_in_last_10m <tree>: how many tracked-or-new files changed in the last 10
@@ -3770,10 +3786,12 @@ Anything real you find and are not fixing: capture it, never just mention it:
   EDITS10="$(edits_in_last_10m "$TREE")"
   RUN_OUTCOME="ok"; [ "$PRIMARY_RC" = "0" ] || RUN_OUTCOME="fail rc=$PRIMARY_RC"
   if [ "${RUN_TIMED_OUT:-0}" = "1" ]; then
-    RUN_OUTCOME="timeout, nothing uncommitted to save"
-    if commit_runner_edits "$TREE" "$ISSUE" "WIP: the worker's ${TIMEOUT_SECONDS}s wall clock ended this run; partial tree saved so the next attempt resumes"; then
-      RUN_WIP=1; RUN_OUTCOME="timeout, WIP committed"
-    fi
+    commit_runner_edits "$TREE" "$ISSUE" "WIP: the worker's ${TIMEOUT_SECONDS}s wall clock ended this run; partial tree saved so the next attempt resumes"
+    case $? in
+      0) RUN_WIP=1; RUN_OUTCOME="timeout, WIP committed" ;;
+      2) RUN_OUTCOME="timeout, WIP commit refused, edits left in the tree" ;;
+      *) RUN_OUTCOME="timeout, nothing uncommitted to save" ;;
+    esac
   fi
   say "run-duration $ISSUE secs=${RUN_ELAPSED:-?} limit=${TIMEOUT_SECONDS}s edits_last_10m=${EDITS10:-?} outcome=$RUN_OUTCOME"
   if [ "$PRIMARY_RC" = "0" ]; then
@@ -3975,10 +3993,10 @@ print(cbe.validate_recorded_probe(sys.stdin.read()))
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
       rm -f "$TREE/.codex-blocked-capability"
-      # Sana's own uncommitted leftovers are saved under her name FIRST, so the
-      # commit after the Codex run holds only what Codex did and cannot score a
-      # continuation Codex never made (PR #912 review round 1).
-      commit_runner_edits "$TREE" "$ISSUE" "Sana (primary runner) uncommitted edits, saved before the Codex handoff" || true
+      # NOT committed here: a commit of Sana's leftovers raised AHEAD on a plain
+      # refusal and opened a PR on abandoned half-work (PR #912 round 2). The
+      # fingerprint lets the commit below fire only on a tree Codex changed.
+      PRE_SECOND_RUNNER_TREE="$(tree_fingerprint "$TREE")"
       CODEX_HEAD_BEFORE="$(git -C "$TREE" rev-parse HEAD 2>/dev/null || true)"
       say "$ISSUE handing to the Codex runner before parking (ONE attempt, never a loop)"
       CODEX_PROMPT="You are Codex, the SECOND runner on Linear issue $ISSUE.
@@ -4040,7 +4058,9 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for.$(cod
         crc=$?
       fi
       # Before the outcome is scored on HEAD moving: Codex edits, the worker commits.
-      commit_runner_edits "$TREE" "$ISSUE" "Codex (second runner) edits, committed by the worker" || true
+      if [ "$(tree_fingerprint "$TREE")" != "$PRE_SECOND_RUNNER_TREE" ]; then
+        commit_runner_edits "$TREE" "$ISSUE" "Codex (second runner) edits, committed by the worker" || true
+      fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
       SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""; CODEX_DOWN_MARK=""
       # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
@@ -4060,7 +4080,9 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for.$(cod
         fi
         CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
         # Same prompt, so the stand-in was also told to leave its edits to the worker.
-        commit_runner_edits "$TREE" "$ISSUE" "Opus stand-in (second runner) edits, committed by the worker" || true
+        if [ "$(tree_fingerprint "$TREE")" != "$PRE_SECOND_RUNNER_TREE" ]; then
+          commit_runner_edits "$TREE" "$ISSUE" "Opus stand-in (second runner) edits, committed by the worker" || true
+        fi
       fi
       CODEX_ENV=""
       # codex_env_reason, not is_environmental: Codex prints a transcript, and

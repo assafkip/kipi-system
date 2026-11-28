@@ -32,7 +32,7 @@ LIB="$WORK/lib.sh"
   echo 'TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }'
   echo 'say() { echo "$(TS) $*" | tee -a "$LOG"; }'
   grep '^RUNNER_SENTINEL_EXCLUDES=' "$WORKER"
-  for f in manual_issue_run_bills_plan run_bounded reap_group commit_runner_edits edits_in_last_10m codex_runner_note; do
+  for f in manual_issue_run_bills_plan run_bounded reap_group commit_runner_edits tree_fingerprint edits_in_last_10m codex_runner_note; do
     body="$(lift "$f")"
     [ -n "$body" ] || { echo "FATAL: could not lift $f() from $WORKER" >&2; exit 1; }
     printf '%s\n' "$body"
@@ -131,12 +131,34 @@ grep -c 'commit_runner_edits "\$TREE" "\$ISSUE" "Codex' "$WORKER" | grep -qx 2 \
   && ok "both Codex launches (rung 2 and second runner) commit through the worker" \
   || bad "expected 2 Codex commit sites, found $(grep -c 'commit_runner_edits "\$TREE" "\$ISSUE" "Codex' "$WORKER")"
 grep -q 'say "run-duration \$ISSUE secs=' "$WORKER" && ok "every run logs a run-duration line" || bad "no run-duration line"
-grep -B1 'commit_runner_edits "\$TREE" "\$ISSUE" "Codex (cap-ladder rung 2)' "$WORKER" | grep -q 'RUN_TIMED_OUT:-0}" = "1" \]' \
-  && ok "a timed-out rung-2 Codex run leaves its tree to the WIP commit (no PR on half a build)" \
-  || bad "the rung-2 Codex commit is not skipped on a timeout"
-grep -A1 'saved before the Codex handoff' "$WORKER" | grep -q 'CODEX_HEAD_BEFORE=' \
-  && ok "Sana's leftovers are committed before CODEX_HEAD_BEFORE is read" \
-  || bad "Sana's leftovers can be credited to Codex"
+grep -A1 '^      \[ "\${RUN_TIMED_OUT:-0}" = "1" \] \\$' "$WORKER" \
+  | grep -q '^        || commit_runner_edits "\$TREE" "\$ISSUE" "Codex (cap-ladder rung 2)' \
+  && ok "a rung-2 Codex run commits unless it timed out (then the WIP commit owns the tree)" \
+  || bad "the rung-2 Codex commit is not exactly 'skip on timeout, commit otherwise'"
+[ "$(grep -c 'if \[ "\$(tree_fingerprint "\$TREE")" != "\$PRE_SECOND_RUNNER_TREE" \]; then' "$WORKER")" = "2" ] \
+  && ok "both second-runner commits fire only on a tree the runner changed" \
+  || bad "a second-runner commit is not gated on the fingerprint"
+
+# 8. The fingerprint: still on an untouched tree, moves on a real edit, blind to
+#    sentinels. Leftovers nobody touched must not score as a continuation.
+FP="$WORK/fp"; git init -q "$FP"; echo a > "$FP/a.txt"; G -C "$FP" add -A; G -C "$FP" commit -q -m a
+echo leftover >> "$FP/a.txt"
+F0="$(tree_fingerprint "$FP")"
+[ "$(tree_fingerprint "$FP")" = "$F0" ] && ok "an untouched dirty tree keeps its fingerprint" || bad "fingerprint is not stable"
+echo probe > "$FP/.codex-blocked-capability.probe"
+[ "$(tree_fingerprint "$FP")" = "$F0" ] && ok "a sentinel does not move the fingerprint" || bad "a sentinel moved the fingerprint"
+echo new > "$FP/n.txt"
+[ "$(tree_fingerprint "$FP")" != "$F0" ] && ok "a new file moves the fingerprint" || bad "a new file did not move the fingerprint"
+F1="$(tree_fingerprint "$FP")"; echo changed > "$FP/n.txt"
+[ "$(tree_fingerprint "$FP")" != "$F1" ] && ok "editing an untracked file moves the fingerprint" || bad "untracked edit not seen"
+
+# 9. A refused commit returns 2 and leaves nothing staged.
+printf '#!/bin/sh\nexit 1\n' > "$FP/.git/hooks/pre-commit"; chmod +x "$FP/.git/hooks/pre-commit"
+commit_runner_edits "$FP" ASK-9 "refused"; rc=$?
+[ "$rc" = "2" ] && [ -z "$(git -C "$FP" diff --cached --name-only)" ] \
+  && ok "a refused commit returns 2 and unstages, edits kept" \
+  || bad "refused commit: rc=$rc staged=$(git -C "$FP" diff --cached --name-only | tr '\n' ' ')"
+[ -f "$FP/n.txt" ] || bad "a refused commit lost the edit"
 
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" = 0 ]
