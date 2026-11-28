@@ -965,6 +965,9 @@ def ready(i):
     # runner lacks something it cannot grant itself (a harness permission, a
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
+    # step0:already-built is the step-0 stop (ticket_step0.py, ASK-5802): a
+    # label, never a cancel, so removing it is the whole undo.
+    if "step0:already-built" in labels: return False
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
@@ -986,6 +989,7 @@ def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
+            and "step0:already-built" not in labels
             and not is_fleet_alert(i)
             and "Definition of Ready" in (i.get("description") or "")
             and (i["state"]["type"] in QUEUE_STATES
@@ -1131,6 +1135,10 @@ founder_routed = held_with("owner:assaf", founder_scope)
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
 # number that says the loop is starving for a capability nobody has granted.
 blocked_cap = held_with("blocked:capability")
+# The step-0 hold, counted like the others (PR #903 round 5, minor 1): after
+# the labelling tick ready() never sees the ticket again, so this line is
+# the only place the held count is restated.
+step0_held = held_with("step0:already-built")
 # Expired parks are counted too (ASK-3995), after the pool is built, below: they
 # sort last rather than wait for E2 (ASK-4031, PR #663 round 1).
 
@@ -1396,7 +1404,7 @@ def refusal(i):
     # leaves out every PR whose ticket has live evidence before any kind is asked,
     # so no ticket that reaches this function has any.
     labels = {l["name"] for l in i["labels"]["nodes"]}
-    for held in ("owner:assaf", "needs-scope", "blocked:capability"):
+    for held in ("owner:assaf", "needs-scope", "blocked:capability", "step0:already-built"):
         if held in labels:
             return hold("refused-label", "ticket labelled " + held)
     if "owner:sana" not in labels:
@@ -1532,7 +1540,9 @@ print(json.dumps({
     "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
                "state": i["state"]["type"], "priority": i.get("priority"),
                "expired_park": expired_park(i),
-               "why": pick_why(i)}
+               "why": pick_why(i),
+               # Step 0 reads what the ticket asks for (ticket_step0.py, ASK-5802).
+               "text": (f"{i.get('title') or ''}\n\n{i.get('description') or ''}")[:4000]}
               for i in pool],
     "started_held": started_held,
     "total_open": len(issues),
@@ -1553,6 +1563,8 @@ print(json.dumps({
     "founder_routed_ids": [i["identifier"] for i in founder_routed],
     "blocked_capability": len(blocked_cap),
     "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
+    "step0_already_built": len(step0_held),
+    "step0_already_built_ids": [i["identifier"] for i in step0_held],
     "expired_parks": len(expired_parks),
     "expired_park_ids": [i["identifier"] for i in expired_parks][:10],
     # Does the derived repo identity name a project that EXISTS on the board?
@@ -1691,6 +1703,8 @@ print("; ".join(h["id"] + " (" + h["why"] + ")" for h in json.load(sys.stdin).ge
 # Fail loud rather than classify on a guess (see registry_ok in the picker).
 [ "$REG_OK" = "False" ] && say "worker: WARNING instance-registry.json could not be read, so reachability is UNKNOWN this run and every out-of-repo issue is reported as a routine skip"
 [ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
+STEP0_HELD="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("step0_already_built",0), " ".join(d.get("step0_already_built_ids",[])))' 2>/dev/null)"
+[ "${STEP0_HELD%% *}" != "0" ] && [ -n "$STEP0_HELD" ] && say "worker: ${STEP0_HELD%% *} issue(s) held at step0:already-built (the file exists; cap-ladder.py's nightly sweep drops the label once step 0 no longer stops it:${STEP0_HELD#* })"
 
 # THE FOUNDER QUEUE IS AN ERROR PATH (ASK-353). Directive 2026-08-03: "nothing
 # should be on me". The archived PRD called owner:assaf the designed destination
@@ -2935,6 +2949,40 @@ while IFS= read -r ISSUE; do
     # for up to a day. No live claim means the note is stale: drop it here, and
     # a later outage that reaches this issue notes it afresh.
     [ "$APPLY" = "1" ] && { python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true; }
+  fi
+
+  # STEP 0: SHOULD THIS TICKET EXIST (ASK-5802). Founder, 2026-11-26: "chekcing
+  # if the ticket should exist should be step 0". Runs before the dry pick, so
+  # a dry run shows the stop and the dispatcher moves to the next ticket, and
+  # before any claim or model call. ticket_step0.py is the one decision and
+  # the one writer (cap-ladder.py rung 0 runs the same two); it is offline and
+  # fails open with a NOT CHECKED line, so a broken check never holds the fleet.
+  # A STOP IS A LABEL, NEVER A CANCEL (founder decision on ASK-5802,
+  # 2026-11-27; rca-ask5802-five-rounds-step0-cancel-2026-11-27.md). With
+  # --apply it posts one comment naming the file and adds step0:already-built,
+  # which ready() skips. Removing the label lets the ticket through: the
+  # step0_labelled flag in this ledger makes step 0 stand down for it.
+  STEP0_RC=0
+  STEP0_ARGS=(--issue "$ISSUE" --attempts "$ATTEMPTS")
+  [ "$APPLY" = "1" ] && STEP0_ARGS+=(--apply)
+  # A WIP REWORK ROW HAS NO "text" KEY (the WIP feed rewrites "ready", above):
+  # its ticket was checked when first picked, so step 0 is skipped with a quiet
+  # line. The loud NOT CHECKED line stays for a checker that could not run
+  # (PR #910 round 1, minor 4).
+  STEP0_TEXT_KEY="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print(next(("text" in i for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]), False))' "$ISSUE" 2>/dev/null)"
+  if [ "$STEP0_TEXT_KEY" = "False" ]; then
+    say "step 0 $ISSUE: skipped, a rework row (its ticket was checked when it was first picked)"
+  else
+  STEP0_OUT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]), ""))' "$ISSUE" 2>/dev/null \
+    | python3 "$SCRIPT_DIR/ticket_step0.py" "${STEP0_ARGS[@]}" 2>>"$LOG")" || STEP0_RC=$?
+  STEP0_LINE="$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["line"])' 2>/dev/null)"
+  say "${STEP0_LINE:-step 0 $ISSUE: NOT CHECKED (ticket_step0.py exited $STEP0_RC with no line); the ticket proceeds unchecked}"
+  fi
+  if [ "$STEP0_RC" = "3" ]; then
+    say "skip $ISSUE: stopped at step 0, already built; labelled step0:already-built with the file named (its line above says whether the label landed), nothing canceled"
+    continue
   fi
 
   if [ "$APPLY" = "0" ]; then

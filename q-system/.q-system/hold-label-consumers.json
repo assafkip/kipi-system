@@ -66,6 +66,15 @@
         "what": "Nothing re-tests the block, so the label never clears. ASK-3960 records a probe per ticket and re-runs it nightly."
       }
     },
+    "step0:already-built": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "consumer": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "job": "com.kipi.cap-ladder",
+        "what": "Nightly: step0_sweep re-runs ticket_step0.py on every open ticket carrying the label and removes it (linear-sync.py unblock) once step 0 no longer stops the ticket, so ready() offers it again. A label removed by hand also passes: step 0 then stands down on the step0_labelled flag (ASK-5802)."
+      }
+    },
     "triage:held": {
       "refused_when": "present",
       "refused_by": "q-system/.q-system/scripts/linear-alert-triage.py",

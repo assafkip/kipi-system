@@ -32,6 +32,7 @@ from pathlib import Path
 SCRIPTS = Path(os.environ.get("CAP_LADDER_TEST_ROOT") or Path(__file__).resolve().parent.parent)
 LADDER = SCRIPTS / "cap-ladder.py"
 LEDGER = SCRIPTS / "attempts-ledger.py"
+STEP0_GROUND = SCRIPTS.parent.parent.parent / "plugins/kipi-core/skills/improve/scripts/improve_ground.py"
 FAILS: list = []
 
 
@@ -55,6 +56,8 @@ elif a[:2] == ["pr", "view"]:
     p = [p for p in w.get(slug, []) if str(p["number"]) == a[2]]
     print(p[0]["state"] if p else "CLOSED")
 elif a[:2] == ["pr", "close"]:
+    if w.get("close_fails"):
+        sys.stderr.write("HTTP 502: Bad Gateway\n"); sys.exit(1)
     for p in w.get(slug, []):
         if str(p["number"]) == a[2]:
             p["state"] = "CLOSED"
@@ -152,6 +155,7 @@ def make_world(tmp: Path) -> dict:
         "ASK-50": tk("backlog", ["owner:sana"]), "ASK-51": tk("backlog", []),
     }))
     (tmp / "attempts.json").write_text("{}")
+    (tmp / "lessons").mkdir()
     py = sys.executable
     return {
         "W": str(tmp), "PATH": os.environ.get("PATH", ""), "HOME": str(tmp),
@@ -174,6 +178,9 @@ def make_world(tmp: Path) -> dict:
         "CAP_LADDER_TARGETS": json.dumps([{"slug": "o/r", "project": "kipi-system"}]),
         "CAP_LADDER_MODEL_FP": "fp1",
         "CAP_LADDER_NOW": "2026-11-09T04:40:00+00:00",
+        # Rung 0 (ASK-5802) grounds every first cap; an empty tmp corpus keeps
+        # it off the live lessons dir and off the file's runtime bound.
+        "KIPI_LESSONS_CORPORA": str(tmp / "lessons"),
     }
 
 
@@ -305,6 +312,21 @@ def case_decisions() -> None:
     check("CLOSE: Canceled, one comment that carries the RCA path",
           {"op": "state", "issue": "ASK-1", "type": "canceled"} in writes(env)
           and any(c[0] == "progress" and "rca-ASK-1" in c[2] for c in log(env, "sync")), writes(env))
+    td.cleanup()
+
+    # PR #903 round 1, Codex P2: a CLOSE whose cancel failed is retried AS
+    # DECIDED. The second answer would be a SPLIT, so a fresh decide() shows.
+    td, env = decision_world([RCA + "DECISION: CLOSE\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: a works\nSUBTICKET: b :: b works\n"])
+    env["CAP_LADDER_LINEAR_FAIL"] = "state"
+    ladder(env, "--apply")
+    env.pop("CAP_LADDER_LINEAR_FAIL")
+    ladder(env, "--apply")
+    w = writes(env)
+    check("CLOSE retry: a failed cancel is retried as CLOSE, no second RCA, no SPLIT",
+          {"op": "state", "issue": "ASK-1", "type": "canceled"} in w
+          and not any(x["op"] == "create" for x in w)
+          and sum(1 for c in log(env, "fable") if c[:2] == ["--kind", "rca"]) == 1, (w, log(env, "fable")))
     td.cleanup()
 
     td, env = decision_world([RCA + "DECISION: BLOCKED-ON ASK-50\n"])
@@ -1224,6 +1246,232 @@ def case_founder_asks_reach_chief() -> None:
               sent(env) == ["2 decisions waiting for you."] and all(r.get("notified_at") for r in _status_rows(env)), sent(env))
 
 
+def case_step0(script: Path = LADDER) -> None:
+    """Rung 0 (ASK-5802): founder 2026-11-26, "chekcing if the ticket should
+    exist should be step 0". A STOP IS A LABEL, NEVER A CANCEL (founder
+    decision on ASK-5802, 2026-11-27; rca-ask5802-five-rounds-step0-cancel-
+    2026-11-27.md): a capped ticket asking to build an existing file gets one
+    comment naming the file and the label step0:already-built, before the rung
+    1 RCA is paid for. Nothing is canceled and no PR closes. The label holds
+    it; removing the label lets rung 1 run. A broken check stops nothing. The
+    title carries improve_ground.py's own already-built key."""
+    built = "Build review-tier.py for risk-scored auto-merge"
+    label = ["label", "ASK-1", "step0:already-built"]
+
+    def comments(env):
+        return [c for c in log(env, "sync") if c[0] == "progress" and "looks already built" in c[2]]
+
+    def destroyed(env):
+        return (any(w.get("op") == "state" for w in writes(env))
+                or any("close" in c for c in log(env, "gh")))
+
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, script=script)
+        check("step0: a dry run says rung 0 would label it and names the file, and writes nothing",
+              "would label it step0:already-built" in out and "review-tier.py" in out
+              and not writes(env) and not log(env, "sync"), out[-400:])
+        out = ladder(env, "--apply", script=script)
+        check("step0: a match adds the label and one comment naming the file, before any RCA",
+              label in log(env, "sync") and len(comments(env)) == 1 and "review-tier.py" in comments(env)[0][2]
+              and not any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")), (out[-300:], log(env, "sync")))
+        check("step0: a match cancels nothing and closes no PR",
+              not destroyed(env) and "nothing canceled" in out, (writes(env), log(env, "gh")))
+        check("step0: the label spends no rung, and the flag records that it landed",
+              ledger_row(env, "ASK-1").get("step0_labelled") and "no rung spent" in out,
+              ledger_row(env, "ASK-1"))
+        # The label is on: rung 0 holds, no second comment, no RCA.
+        reset(env)
+        edit_ticket(env, "ASK-1", labels=["owner:sana", "step0:already-built"])
+        out = ladder(env, "--apply", script=script)
+        check("step0: while the label is on, the ticket is held: no comment, no RCA, no write",
+              "held by its step0:already-built label" in out and not log(env, "sync")
+              and not log(env, "fable") and not writes(env), out[-300:])
+        # Removing the label is the undo: step 0 stands down and rung 1 runs.
+        reset(env)
+        edit_ticket(env, "ASK-1", labels=["owner:sana"])
+        out = ladder(env, "--apply", script=script)
+        check("step0: a removed label lets the ticket through: step 0 stands down, rung 1 RCA runs, no relabel",
+              "stands down" in out and any(c[:2] == ["--kind", "rca"] for c in log(env, "fable"))
+              and label not in log(env, "sync") and not comments(env), (out[-300:], log(env, "sync")))
+    with tempfile.TemporaryDirectory() as td:
+        # No match: rung 0 writes nothing and rung 1 runs as for any cap.
+        env = make_world(Path(td))
+        edit_ticket(env, "ASK-1", title="usage-pacer.py usage_pct() crashes on TimeoutExpired")
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, "--apply", script=script)
+        check("step0: no match passes: no label, no step-0 comment, rung 1 runs",
+              label not in log(env, "sync") and not comments(env)
+              and any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")), out[-300:])
+    with tempfile.TemporaryDirectory() as td:
+        # A legacy step-0 capout (the worker wrote one before this rule) that
+        # still matches: the label replaces it, so one undo is enough.
+        env = make_world(Path(td))
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "step 0: already built")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a legacy step-0 capout that still matches is labelled and its capout released",
+              label in log(env, "sync") and not ledger_row(env, "ASK-1").get("capout") and not destroyed(env),
+              (out[-300:], ledger_row(env, "ASK-1")))
+    with tempfile.TemporaryDirectory() as td:
+        # Round 2, finding 1: a step-0 capout that step 0 no longer stops (the
+        # title changed) is released, never climbed into a paid RCA.
+        env = make_world(Path(td))
+        led(env, "record-capout", "ASK-1", "step 0: already built: q-system/.q-system/scripts/review-tier.py")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a step-0 capout step 0 no longer stops is released: no RCA, no PR touched, no comment",
+              not log(env, "fable") and not any("close" in c for c in log(env, "gh")) and not log(env, "sync")
+              and not ledger_row(env, "ASK-1").get("capout") and "released" in out,
+              (out[-300:], ledger_row(env, "ASK-1")))
+    with tempfile.TemporaryDirectory() as td:
+        # A failed label write leaves no label and no flag; the next run retries
+        # the label without a second comment.
+        env = make_world(Path(td))
+        (Path(td) / "badlabel").write_text(
+            "import json, os, sys\n"
+            "open(os.environ['W'] + '/sync.log', 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "sys.exit(1 if sys.argv[1] == 'label' and os.path.exists(os.environ['W'] + '/labelfail') else 0)\n")
+        (Path(td) / "labelfail").write_text("")
+        env["CAP_LADDER_SYNC"] = f"{sys.executable} {td}/badlabel"
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a failed label is RED, sets no flag, cancels nothing, spends no RCA",
+              "label did not land" in out and not ledger_row(env, "ASK-1").get("step0_labelled")
+              and not destroyed(env) and not log(env, "fable"), (out[-300:], ledger_row(env, "ASK-1")))
+        (Path(td) / "labelfail").unlink()
+        at(env, 1)
+        out = ladder(env, "--apply", script=script)
+        check("step0: the retry lands the label and posts no second comment",
+              log(env, "sync").count(label) == 2 and len(comments(env)) == 1
+              and ledger_row(env, "ASK-1").get("step0_labelled"), (out[-300:], log(env, "sync")))
+    with tempfile.TemporaryDirectory() as td:
+        # --issue (founder 2026-11-27, no waits for a time of day) runs the same
+        # loop for one ticket and touches no other cap.
+        env = make_world(Path(td))
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        led(env, "record-capout", "ASK-2", "hit the 3-round cap")
+        out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+        check("step0: --issue labels the built ticket now, cancels nothing, spends no RCA",
+              label in log(env, "sync") and not destroyed(env) and not log(env, "fable"), out[-300:])
+        check("step0: --issue leaves every other cap and writes no nightly report",
+              ledger_row(env, "ASK-2").get("capout") is True
+              and not any("ASK-2" in c for c in log(env, "sync"))
+              and not Path(env["CAP_LADDER_REPORT"]).exists(), ledger_row(env, "ASK-2"))
+    for guard in ("lane", "live"):
+        with tempfile.TemporaryDirectory() as td:
+            # PR #893 round 3, finding 1: a lane or a live converge run holds rung 0.
+            env = make_world(Path(td))
+            env["KIPI_LANES_DIR"] = str(Path(td) / "lanes")
+            if guard == "lane":
+                lane(env, "ASK-1", "2026-11-09T06:00:00Z")
+            else:
+                (Path(td) / "ps.txt").write_text("bash converge.sh --issue ASK-1 --max-rounds 4\n")
+            edit_ticket(env, "ASK-1", title=built)
+            led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+            out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+            check(f"step0: --issue under a {guard} hold labels nothing and closes no PR",
+                  not log(env, "sync") and not destroyed(env), (out[-300:], log(env, "sync")))
+    with tempfile.TemporaryDirectory() as td:
+        # PR #899 round 1, finding 1: with the REAL process table, --issue saw its
+        # own argv ("--issue ASK-1") and held itself on every tick.
+        env = make_world(Path(td))
+        env["CAP_LADDER_PS"] = "ps -Ao pid=,args="
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+        check("step0: --issue under the real ps is not held by its own command line",
+              label in log(env, "sync") and "a run is live" not in out, out[-300:])
+    # PR #903 round 1, Codex P1 x2. The stand-in ps prints $PPID, the ladder's
+    # own PID, so "mine" is decided by PID; 999999 is an identical second writer.
+    for name, rows, held in (
+            ("read-only step-0 checks and the drafter are not writers",
+             ["python3 ticket_step0.py --issue ASK-1", "python3 linear-dor-drafter.py --issue ASK-1 --limit 1"], False),
+            ("my own PID is not a second writer",
+             ["$PPID python3 cap-ladder.py --issue ASK-1 --apply"], False),
+            ("an identical writer under another PID holds",
+             ["$PPID python3 cap-ladder.py --issue ASK-1 --apply",
+              "999999 python3 cap-ladder.py --issue ASK-1 --apply"], True),
+            ("a worker on the issue holds",
+             ["999998 bash linear-worker.sh --apply --issue ASK-1"], True),
+            # PR #903 round 4, minor 2: pr-owner.py's reviewer is a writer too.
+            ("the reviewer pr-owner.py starts holds",
+             ["999997 bash /x/kipi review 10 --repo o/r --issue ASK-1"], True)):
+        with tempfile.TemporaryDirectory() as td:
+            env = make_world(Path(td))
+            fake = Path(td) / "pid_ps.sh"
+            fake.write_text("#!/bin/sh\n" + "".join(f'echo "{r}"\n' for r in rows))
+            fake.chmod(0o755)
+            env["CAP_LADDER_PS"] = str(fake)
+            edit_ticket(env, "ASK-1", title=built)
+            led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+            out = ladder(env, "--issue", "ASK-1", "--apply", script=script)
+            labelled = label in log(env, "sync")
+            check(f"step0 live(): {name}",
+                  (("a run is live" in out and not labelled) if held else labelled), (out[-300:], log(env, "sync")))
+    with tempfile.TemporaryDirectory() as td:
+        # PR #899 round 1, finding 3: a lane that starts while step 0 runs wins.
+        # The stand-in check writes the marker, then answers like the real one.
+        env = make_world(Path(td))
+        ground = Path(td) / "lane_then_ground.py"
+        ground.write_text(
+            "import json, os, subprocess, sys\n"
+            f"d = {env['KIPI_LANES_DIR']!r}\nos.makedirs(d, exist_ok=True)\n"
+            "open(os.path.join(d, 'ASK-1.json'), 'w').write(json.dumps({'issue': 'ASK-1', 'agent': 'sana-lane1',"
+            " 'since': '2026-11-08T20:00:00Z', 'pr': '10', 'until': '2026-11-09T06:00:00Z'}))\n"
+            f"sys.exit(subprocess.run([sys.executable, {str(STEP0_GROUND)!r}] + sys.argv[1:]).returncode)\n")
+        env["KIPI_STEP0_GROUND"] = str(ground)
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a lane that starts during the step-0 check holds the label",
+              "STOP" in out and not log(env, "sync") and not destroyed(env), (out[-300:], log(env, "sync")))
+    with tempfile.TemporaryDirectory() as td:
+        # PR #893 round 3, minor 5: a step-0 release spends no RCA, so it takes no
+        # --limit slot and a real cap still climbs the same night.
+        env = make_world(Path(td))
+        led(env, "record-capout", "ASK-1", "step 0: already built: q-system/.q-system/scripts/review-tier.py")
+        led(env, "record-capout", "ASK-2", "hit the 3-round cap")
+        out = ladder(env, "--apply", "--limit", "1", script=script)
+        check("step0: a step-0 release takes no --limit slot: the real cap climbs in the same run",
+              not ledger_row(env, "ASK-1").get("capout") and "over the limit" not in out
+              and any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")), out[-400:])
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        (Path(td) / "broken.py").write_text("import sys\nsys.exit(1)\n")
+        env["KIPI_STEP0_GROUND"] = str(Path(td) / "broken.py")
+        edit_ticket(env, "ASK-1", title=built)
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+        out = ladder(env, "--apply", script=script)
+        check("step0: a broken check stops nothing: rung 1 runs, and the log says NOT CHECKED",
+              any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")) and "NOT CHECKED" in out
+              and label not in log(env, "sync"), out[-400:])
+    with tempfile.TemporaryDirectory() as td:
+        # PR #903 round 5, major 1: the label's consumer. The nightly sweep drops
+        # it from a ticket step 0 no longer stops, keeps it (and re-records the
+        # flag) on one it still stops, and a dry run writes nothing. No cap needed.
+        env = make_world(Path(td))
+        fx = Path(env["CAP_LADDER_LINEAR_FIXTURE"])
+        d = json.loads(fx.read_text())
+        d["ASK-60"] = {"state_type": "backlog", "labels": ["owner:sana", "step0:already-built"],
+                       "project": "kipi-system", "title": "Add a self-review pass to review-tier.py",
+                       "description": "d"}
+        d["ASK-61"] = {"state_type": "backlog", "labels": ["owner:sana", "step0:already-built"],
+                       "project": "kipi-system", "title": built, "description": "d"}
+        fx.write_text(json.dumps(d))
+        out = ladder(env, script=script)
+        check("step0 sweep: a dry run names the label it would remove and writes nothing",
+              "would remove step0:already-built" in out and not log(env, "sync"), out[-400:])
+        out = ladder(env, "--apply", script=script)
+        unblocks = [c for c in log(env, "sync") if c[0] == "unblock"]
+        check("step0 sweep: a ticket step 0 no longer stops loses the label; one it still stops keeps it",
+              unblocks == [["unblock", "ASK-60", "step0:already-built"]]
+              and ledger_row(env, "ASK-61").get("step0_labelled"), (out[-400:], log(env, "sync")))
+
+
 def main() -> int:
     t0 = time.monotonic()
     print("test_cap_ladder.py")
@@ -1234,6 +1482,8 @@ def main() -> int:
         cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
                  case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
                  case_mutant, case_lane_marker, case_founder_asks_reach_chief] + cases
+    # case_step0 runs from test_cap_ladder_step0.py, its own manifest entry: here it
+    # was the longest case and pushed this file past its bound (PR #910 round 1).
     # list() re-raises any exception a case threw, so a crash still fails the file.
     with ThreadPoolExecutor(max_workers=len(cases)) as pool:
         list(pool.map(lambda f: f(), cases))

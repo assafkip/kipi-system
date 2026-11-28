@@ -120,7 +120,7 @@ OPEN_TYPES = ("backlog", "unstarted", "started", "triage")
 REGISTRY_REL = "hold-label-consumers.json"
 # The labels ready() refuses, in ready()'s own order. parked is absent: since #663
 # (ASK-4031) ready() sorts an expired park last instead of refusing it.
-READY_LABEL_ORDER = ("owner:assaf", "owner:sana", "needs-scope", "blocked:capability")
+READY_LABEL_ORDER = ("owner:assaf", "owner:sana", "needs-scope", "blocked:capability", "step0:already-built")
 
 # Job state lives outside every checkout (separate-worktrees.md).
 EVIDENCE_PATH = pathlib.Path.home() / ".local" / "state" / "kipi" / "stall-sweep" / "last-run.json"

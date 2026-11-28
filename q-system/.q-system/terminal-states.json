@@ -352,6 +352,30 @@
       }
     },
     {
+      "id": "step0-already-built",
+      "source": "linear-worker",
+      "class": "durable-queue",
+      "marker": [
+        "stopped at step 0, already built",
+        "\"step0:already-built\" in labels"
+      ],
+      "sites": 2,
+      "what": "Step 0 (ticket_step0.py, ASK-5802): improve_ground.py names a file as already built, the file exists, and the ticket's title creates that file as a new thing (build/create/write X, or add/make a new X, then at most a short purpose phrase); a title that changes the file passes. No build session is spent. On --apply the worker posts one comment naming the file and adds the label step0:already-built; nothing is canceled and no PR closes. It skips before the dry pick.",
+      "consumer": "the step0:already-built label -- linear-worker.sh ready() skips it, so the label is the only stop; removing it lets the next pick take the ticket (ticket_step0.py gate() stands down on the step0_labelled flag). cap-ladder.py rung 0 runs the same check and writer on a capped ticket and holds it while the label is on",
+      "consumer_test": "q-system/.q-system/scripts/test/test-worker-step0.sh",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "def rung_zero",
+        "why": "The label is the stop and its removal is the undo, so the step-0 skip is never a dead end and never destroys work: a false stop costs one label removal, after which step 0 stands down and the worker takes the ticket. Founder 2026-11-26: 'chekcing if the ticket should exist should be step 0'; label not cancel per the ASK-5802 decision of 2026-11-27 (rca-ask5802-five-rounds-step0-cancel-2026-11-27.md)."
+      }
+    },
+    {
       "id": "codex-outage-hold",
       "source": "linear-worker",
       "class": "infra-retry",
@@ -1350,7 +1374,8 @@
         "max_age_days": 28,
         "covers": [
           "attempts-cap-stuck",
-          "ladder-hold"
+          "ladder-hold",
+          "step0-already-built"
         ],
         "what": "A ticket whose 3 worker attempts are spent, or whose PR is capped (rounds, review rounds, rebase rounds, the review-redrive machine tier).",
         "exits": [

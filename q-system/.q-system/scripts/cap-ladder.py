@@ -121,7 +121,7 @@ GH = cmd("CAP_LADDER_GH", ["gh"])
 SYNC = cmd("CAP_LADDER_SYNC", [sys.executable, str(HERE / "linear-sync.py")])
 FABLE = cmd("CAP_LADDER_FABLE", [sys.executable, str(HERE / "fable-escalate.py")])
 DRAFTER = cmd("CAP_LADDER_DRAFTER", [sys.executable, str(HERE / "linear-dor-drafter.py")])
-PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "args="])
+PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "pid=,args="])
 
 # Every path this script writes, every outside writer it calls, and the live
 # lanes dir it reads (KIPI_LANES_DIR, PR #732 round 1 minor: a test that missed
@@ -641,7 +641,8 @@ def ticket(issue: str) -> dict | None:
             i = (json.loads(Path(fixture).read_text()) or {}).get(issue)
             if i is None:
                 return None
-            return dict(i, desc_hash=hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16])
+            return dict(i, desc_hash=hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16],
+                        text=f"{i.get('title') or ''}\n\n{i.get('description') or ''}")
         data = _sync().graphql(
             "query($id:String!){issue(id:$id){id title description state{type} team{id} "
             "project{id name} labels{nodes{name}}}}", {"id": issue})
@@ -650,10 +651,37 @@ def ticket(issue: str) -> dict | None:
                 "labels": [n["name"] for n in (i.get("labels") or {}).get("nodes") or []],
                 "project": (i.get("project") or {}).get("name") or "", "title": i.get("title") or "",
                 "desc_hash": hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16],
+                "text": f"{i.get('title') or ''}\n\n{i.get('description') or ''}",
                 "uuid": i.get("id"), "team_id": (i.get("team") or {}).get("id"),
                 "project_id": (i.get("project") or {}).get("id")}
     except Exception as exc:  # noqa: BLE001 - one unreadable ticket must not stop the run
         say(f"WARN could not read {issue} from Linear ({str(exc)[:120]}); it waits for the next run")
+        return None
+
+
+def step0_labelled() -> list | None:
+    """Open tickets carrying step0:already-built, as {id, text}; None when
+    Linear cannot be read (the sweep then says so and changes nothing)."""
+    fixture = os.environ.get("CAP_LADDER_LINEAR_FIXTURE")
+    try:
+        if fixture:
+            rows = (json.loads(Path(fixture).read_text()) or {}).items()
+            return [{"id": k, "text": f"{v.get('title') or ''}\n\n{v.get('description') or ''}"}
+                    for k, v in rows if STEP0_LABEL in (v.get("labels") or [])
+                    and v.get("state_type") in OPEN_TYPES]
+        out, cur = [], None
+        while True:
+            d = _sync().graphql(
+                "query($l:String!,$c:String){issues(first:100,after:$c,filter:{labels:{name:{eq:$l}},"
+                "state:{type:{nin:[\"completed\",\"canceled\"]}}}){nodes{identifier title description}"
+                " pageInfo{hasNextPage endCursor}}}", {"l": STEP0_LABEL, "c": cur})["issues"]
+            out += [{"id": n["identifier"], "text": f"{n.get('title') or ''}\n\n{n.get('description') or ''}"}
+                    for n in d["nodes"]]
+            if not d["pageInfo"]["hasNextPage"]:
+                return out
+            cur = d["pageInfo"]["endCursor"]
+    except Exception as exc:  # noqa: BLE001 - the sweep must not stop the ladder
+        say(f"WARN step 0 sweep could not read the {STEP0_LABEL} tickets ({str(exc)[:120]}); next run retries")
         return None
 
 
@@ -666,6 +694,9 @@ def lin(op: str, **kw):
     """create -> new identifier; state / relate -> True. Seam: CAP_LADDER_LINEAR_LOG."""
     log = os.environ.get("CAP_LADDER_LINEAR_LOG")
     if log:
+        # CAP_LADDER_LINEAR_FAIL=state: Linear answers success:false (test seam).
+        if op in os.environ.get("CAP_LADDER_LINEAR_FAIL", "").split(","):
+            return "" if op == "create" else False
         with open(log, "a") as fh:
             fh.write(json.dumps(dict(op=op, **kw)) + "\n")
         return f"ASK-9{sum(1 for _ in open(log)):03d}" if op == "create" else True
@@ -698,11 +729,43 @@ def lin(op: str, **kw):
     raise ValueError(op)
 
 
+def own_chain() -> set:
+    """The PIDs of this process and every ancestor."""
+    chain, pid = set(), os.getpid()
+    for _ in range(16):
+        chain.add(pid)
+        rc, line = run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5)
+        ppid = line.strip()
+        if rc != 0 or not ppid.isdigit() or int(ppid) <= 1:
+            break
+        pid = int(ppid)
+    return chain
+
+
+def _not_mine(row: str, chain: set) -> bool:
+    """A row with a leading PID in my chain is me; a row with no PID (the
+    suite's ps fixture prints bare argv) is never me."""
+    head = row.strip().split(None, 1)
+    return not (head and head[0].isdigit() and int(head[0]) in chain)
+
+
 def live(issue: str, pr: dict | None) -> bool:
     rc, table = run(PS, timeout=20)
     if rc != 0:
         return True   # cannot see the table: assume live, the cost is one night
-    pats = [rf"converge\.sh\s+--issue\s+{issue}(\s|$)", rf"--issue\s+{issue}(\s|$)"]
+    # MY OWN CALL CHAIN IS NOT A SECOND WRITER (PR #899 round 1, finding 1).
+    # `cap-ladder.py --issue ASK-n`, and a worker run as `--issue ASK-n`,
+    # matched "--issue ASK-n" below, so the worker's same-tick call was held
+    # by itself on every tick. Filtered by PID, not argv (PR #903 round 1,
+    # Codex P1): an argv filter also hid a second writer started identically.
+    chain = own_chain()
+    table = "\n".join(l for l in table.splitlines() if _not_mine(l, chain))
+    # ONLY WRITERS COUNT (PR #903 round 1, Codex P1): a bare "--issue ASK-n"
+    # also matched a read-only `ticket_step0.py --issue ASK-n` and the
+    # drafter, so a concurrent check held the same-tick cancel.
+    # pr-owner.py starts the reviewer as `bash kipi review <n> ... --issue ASK-n`
+    # (PR #903 round 4, minor 2): a writer too, and it was missing here.
+    pats = [rf"(converge\.sh|cap-ladder\.py|linear-worker\.sh|\bkipi\s+review)\b[^\n]*?--issue\s+{issue}(\s|$)"]
     if pr:
         pats.append(rf"pr-review-agent\.sh\s+{pr['number']}(\s|$)")
     return any(re.search(p, table, re.M) for p in pats)
@@ -949,10 +1012,14 @@ def decide(issue: str, kind: str, why: str, pr: dict | None, slug: str, tgts: li
                                      "refused": refused, "defaulted": True})
 
 
+CLOSE_FLAG = "close_reason_posted"
+PR_UNCLOSED = "RED: the cancel landed but the PR did not close"
+
+
 def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: int, row: dict) -> str:
     branch = f"{LANE_PREFIX}{issue.lower()}"
     rca_ref = d.get("rca") or "none"
-    if d["kind"] in ("SPLIT", "CLOSE") and pr:
+    if d["kind"] == "SPLIT" and pr:
         close_pr(slug, pr, f"Closed by {JOB}: {issue} {d['kind']} on cap ladder rung {r}. "
                            f"Branch {pr['headRefName']} is kept. RCA: {rca_ref}.")
     if d["kind"] == "SPLIT":
@@ -982,10 +1049,36 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
         clear_caps(issue)
         return f"{issue}: SPLIT into {', '.join(made)}"
     if d["kind"] == "CLOSE":
-        lin("state", issue=issue, type="canceled")
-        run(SYNC + ["progress", issue, f"**Canceled by {JOB}** after rung {r}: wrong premise or obsolete "
-                    f"work. Reason: RCA {rca_ref}. Reopen to undo.", "--agent", "sana"])
+        # THE ORDER IS THE CONTRACT: reason once, then cancel, then the PR, then
+        # the clears (rca-ask5802-three-rounds-2026-11-27.md). Both results were
+        # dropped, so a failed post left a reasonless cancel and a failed cancel
+        # still cleared the cap (PR #893 rounds 2-3). After each failure the
+        # cap stays, so the next run retries: a failed post posts again, a
+        # failed cancel does not (the flag), and no PR closes for a cancel that
+        # did not land.
+        rc, _ = run(LEDGER + [str(ATTEMPTS), "claim-flag", issue, CLOSE_FLAG])
+        if rc not in (0, 1):
+            return f"{issue}: CLOSE could not record its reason flag; nothing canceled, the next run retries"
+        if rc == 0:
+            prc, out = run(SYNC + ["progress", issue,
+                                   f"**Canceled by {JOB}** after rung {r}: wrong premise or obsolete "
+                                   f"work. Reason: RCA {rca_ref}. Reopen to undo.", "--agent", "sana"])
+            if prc != 0:
+                ledger(["clear-flag", issue, CLOSE_FLAG])
+                return f"{issue}: CLOSE could not post its reason ({out[-120:]}); nothing canceled, the next run retries"
+        if not lin("state", issue=issue, type="canceled"):
+            return f"{issue}: CLOSE posted its reason but the cancel failed; the cap stays and the next run retries"
+        # A PR THAT WOULD NOT CLOSE IS RED, NOT SILENT (PR #899 round 1, finding
+        # 4). The ticket is canceled, so no later run revisits it; pr-owner.py
+        # closes a canceled ticket's PR (close-comment), and the report says so.
+        unclosed = bool(pr) and not close_pr(
+            slug, pr, f"Closed by {JOB}: {issue} CLOSE on cap ladder rung {r}. "
+                      f"Branch {pr['headRefName']} is kept. RCA: {rca_ref}.")
+        ledger(["clear-flag", issue, CLOSE_FLAG])
         clear_caps(issue)
+        if unclosed:
+            return (f"{issue}: CLOSE (Canceled, RCA {rca_ref}); {PR_UNCLOSED} #{pr['number']}. pr-owner.py "
+                    f"owns it next: it closes a canceled ticket's PR, but merges one already approved and green")
         return f"{issue}: CLOSE (Canceled, RCA {rca_ref})"
     # BLOCKED-ON. The hold goes on FIRST: if it does not land, nothing is cleared,
     # so the cap record still keeps the worker off and the next run retries.
@@ -1050,7 +1143,7 @@ def next_step_line(r: int) -> str:
             "an owned blocker), never a timed retry.")
 
 
-def late_lane(issue: str, rung: int, report: list) -> str:
+def late_lane(issue: str, rung: int, report: list, during: str = "the RCA") -> str:
     """The lane check again, after the Fable call and before the ladder's own writes.
 
     PR #732 round 1, major: main() read the marker once, then rca() ran Fable for
@@ -1064,8 +1157,72 @@ def late_lane(issue: str, rung: int, report: list) -> str:
     if not held_by:
         return ""
     report.append({"issue": issue, "rung": rung, "waiting_on": held_by})
-    return (f"{issue}: {held_by}, which appeared while the RCA ran; nothing was closed, opened or "
+    return (f"{issue}: {held_by}, which appeared while {during} ran; nothing was closed, opened or "
             "requeued, and the rung is not spent")
+
+
+def step0_capout(entry: dict) -> bool:
+    """A capout step 0 wrote itself (linear-worker.sh writes "step 0: ...")."""
+    return str((entry or {}).get("capout_why") or "").startswith("step 0:")
+
+
+NO_RUNG = "no rung spent"
+
+
+def release_step0(issue: str, apply: bool, why: str) -> str:
+    """Step 0 no longer stops a ticket whose only cap is step 0's own: release
+    that capout, spend no rung (PR #893 round 2, finding 1: it escalated to a
+    paid rung-1 RCA, a PR close/reopen and a false cap comment)."""
+    if not apply:
+        return f"[dry] {issue}: {why}; would release its step-0 capout, {NO_RUNG}"
+    ledger(["clear-capout", issue])
+    return f"{issue}: {why}; its step-0 capout is released, {NO_RUNG}, the worker takes it"
+
+
+def rung_zero(issue: str, t: dict, apply: bool) -> dict | None:
+    """Rung 0 (ASK-5802): before the first RCA is paid for, ask whether the
+    ticket should exist. Founder 2026-11-26: "chekcing if the ticket should
+    exist should be step 0"; an RCA on a ticket that asks to build an existing
+    file studies the wrong question.
+
+    A STOP IS A LABEL, NEVER A CANCEL (founder decision on ASK-5802,
+    2026-11-27; rca-ask5802-five-rounds-step0-cancel-2026-11-27.md). Rung 0
+    used to hand a CLOSE to apply_decision; five review rounds found a real
+    ticket that the matcher canceled each time. Now it returns LABEL and
+    climb() runs ticket_step0.label_stop(), the same writer the worker uses.
+    None means go on to rung 1.
+
+    {"kind": "HOLD"}: the label is on, so the label holds it and no rung is
+    spent. Removing the label is the undo: ticket_step0.gate() then stands
+    down (the step0_labelled flag) and rung 1 runs as for any cap.
+    {"kind": "RELEASE"}: a capout step 0 wrote itself (before this rule) that
+    step 0 no longer stops (PR #893 round 2, finding 1)."""
+    if STEP0_LABEL in ((t or {}).get("labels") or []):
+        return {"kind": "HOLD"}
+    entry = read_ledger().get(issue) or {}
+    res = step0().gate(issue, (t or {}).get("text") or (t or {}).get("title") or "",
+                       LEDGER + [str(ATTEMPTS)], apply)
+    say(res["line"])
+    if res["decision"] != "stop":
+        return {"kind": "RELEASE", "why": "step 0 no longer stops it"} if step0_capout(entry) else None
+    return {"kind": "LABEL", "res": res, "cites": res["cites"]}
+
+
+STEP0_LABEL = "step0:already-built"
+
+
+_STEP0_MOD = None
+
+
+def step0():
+    """ticket_step0.py, the one should-exist decision the worker also runs."""
+    global _STEP0_MOD
+    if _STEP0_MOD is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("kipi_ticket_step0_ladder", str(HERE / "ticket_step0.py"))
+        _STEP0_MOD = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_STEP0_MOD)
+    return _STEP0_MOD
 
 
 def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: dict,
@@ -1074,11 +1231,40 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
     r = int(row.get("rung", 0)) + 1
     kind = sigs[0].split(":", 1)[0]
     why = f"{kind} cap ({', '.join(s.split(':', 1)[0] for s in sigs)})"
+    if r == 1 or step0_capout(read_ledger().get(issue) or {}):
+        d0 = rung_zero(issue, t, apply)
+        if d0 and d0["kind"] == "RELEASE":
+            return release_step0(issue, apply, d0["why"])
+        if d0 and d0["kind"] == "HOLD":
+            return (f"{issue}: held by its {STEP0_LABEL} label, {NO_RUNG}; removing the label "
+                    "lets rung 1 run")
+        if d0:
+            if not apply:
+                return f"[dry] {issue}: rung 0 would label it {STEP0_LABEL}, already built: {', '.join(d0['cites'])}; {NO_RUNG}"
+            # The step-0 check takes up to KIPI_STEP0_TIMEOUT; a lane that started
+            # meanwhile wins, as at every other rung (PR #899 round 1, finding 3).
+            late = late_lane(issue, int(row.get("rung", 0)), report, during="the step-0 check")
+            if late:
+                return late
+            ok, note = step0().label_stop(issue, d0["res"], LEDGER + [str(ATTEMPTS)], SYNC)
+            if not ok:
+                out = f"{issue}: rung 0 {note}; the next run retries"
+                report.append({"issue": issue, "rung": 0, "decision": "LABEL", "red": True, "note": out})
+                return out
+            # The label is the stop now, so a capout step 0 wrote itself is
+            # released: two stops on one ticket would need two undos.
+            if step0_capout(read_ledger().get(issue) or {}):
+                ledger(["clear-capout", issue])
+            report.append({"issue": issue, "rung": 0, "decision": "LABEL", "cites": d0["cites"]})
+            return f"{issue}: rung 0 {note}; nothing canceled, {NO_RUNG}, the label holds it"
     if not apply:
         return f"[dry] {issue}: would take rung {r} ({rung_name(r)}) on its {why}"
 
     if r >= 4:
-        d = decide(issue, kind, why, pr, slug, tgts)
+        # A CLOSE THAT FAILED IS RETRIED AS DECIDED (PR #903 round 1, Codex P2).
+        # Its reason may already be posted; a fresh decide() could answer SPLIT
+        # or BLOCKED-ON under a cancel comment, and spend another model run.
+        d = row.get("pending_close") or decide(issue, kind, why, pr, slug, tgts)
         if d is None:
             report.append({"issue": issue, "rung": r, "decision": None, "red": True,
                            "note": "capped with no decision record: Fable produced no RCA; retried next run"})
@@ -1088,8 +1274,12 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
             return late
         out = apply_decision(issue, d, t, pr, slug, r, row)
         if "retries" in out:
+            if d["kind"] == "CLOSE":
+                row["pending_close"] = d
+                state[issue] = row
             report.append({"issue": issue, "rung": r, "decision": d["kind"], "red": True, "note": out})
             return out
+        row.pop("pending_close", None)
         row.update(rung=r, last_at=now().isoformat(), handled=sigs,
                    decision={k: v for k, v in d.items() if k != "text"})
         state[issue] = row
@@ -1169,6 +1359,8 @@ def main(argv=None) -> int:
                     help="add one ask to the morning status file (other jobs call this), then exit; records only, never sends")
     ap.add_argument("--send-asks", action="store_true",
                     help="send every unsent ask to chief's phone gate as one message, then exit (the one sender)")
+    ap.add_argument("--issue", metavar="ISSUE",
+                    help="run this same loop, with every guard, for one capped issue now")
     args = ap.parse_args(argv)
     # FIRST, before any verb that writes (round 2, minor: --resolve and
     # --founder-ask ran above this and wrote the real status file under pytest).
@@ -1220,6 +1412,12 @@ def main(argv=None) -> int:
                 slug_by_pr[(issue, pr["number"])] = tg["slug"]
 
     caps = find_caps(read_ledger(), prs_by_issue, slug_by_pr)
+    # --issue: NO CLOCK, SAME GUARDS (founder 2026-11-27: "identify any unneeded
+    # holds, waits for a time of day you dont need ... and remove them"), so one
+    # capped ticket need not wait for 04:40. It is a filter on this loop, not a second loop: PR #893's --rung0
+    # was one, and it skipped lane_hold and live() (round 3, finding 1).
+    if args.issue:
+        caps = {k: v for k, v in caps.items() if k == args.issue}
     state = read_state()
     report: list = []
     lock_path = STATE.with_suffix(".lock")
@@ -1268,7 +1466,29 @@ def main(argv=None) -> int:
                 continue
             out = climb(issue, sigs, t, pr, slug, state, args.apply, tgts, report)
             say(out)
-            done += 1
+            # --limit bounds RCA spend; a step-0 release spends none, so it takes
+            # no slot and is not counted as climbed (PR #893 round 3, minor 5).
+            done += 0 if NO_RUNG in out else 1
+        if args.issue:
+            # One ticket only: the held sweep, the founder asks and the nightly
+            # report belong to the nightly run, and a one-issue report would
+            # overwrite its rows.
+            if args.apply:
+                write_state(state)
+            say(f"run complete for {args.issue}: {len(caps)} capped, {done} climbed{'' if args.apply else ' (dry)'}")
+            # A RED ROW IS EXIT 1 (PR #899 round 1, finding 5): there is no report
+            # file here, so the caller's `|| WARN` is the only place it shows.
+            return 1 if any(r.get("red") for r in report) else 0
+        # THE step0:already-built CONSUMER (hold-label-consumers.json, PR #903
+        # round 5, major 1): ready() refuses the label forever, so something
+        # must re-check it. A ticket step 0 no longer stops loses the label.
+        # Silent when none is labelled: a quiet night prints nothing new
+        # (held_stays_quiet in test_cap_ladder.py pins that).
+        labelled = step0_labelled()
+        if labelled:
+            for line in step0().sweep(labelled, LEDGER + [str(ATTEMPTS)], SYNC, args.apply):
+                say(line)
+            say(f"step 0 sweep: {len(labelled)} ticket(s) labelled {STEP0_LABEL}")
         # THE HELD TICKETS: no event, no run, one line naming what it waits on.
         for issue, row in sorted(state.items()):
             # A release keeps its ask open on purpose: the question is still real
