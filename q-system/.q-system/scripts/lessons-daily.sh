@@ -450,7 +450,8 @@ fi
 # via slack-notify.sh. Never under a test's KIPI_PROPAGATE_CMD, so no fixture
 # reaches the live registry.
 if [ -z "${KIPI_PROPAGATE_CMD:-}" ]; then
-  case "$PROP" in propagat*)
+  # Exact match: a glob propagat* also matched "propagate FAILED" (PR #909 review).
+  case "$PROP" in "propagated to fleet")
     python3 "$SKEL/fleet-sync-land.py" land >> "$LOG" 2>&1 \
       || echo "$(TS) fleet-sync-land: a landing failed (see above)" >> "$LOG" ;;
   esac

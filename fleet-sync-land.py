@@ -24,6 +24,7 @@ Exit codes: 0 ok, 1 some instance stale (check) or a landing failed (land).
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -34,7 +35,11 @@ import time
 from pathlib import Path
 
 SKEL = Path(__file__).resolve().parent
-TAG = "[no-issue: fleet updater"
+# The skeleton-sync tag only. The bare "[no-issue: fleet updater" prefix also
+# matched kipi-update.sh's system-state and untrack commits, which exist only in
+# the shared checkout and never in a worktree off origin: check paged "not
+# landed" daily while land said "nothing to land" (PR #909 review, finding 1).
+TAG = "[no-issue: fleet updater skeleton sync]"
 BRANCH_PREFIX = "kipi/skeleton-sync-"
 # 3 days. The updater runs daily and a landing PR needs CI plus a review, so one
 # failed day plus one PR day is normal. a client instance went 32 days; this would have
@@ -55,6 +60,18 @@ def last_sync_ts(path, ref):
     return int(out) if out else None
 
 
+def remote_default(path):
+    """origin/<branch> for the default branch, asked of the remote itself.
+    Not refs/remotes/origin/HEAD: fetch creates that cache but never corrects it,
+    and one instance's copy pointed at feat/prd-rollout, so a skeleton sync
+    would have auto-merged into a feature branch (PR #909 review, finding 2)."""
+    out = git(path, "ls-remote", "--symref", "origin", "HEAD", timeout=60)
+    m = re.match(r"ref: refs/heads/(\S+)\tHEAD", out)
+    if not m or not git(path, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{m.group(1)}"):
+        return ""
+    return f"origin/{m.group(1)}"
+
+
 def registry_path():
     return Path(os.environ.get("KIPI_UPDATE_REGISTRY") or SKEL / "instance-registry.json")
 
@@ -72,14 +89,19 @@ def measure(entry, fetch=True):
             git(path, "fetch", "-q", "origin", timeout=60)
         except subprocess.TimeoutExpired:
             pass  # stale remote refs read as an OLDER landing: fails toward the alarm
-    default = git(path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    default = remote_default(path)
     if not default:
-        return {**row, "status": "skip", "reason": "no origin default branch (nothing to land on)"}
+        return {**row, "status": "skip", "reason": "origin default branch unresolved (nothing to land on)"}
     made, landed = last_sync_ts(path, "HEAD"), last_sync_ts(path, default)
     row.update(default=default, made=made, landed=landed)
     if made is None:
         return {**row, "status": "skip", "reason": "updater never synced this checkout"}
     now = time.time()
+    if landed and landed >= made:
+        # Every sync made here is already on origin: exactly when land finds
+        # nothing to land. check and land agree on what "landed" means.
+        row["lag_days"] = 0.0
+        return {**row, "status": "ok"}
     lag = (made - landed) / 86400 if landed else float("inf")
     row["lag_days"] = None if lag == float("inf") else round(lag, 1)
     # Two signals, reported by name, never or-ed into one flag: syncs made but not
@@ -95,6 +117,10 @@ def measure(entry, fetch=True):
 
 def load_entries(only=""):
     entries = json.loads(registry_path().read_text())["instances"]
+    # Same filter as kipi-update.sh and fleet-reach-audit.py: a merged-away or
+    # opted-out instance is not the updater's to sync, so not ours to land.
+    entries = [e for e in entries if not str(e.get("status", "")).startswith("merged")
+               and e.get("skeleton_managed") is not False]
     return [e for e in entries if not only or e.get("name") == only]
 
 
@@ -143,6 +169,22 @@ def land_one(row, entry, dry_run, state):
         if open_prs.returncode == 0 and open_prs.stdout.strip() not in ("", "0"):
             return "WAIT", "a landing PR is already open; pr-owner and its auto-merge take it"
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    # One lander per instance. Two runs shared this worktree path and the second
+    # force-removed the first's tree mid-sync (updater exit 128, PR #909 review,
+    # finding 3). Under the lock, a tree left at the path is a dead run's.
+    lock = open(state / f"{safe}.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        return "WAIT", "another land run holds this instance and lands it"
+    try:
+        return _land_locked(name, path, default, slug, safe, dry_run, state)
+    finally:
+        lock.close()
+
+
+def _land_locked(name, path, default, slug, safe, dry_run, state):
     wt = state / safe
     if wt.exists():
         git(path, "worktree", "remove", "--force", str(wt))
@@ -184,8 +226,10 @@ def land_one(row, entry, dry_run, state):
             return "FAIL", f"pushed {branch} but PR create failed: {pr.stderr.strip()[:200]}"
         url = pr.stdout.strip().splitlines()[-1]
         armed = gh("pr", "merge", url, "--auto", "--squash")
-        note = "auto-merge armed" if armed.returncode == 0 else f"auto-merge NOT armed: {armed.stderr.strip()[:120]}"
-        return "OK", f"{url} ({note})"
+        if armed.returncode != 0:
+            # A PR nothing will merge is not a landing; lessons-daily logs it.
+            return "FAIL", f"{url} (auto-merge NOT armed: {armed.stderr.strip()[:120]})"
+        return "OK", f"{url} (auto-merge armed)"
     finally:
         git(path, "worktree", "remove", "--force", str(wt))
         git(path, "worktree", "prune")
