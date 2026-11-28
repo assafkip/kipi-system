@@ -106,6 +106,25 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# ASK-5855: KIPI_UPDATE_TIMING=1 prints one stderr line per phase mark:
+# "TIMING <label> +<ms since last mark> @<ms since start>". stderr only, so the
+# dry-run stdout stays byte-comparable with timing on or off. A fleet dry run took
+# 10h on 2026-11-28 and nothing said which loop owned the time; guessing which
+# per-file git call to batch is how #908 saved 25% instead of the 99% needed.
+# bash 3.2 has no EPOCHREALTIME, so the clock is one python3 call per mark, paid
+# only when the flag is set.
+TIMING_T0=""
+TIMING_LAST=""
+timing_mark() {
+  [ "${KIPI_UPDATE_TIMING:-}" = "1" ] || return 0
+  local now
+  now="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+  [ -n "$TIMING_T0" ] || { TIMING_T0="$now"; TIMING_LAST="$now"; }
+  echo "TIMING $1 +$((now - TIMING_LAST))ms @$((now - TIMING_T0))ms" >&2
+  TIMING_LAST="$now"
+}
+timing_mark start
+
 if [ ! -f "$REGISTRY" ]; then
   echo "ERROR: instance-registry.json not found at $REGISTRY"
   exit 1
@@ -411,6 +430,13 @@ fleet_ship_ref() {
 # a different ref rebuilds it.
 SHIPPED_BLOB_MAP=""
 SHIPPED_BLOB_REF=""
+# A FAILED BUILD WARNS ONCE PER REF (PR #908 review, ASK-5855). Without this every
+# lookup printed the same WARN again: one line per file per instance, thousands of
+# identical lines burying the one that mattered. The WARN is cached, not the
+# failure (PR #911 review): caching the result let one transient fault make every
+# file in every later instance read as ahead. Each call still retries the build,
+# which costs one git log pass per scan scope now that lookups are batched.
+SHIPPED_BLOB_WARNED_REF=""
 shipped_blob_map_ensure() {
   local ship_ref="$1"
   if [ -n "$SHIPPED_BLOB_MAP" ] && [ "$SHIPPED_BLOB_REF" = "$ship_ref" ] &&
@@ -426,12 +452,17 @@ shipped_blob_map_ensure() {
   # Say what failed on stderr before returning.
   if ! python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" "$SCRIPT_DIR" "$ship_ref" \
       > "$SHIPPED_BLOB_MAP" 2>"$SHIPPED_BLOB_MAP.err" || [ ! -s "$SHIPPED_BLOB_MAP" ]; then
-    echo "  WARN: shipped-blob map unavailable for $ship_ref ($(head -c 300 "$SHIPPED_BLOB_MAP.err" 2>/dev/null)); files will read as instance-ahead, which is a skeleton toolchain fault, not instance work" >&2
+    if [ "$SHIPPED_BLOB_WARNED_REF" != "$ship_ref" ]; then
+      echo "  WARN: shipped-blob map unavailable for $ship_ref ($(head -c 300 "$SHIPPED_BLOB_MAP.err" 2>/dev/null)); files will read as instance-ahead, which is a skeleton toolchain fault, not instance work" >&2
+      SHIPPED_BLOB_WARNED_REF="$ship_ref"
+    fi
     rm -f -- "$SHIPPED_BLOB_MAP.err"
     return 1
   fi
   rm -f -- "$SHIPPED_BLOB_MAP.err"
   SHIPPED_BLOB_REF="$ship_ref"
+  # A recovery re-arms the WARN, so a fail-recover-fail run says so twice (PR #911 round 2).
+  SHIPPED_BLOB_WARNED_REF=""
 }
 
 fleet_authored_blob() {
@@ -563,11 +594,92 @@ VOICELOOP_AHEAD_HITS=0
 # $4 the scope's instance-relative prefix ("" at the instance root),
 # $5 the instance root (for git ls-files), $6 the instance name,
 # $7.. the rsync flags the real run uses for this scope.
+# ASK-5855: the scan below COLLECTS candidates first, then asks one batch filter
+# (kipi-update-shipped-blobs.py filter: one ls-files, one hash-object
+# --stdin-paths, one map read) which of them the old per-file checks would have
+# reported. Measured 2026-11-28: rsync -ain itemizes every file whose mtime differs,
+# which in the fresh dry-run model is all ~3,000 q-system files, and each one paid
+# an ls-files, a hash-object subshell and a grep, serially, per instance.
+# Records are kind<TAB>shown<TAB>blob_rel<TAB>file<TAB>skel_file.
 instance_ahead_scan() {
   local src="$1" dest="$2" skel_rel="$3" inst_rel="$4" root="$5" name="$6"
   shift 6
   [ -d "$src" ] && [ -d "$dest" ] || return 0
-  local line rel inst_file skel_file shown detail
+  # NO TEMP FILES HERE (PR #911 review, major). A first cut staged candidates in
+  # mktemp files and returned 0 when mktemp failed, which reads exactly like
+  # "nothing ahead": a full TMPDIR switched off the voiceloop no-flag refusal.
+  # Variables and /dev/fd process substitution need no disk.
+  local candidates survivors ship_ref map=""
+  candidates="$(instance_ahead_candidates "$src" "$dest" "$skel_rel" "$inst_rel" "$@")"
+  [ -n "$candidates" ] || return 0
+  # The map is built in THIS shell (never in $(...), PR #908 P2), and only when
+  # there is something to look up, as fleet_authored_blob did.
+  if ship_ref="$(fleet_ship_ref)" && shipped_blob_map_ensure "$ship_ref"; then
+    map="$SHIPPED_BLOB_MAP"
+  fi
+  if ! survivors="$(printf '%s\n' "$candidates" | instance_ahead_batch_filter "$root" "$map")"; then
+    # Never a silent drop: a filter that could not answer falls back to the
+    # per-file checks, which are slow but were the shipped behaviour. The
+    # fallback runs in this shell so fleet_authored_blob's map stays here too.
+    echo "  WARN: batch instance-ahead filter failed; checking file by file" >&2
+    instance_ahead_filter_per_file "$root" < <(printf '%s\n' "$candidates")
+    survivors="$AHEAD_KEPT"
+  fi
+  [ -n "$survivors" ] || return 0
+  instance_ahead_report "$name" < <(printf '%s\n' "$survivors")
+}
+
+instance_ahead_batch_filter() {
+  python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" filter "$SCRIPT_DIR" "$1" "$2"
+}
+
+# Sets AHEAD_KEPT (a global, so the caller needs no subshell) to the records the
+# old per-file loop would have reported.
+AHEAD_KEPT=""
+instance_ahead_filter_per_file() {
+  local root="$1" kind shown blob_rel file skel_file
+  AHEAD_KEPT=""
+  while IFS=$'\t' read -r kind shown blob_rel file skel_file; do
+    [ -n "$kind" ] || continue
+    git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
+    fleet_authored_blob "$blob_rel" "$file" </dev/null && continue
+    AHEAD_KEPT="$AHEAD_KEPT$kind	$shown	$blob_rel	$file	$skel_file
+"
+  done
+}
+
+instance_ahead_report() {
+  local name="$1" kind shown blob_rel file skel_file detail
+  while IFS=$'\t' read -r kind shown blob_rel file skel_file; do
+    # A blank line is no record: the fallback's AHEAD_KEPT ends in a newline.
+    [ -n "$kind" ] || continue
+    if [ "$kind" = "del" ]; then
+      echo "  instance ahead: $shown (instance-only file; the sync would delete it)"
+      INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
+      INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
+      VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1))
+      INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
+    - $name: $shown (instance-only file; the sync would delete it)"
+      continue
+    fi
+    detail="$(python3 "$SCRIPT_DIR/kipi-update-instance-ahead.py" "$file" "$skel_file" 2>/dev/null </dev/null)" \
+      || detail="differs"
+    echo "  instance ahead: $shown ($detail)"
+    INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
+    INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
+    case "$shown" in
+      plugins/kipi-core/voiceloop/*) VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1)) ;;
+    esac
+    INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
+    - $name: $shown ($detail)"
+  done
+}
+
+# Prints one record per rsync line the old loop would have checked, in rsync order.
+instance_ahead_candidates() {
+  local src="$1" dest="$2" skel_rel="$3" inst_rel="$4"
+  shift 4
+  local line rel inst_file skel_file shown
   while IFS= read -r line; do
     case "$line" in
       '*deleting'*)
@@ -584,18 +696,11 @@ instance_ahead_scan() {
           plugins/kipi-core/voiceloop/*) ;;
           *) continue ;;
         esac
-        git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
-        # Round 2 of PR 836: a file the skeleton SHIPPED and later removed is a
-        # skeleton-intended deletion, byte-equal to a shipped blob, and must
-        # propagate. Only instance-authored content is ahead (same question as
-        # the '>f' branch below).
-        fleet_authored_blob "$skel_rel/$rel" "$dest/$rel" && continue
-        echo "  instance ahead: $shown (instance-only file; the sync would delete it)"
-        INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
-        INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
-        VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1))
-        INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
-    - $name: $shown (instance-only file; the sync would delete it)"
+        # Tracked only, and round 2 of PR 836: a file the skeleton SHIPPED and
+        # later removed is a skeleton-intended deletion, byte-equal to a shipped
+        # blob, and must propagate. Only instance-authored content is ahead (same
+        # question as the '>f' branch below). Both checks run in the batch filter.
+        printf 'del\t%s\t%s\t%s\t\n' "$shown" "$skel_rel/$rel" "$dest/$rel"
         continue ;;
       '>f+++++++++'*) continue ;;
       '>f'*) ;;
@@ -608,19 +713,9 @@ instance_ahead_scan() {
     shown="$rel"
     [ -n "$inst_rel" ] && shown="$inst_rel/$rel"
     # Tracked only: an untracked or unstaged local edit is the dirty guard's
-    # business further down, and it refuses the whole instance.
-    git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
-    fleet_authored_blob "$skel_rel/$rel" "$inst_file" && continue
-    detail="$(python3 "$SCRIPT_DIR/kipi-update-instance-ahead.py" "$inst_file" "$skel_file" 2>/dev/null)" \
-      || detail="differs"
-    echo "  instance ahead: $shown ($detail)"
-    INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
-    INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
-    case "$shown" in
-      plugins/kipi-core/voiceloop/*) VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1)) ;;
-    esac
-    INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
-    - $name: $shown ($detail)"
+    # business further down, and it refuses the whole instance. The tracked and
+    # shipped-blob checks run in the batch filter.
+    printf 'mod\t%s\t%s\t%s\t%s\n' "$shown" "$skel_rel/$rel" "$inst_file" "$skel_file"
   done < <(rsync -ain "$src/" "$dest/" "$@" 2>/dev/null || true)
 }
 
@@ -834,6 +929,7 @@ model_rsync_excludes() {
   done
 }
 
+timing_mark skeleton-preflights-begin
 echo "=== Kipi System Update ==="
 echo "Remote: $SKELETON_REMOTE"
 echo "Branch: $SKELETON_BRANCH"
@@ -1074,6 +1170,7 @@ fi
 # NOT wrapped in `[ -f ]`, for the reason spelled out at the leak gate above: a
 # guard that turns a DELETED script into a green run reproduces, one level up,
 # the exact failure it exists to prevent.
+timing_mark replica-gate-begin
 REPLICA_GATE="$SCRIPT_DIR/q-system/.q-system/scripts/fleet-replica-divergence.py"
 if [ ! -f "$REPLICA_GATE" ]; then
   echo ""
@@ -2498,6 +2595,7 @@ PYEOF
     exit 1
   fi
 }
+timing_mark reach-preflight-begin
 reach_preflight
 
 while IFS='|' read -r name path prefix itype declared; do
@@ -2901,6 +2999,7 @@ PY
   fi
 
   if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
+    timing_mark "$name:model-built"
     cd "$path"
 
     # Clean up stale git lock files from crashed processes
@@ -3123,6 +3222,7 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
     # overwrite carry content the skeleton never shipped (sp-1ad08728). Runs in
     # every mode, so the plain dry run, the fleet dry sweep's model run and the
     # apply all print the same lines.
+    timing_mark "$name:instance-ahead-begin"
     instance_ahead_preflight "$path" "$prefix" "$name"
     if [ "$REFUSE_INSTANCE_AHEAD" = "1" ] && [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
       abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
@@ -3134,6 +3234,7 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
 
     # Same point, same reason: before anything is committed or written, in every
     # mode. Unlike the report above this one has no flag (ASK-3821).
+    timing_mark "$name:instance-ahead-done"
     if ! sync_guard_preflight "$path" "$prefix" "$itype"; then
       SYNC_GUARD_REFUSED="$SYNC_GUARD_REFUSED $name"
       abandon_instance "  ERROR: the sync would delete recent instance work, or the guard could not prove it would not (named above); refusing, nothing staged, nothing written" && continue
@@ -3467,6 +3568,7 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
     # everything a later restore discards is something THIS run wrote. Against
     # a DIRTY checkpoint the restore's `git checkout -- .` would throw away the
     # founder's unstaged edits, which is the opposite of the point.
+    timing_mark "$name:checkpoint-begin"
     if ! checkpoint_instance "$path" "$prefix"; then
       abandon_instance "  ERROR: could not checkpoint the instance; refusing to write" && continue
     fi
@@ -3676,6 +3778,7 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
       [ -d "$path/.claude" ]; then
     echo "  Syncing .claude/ config..."
     CONFIG_FAILED=0
+    timing_mark "$name:copy-begin"
     if ! reject_untracked_config_collisions "$path"; then
       abandon_instance && continue
     fi
@@ -3936,6 +4039,7 @@ print("\n".join(mod.EXTRA_WATCHED))
     fi
   fi
   if [ "$MODEL_RUN" = "1" ]; then
+    timing_mark "$name:modeled-digest-begin"
     MODELED_DIFF="$(git -C "$path" diff --name-status "$ORIGINAL_HEAD" HEAD --)"
     MODELED_TREE="$(git -C "$path" rev-parse 'HEAD^{tree}')"
     MODELED_STATE="$(KIPI_STANDIN_MAP="$DRY_MODEL_ROOT/standin-map" worktree_digest "$path")"
@@ -4011,6 +4115,7 @@ arm_new_jobs() {
     JOBS_NOT_ARMED="${JOBS_NOT_ARMED:- (install-plist.sh --missing exited $rc)}"
   fi
 }
+timing_mark instance-loop-done
 echo "=== Launchd jobs ==="
 arm_new_jobs
 
@@ -4063,6 +4168,7 @@ if [ -z "$DRY_RUN" ] && [ -f "$CHARS_AUDIT" ]; then
   CHARS_LINE="$(python3 "$CHARS_AUDIT" --apply 2>&1 | tail -1)" || true
 fi
 
+timing_mark summary
 echo "=== Summary ==="
 [ -n "$CHARS_LINE" ] && echo "  Instruction excludes: $CHARS_LINE"
 echo "  Updated: $PASS"

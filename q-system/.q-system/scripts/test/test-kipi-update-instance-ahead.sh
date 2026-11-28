@@ -104,6 +104,11 @@ assert_the_dry_run_names_every_ahead_file_and_only_those() {
   build "$work"
   bash "$sk/kipi-update.sh" --dry-run >"$work/out" 2>&1 || true
   expect_report "$work/out"
+  # ASK-5855 (PR #911 review): the per-file fallback prints the same report, so
+  # only its WARN tells a silent slide back to the 45x slower path apart.
+  if grep -q 'batch instance-ahead filter failed' "$work/out"; then
+    fail "the batch instance-ahead filter failed and the scan fell back to per-file checks"
+  fi
   echo "PASS: the dry run names the four ahead files with defs or hunks, stays quiet on the older shipped version, and repeats them in the summary"
 }
 
@@ -150,7 +155,10 @@ path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
 needle = "while IFS='|' read -r name path prefix itype declared; do"
 assert text.count(needle) == 1, "main loop header moved; update the mutant"
-text = text.replace(needle, "fleet_authored_blob() { return 0; }\n" + needle)
+# ASK-5855: the scan asks the batch filter first and fleet_authored_blob only on
+# its fallback path, so "everything shipped" is forced on both.
+text = text.replace(needle, "fleet_authored_blob() { return 0; }\n"
+                    "instance_ahead_batch_filter() { cat >/dev/null; }\n" + needle)
 open(path, "w", encoding="utf-8").write(text)
 PY
   bash "$sk/kipi-update.sh" --dry-run >"$work/out" 2>&1 || true
