@@ -2495,7 +2495,15 @@ review_unreviewed_pr() {
   # attempts ledger's locked claim-flag, so two overlapping ticks cannot both
   # start one. A push is new code and earns its own start. 1 = already started
   # for this head; 2 or 3 = the ledger could not answer, and no claim means no run.
-  local head flag crc=0
+  local head flag crc=0 table
+  # A REVIEW ALREADY RUNNING FOR THIS PR (round 2, major): review-redrive.py may
+  # have started one; a second would post twice. Same read as its reviewer_live,
+  # and an unreadable process table reads as live, the side that starts nothing.
+  if ! table="$(ps -axo command 2>/dev/null)" || [ -z "$table" ] \
+     || printf '%s\n' "$table" | grep -Eq "pr-review-agent\.sh[[:space:]]+$pr([[:space:]]|\$)"; then
+    say "$issue: PR #$pr has no recorded review verdict; a review of it is already running (or the process table is unreadable), so none is started"
+    return 0
+  fi
   head="$(pr_head_sha "$pr")"
   flag="gate20_review_pr${pr}_$(printf '%s' "${head:-nohead}" | cut -c1-12)"
   python3 "$LEDGER" "$ATTEMPTS" claim-flag "$issue" "$flag" >/dev/null 2>&1 || crc=$?
@@ -2510,11 +2518,14 @@ review_unreviewed_pr() {
     # The reviewer's machine-condition code, handled the way step 5 handles it:
     # env_halt makes converge exit 9 with no charge and no "no verdict" page.
     python3 "$LEDGER" "$ATTEMPTS" claim-flag "$issue" env_halt >/dev/null 2>&1 || true
-    say "$issue: PR #$pr: the reviewer's runner is unavailable (rc=9), a condition of the machine; the PR stands unreviewed until it answers"
+    # A machine refusal did not spend this head's start: release it, or no
+    # review would ever start for this head once the runner is back (round 2).
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$issue" "$flag" >/dev/null 2>&1 || true
+    say "$issue: PR #$pr: the reviewer's runner is unavailable (rc=9), a condition of the machine; this head's start is released, so the next run after it answers starts the review"
   elif [ -n "$(verdict_from_record "$rec")" ]; then
     say "$issue: PR #$pr review recorded '$(verdict_from_record "$rec")'; the next run acts on it"
   else
-    say "$issue: PR #$pr review wrote no verdict (rc=$rc); the next run starts it again, within the reviewer's round cap"
+    say "$issue: PR #$pr review wrote no verdict (rc=$rc); this head's one start is spent, so the next start comes with a push or from review-redrive.py"
   fi
   return "$rc"
 }
@@ -2558,7 +2569,7 @@ wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, 
   rework_gate "$verdict" "$merge" "$reviewed" "$current" >/dev/null; gate=$?
   case "$gate" in
     10) printf 'approved|approved at its head (%s), nothing to rework' "$verdict" ;;
-    20) printf 'unreviewed|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)' ;;
+    20) printf 'unreviewed|no recorded review verdict, nothing to rework against (the worker starts its review at gate 20, review-redrive.py after that)' ;;
     30) [ "$(conflict_rounds_for "$issue")" -ge "$MAX_CONFLICT_ROUNDS" ] \
           && printf 'conflict|still %s after %s rebase rounds' "${merge:-unmergeable}" "$MAX_CONFLICT_ROUNDS" ;;
     40) [ "$(drift_rounds_for "$issue")" -ge "$MAX_DRIFT_ROUNDS" ] \

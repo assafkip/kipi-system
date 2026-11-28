@@ -91,6 +91,24 @@ review_unreviewed_pr 79 ASK-79 >/dev/null; rc=$?
 [ "$rc" = "9" ] && [ "$(python3 "$LEDGER" "$ATTEMPTS" get ASK-79 env_halt "")" = "True" ] \
   && ok "a reviewer rc=9 claims env_halt (no 'no verdict' page for an exhausted account)" \
   || bad "rc=9: rc=$rc env_halt=$(python3 "$LEDGER" "$ATTEMPTS" get ASK-79 env_halt "")"
+# A machine refusal does not spend the head's start: the next run tries again.
+: > "$CALLS"
+review_unreviewed_pr 79 ASK-79 >/dev/null
+[ "$(grep -c . "$CALLS")" = "1" ] && ok "after rc=9 the same head is started again once the runner answers" \
+  || bad "rc=9 spent the head's only start ($(grep -c . "$CALLS") calls on retry)"
+
+# 3d. A review already running for this PR (review-redrive.py's): none started.
+: > "$CALLS"; echo dddddddddddd4444 > "$WORK/head"
+( exec -a "pr-review-agent.sh 80 --issue ASK-80 --post" sleep 30 ) &
+live=$!
+sleep 0.3
+review_unreviewed_pr 80 ASK-80 >/dev/null
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+[ ! -s "$CALLS" ] && ok "a review already running for the PR is not started twice" \
+  || bad "a second review started beside a live one" "$(cat "$CALLS")"
+review_unreviewed_pr 80 ASK-80 >/dev/null
+[ "$(grep -c . "$CALLS")" = "1" ] && ok "once that review is gone, the start is still available for the head" \
+  || bad "the live-review skip spent the head's start"
 
 # 4. The gate-20 branch runs it; the print-the-command line is gone.
 G20="$(awk '/if \[ "\$GATE" = "20" \]; then/ {on=1} on {print} on && /^    fi$/ {exit}' "$WORKER")"
