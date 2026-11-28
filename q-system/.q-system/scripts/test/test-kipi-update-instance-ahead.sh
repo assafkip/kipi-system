@@ -28,7 +28,7 @@ build() {
   mkdir -p "$sk/q-system/.q-system/scripts" "$sk/q-system/.q-system/state" \
            "$sk/q-system/hooks" "$sk/plugins/demo" "$sk/.claude/rules"
   for f in kipi-update.sh kipi-update-preserve-scan.py kipi-update-deletion-guard.py \
-           kipi-update-instance-ahead.py validate-separation.py; do
+           kipi-update-instance-ahead.py kipi-update-shipped-blobs.py validate-separation.py; do
     cp "$ROOT/$f" "$sk/$f"
   done
   for f in propagation-leak-gate.py containment-targets.py fleet-replica-divergence.py; do

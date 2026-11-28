@@ -487,6 +487,7 @@ SYMBOL = "_deferral_tracking_gate"
 # (test-kipi-update-instance-ahead.sh); the optional ones are copied when present.
 UPDATER_FILES = ("kipi-update.sh", "kipi-update-preserve-scan.py",
                  "kipi-update-deletion-guard.py", "kipi-update-instance-ahead.py",
+                 "kipi-update-shipped-blobs.py",
                  "validate-separation.py", "q-system/hooks/auto-commit.py")
 OPTIONAL_FILES = ("q-system/.q-system/scripts/propagation-leak-gate.py",
                   "q-system/.q-system/scripts/containment-targets.py",

@@ -397,17 +397,50 @@ fleet_ship_ref() {
   return 1
 }
 
+# ASK-5851: ONE history pass per run, not one `git rev-list <ref> -- <path>` per file.
+# The per-file walk ran 7.5h+ in lessons-daily on 2026-11-27 (282 lesson files, a
+# rev-list a second, per instance). The map (path<TAB>blob for every blob ever
+# committed) comes from kipi-update-shipped-blobs.py in ~0.3s and is looked up with
+# grep.
+#
+# SET IN THE PARENT SHELL, NEVER INSIDE $(...) (Codex P2 on PR #908). The first cut
+# assigned SHIPPED_BLOB_MAP inside a command substitution, so the assignment died with
+# the subshell: cleanup never saw the path (a /tmp file per run left behind) and a
+# pid-keyed name let a later run with a reused pid read a stale map. The file now comes
+# from mktemp, so no name is ever reused, and the ref it was built for is remembered so
+# a different ref rebuilds it.
+SHIPPED_BLOB_MAP=""
+SHIPPED_BLOB_REF=""
+shipped_blob_map_ensure() {
+  local ship_ref="$1"
+  if [ -n "$SHIPPED_BLOB_MAP" ] && [ "$SHIPPED_BLOB_REF" = "$ship_ref" ] &&
+      [ -s "$SHIPPED_BLOB_MAP" ]; then
+    return 0
+  fi
+  [ -n "$SHIPPED_BLOB_MAP" ] && rm -f -- "$SHIPPED_BLOB_MAP"
+  SHIPPED_BLOB_MAP="$(mktemp "${TMPDIR:-/tmp}/kipi-shipped-blobs.XXXXXX")" || return 1
+  SHIPPED_BLOB_REF=""
+  # NEVER SILENT (round 2 of PR #908, major). A map that cannot be built makes every
+  # file read "not shipped", i.e. "instance ahead", which fires the no-flag voiceloop
+  # abandon and blames the instance for a fault in the skeleton's own toolchain.
+  # Say what failed on stderr before returning.
+  if ! python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" "$SCRIPT_DIR" "$ship_ref" \
+      > "$SHIPPED_BLOB_MAP" 2>"$SHIPPED_BLOB_MAP.err" || [ ! -s "$SHIPPED_BLOB_MAP" ]; then
+    echo "  WARN: shipped-blob map unavailable for $ship_ref ($(head -c 300 "$SHIPPED_BLOB_MAP.err" 2>/dev/null)); files will read as instance-ahead, which is a skeleton toolchain fault, not instance work" >&2
+    rm -f -- "$SHIPPED_BLOB_MAP.err"
+    return 1
+  fi
+  rm -f -- "$SHIPPED_BLOB_MAP.err"
+  SHIPPED_BLOB_REF="$ship_ref"
+}
+
 fleet_authored_blob() {
-  local rel="$1" file="$2" blob candidate commit ship_ref
+  local rel="$1" file="$2" blob ship_ref
   ship_ref="$(fleet_ship_ref)" || return 1
   blob="$(git -C "$SCRIPT_DIR" hash-object -- "$file" 2>/dev/null || true)"
   [ -n "$blob" ] || return 1
-  while IFS= read -r commit; do
-    [ -n "$commit" ] || continue
-    candidate="$(git -C "$SCRIPT_DIR" rev-parse "$commit:$rel" 2>/dev/null || true)"
-    [ "$candidate" = "$blob" ] && return 0
-  done < <(git -C "$SCRIPT_DIR" rev-list "$ship_ref" -- "$rel" 2>/dev/null || true)
-  return 1
+  shipped_blob_map_ensure "$ship_ref" || return 1
+  grep -Fxq -- "$rel	$blob" "$SHIPPED_BLOB_MAP"
 }
 
 # INSTALL THE VENDORED HOOKS INTO THE TREE THAT RUNS THEM (ASK-1144).
@@ -1333,6 +1366,10 @@ cleanup_updater_temps() {
   if [ -n "${CHECKPOINT_DIR:-}" ] && [ -d "$CHECKPOINT_DIR" ]; then
     rm -r -- "$CHECKPOINT_DIR"
     CHECKPOINT_DIR=""
+  fi
+  if [ -n "${SHIPPED_BLOB_MAP:-}" ]; then
+    rm -f -- "$SHIPPED_BLOB_MAP"
+    SHIPPED_BLOB_MAP=""
   fi
   clear_run_marker
   cleanup_dry_model
