@@ -55,9 +55,9 @@ So nothing just stays: every capped ticket either moves on a rung, ends on a
 recorded decision, or waits on a named, owned event, and the report file lists
 each one with what it waits on. Two rows are marked red there, and each has a
 consumer: a capped ticket with no decision on file keeps its cap, so this script
-asks again at its next nightly run; a blocker that lost its owner:* label gets
+asks again at its next run (every 2h); a blocker that lost its owner:* label gets
 owner:sana back from linear-owner-sweep.py (com.kipi.linear-owner-sweep, 02:00),
-before this script's 04:40 run reads it again.
+before this script's next 2-hourly run reads it again.
 
 HOW "CONTINUE" IS MADE REAL, AND WHY A NEW PR
 ---------------------------------------------
@@ -97,7 +97,7 @@ HOME = Path.home()
 MAX_ATTEMPTS = 3                      # linear-worker.sh MAX_ATTEMPTS
 RUNG_NAMES = {1: "rca", 2: "runner", 3: "rescope"}
 RUNNER_FLAG = "ladder_runner_codex"   # read by linear-worker.sh ladder_runner_for
-JOB = "cap-ladder.py (com.kipi.cap-ladder, nightly 04:40)"
+JOB = "cap-ladder.py (com.kipi.cap-ladder, every 2h)"
 LANE_PREFIX = "sana/"
 
 
@@ -121,6 +121,7 @@ GH = cmd("CAP_LADDER_GH", ["gh"])
 SYNC = cmd("CAP_LADDER_SYNC", [sys.executable, str(HERE / "linear-sync.py")])
 FABLE = cmd("CAP_LADDER_FABLE", [sys.executable, str(HERE / "fable-escalate.py")])
 DRAFTER = cmd("CAP_LADDER_DRAFTER", [sys.executable, str(HERE / "linear-dor-drafter.py")])
+REVIEWER = cmd("CAP_LADDER_REVIEWER", ["bash", str(HERE / "pr-review-agent.sh")])
 PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "pid=,args="])
 
 # Every path this script writes, every outside writer it calls, and the live
@@ -194,7 +195,8 @@ def targets() -> list:
     try:
         reg = json.loads(reg_path.read_text())
         sk = reg.get("skeleton") or {}
-        out.append({"slug": slug_of(sk.get("remote", "")), "project": sk.get("linear_project", "")})
+        out.append({"slug": slug_of(sk.get("remote", "")), "project": sk.get("linear_project", ""),
+                    "path": str(HERE.parent.parent.parent)})
         rows += reg.get("instances") or []
     except (OSError, ValueError):
         pass
@@ -206,7 +208,7 @@ def targets() -> list:
         d = r.get("dispatch") or {}
         if d.get("enabled") is True:
             out.append({"slug": slug_of(d.get("expected_remote", "")),
-                        "project": r.get("linear_project") or r.get("name", "")})
+                        "project": r.get("linear_project") or r.get("name", ""), "path": r.get("path", "")})
     final = []
     for t in out:
         if t["slug"] and t["slug"] not in seen:
@@ -228,8 +230,30 @@ def open_prs(slug: str) -> list:
 
 
 def issue_of_branch(branch: str) -> str:
-    m = re.match(r"^sana/(ask-\d+)(?:-.*)?$", branch or "")
+    # Any case (PR #913 round 1, finding 4): 16 branches here are sana/ASK-N-...
+    m = re.match(r"^sana/(ask-\d+)(?:-.*)?$", branch or "", re.I)
     return m.group(1).upper() if m else ""
+
+
+def issue_of_pr(branch: str, title: str = "") -> str:
+    """The ticket a PR works: its sana/ask-N branch, else the one ASK id in its title.
+
+    THE TITLE IS THE FALLBACK (ASK-5788). PR #885 sat on sana/fleet-plan-weekly-45
+    with ASK-5782 in its title; the reviewer capped it and nothing took the cap,
+    because only the branch was read. A lane branch still maps from the branch.
+    """
+    issue = issue_of_branch(branch)
+    if issue:
+        return issue
+    # ONE id only (PR #913 round 1, finding 3): "revert the ASK-456 fix for
+    # ASK-123" names two tickets, and guessing one closes the wrong PR.
+    ids = {n for n in re.findall(r"\bASK-(\d+)\b", title or "", re.I)}
+    return f"ASK-{ids.pop()}" if len(ids) == 1 else ""
+
+
+def title_mapped(pr: dict | None) -> bool:
+    """True for a PR whose ticket came from its title, not its branch."""
+    return bool(pr) and not issue_of_branch(pr.get("headRefName", ""))
 
 
 # --- the cap events -----------------------------------------------------------
@@ -242,7 +266,59 @@ def read_ledger() -> dict:
         return {}
 
 
-def cap_sigs(e: dict, slug: str = "", pr_number=None, reviews: Path = REVIEWS) -> list:
+PR_CAP_KINDS = ("reviewcap:", "approvedmoved:", "escalated:")
+REVIEW_MAX_ROUNDS = 3                 # pr-review-agent.sh MAX_ROUNDS default
+APPROVES = ("APPROVE", "APPROVE WITH NITS")
+
+
+def review_cap_rounds() -> int:
+    raw = os.environ.get("KIPI_REVIEW_MAX_ROUNDS", "")
+    return int(raw) if raw.isdigit() else REVIEW_MAX_ROUNDS
+
+
+def review_record(reviews: Path, slug: str, pr_number) -> dict:
+    """The gate engine's verdict record for one PR (pr-review-agent.sh writes it), or {}."""
+    p = reviews / f"{slug.replace('/', '_')}__pr-{pr_number}.verdict.json"
+    try:
+        d = json.loads(p.read_text())
+        return d if isinstance(d, dict) and d.get("usable") is True else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def review_sigs(slug: str, pr_number, reviews: Path, head: str | None) -> list:
+    """The review-cap signatures of one open PR.
+
+    A FINISHED LAST ROUND IS A CAP (ASK-5788). The marker is written only when
+    a 4th review is refused, so a PR whose round 3 ended REQUEST CHANGES waited
+    for someone to ask again (#909 had its refusal triggered by hand). The
+    reviewer's own record carries its round number, so this reads its count, it
+    does not keep a second one.
+    APPROVED, THEN A NEW HEAD, IS NOT RUNG 1 (ASK-5788, PR #892): round 3
+    approved, CI went red, the one-line fix had no route but an override of the
+    cap. That PR gets `approvedmoved`, which climb() answers with one delta
+    review. An approval of the CURRENT head is no cap at all.
+    `head` None (pr-owner.py's call) keeps the marker-only answer.
+    """
+    rec = review_record(reviews, slug, pr_number)
+    marked = any((d / f".round-cap-{slug.replace('/', '_')}-pr-{pr_number}").exists()
+                 for d in (reviews, reviews / "codex"))
+    # usable_round, never round: round counts blips too (PR #913 round 1, finding 1).
+    # A record from before usable_round existed does not count as a last round;
+    # that PR still reaches the ladder through the refusal marker and its kick
+    # (round 2, minor 3: falling back to `round` would bring finding 1 back).
+    last_round = isinstance(rec.get("usable_round"), int) and rec["usable_round"] >= review_cap_rounds()
+    approved = rec.get("verdict") in APPROVES
+    if head is not None and approved and (marked or last_round):
+        if rec.get("head_sha") == head:
+            return []
+        return [f"approvedmoved:{slug}#{pr_number}@{head}"]
+    if marked or (last_round and not approved):
+        return [f"reviewcap:{slug}#{pr_number}"]
+    return []
+
+
+def cap_sigs(e: dict, slug: str = "", pr_number=None, reviews: Path = REVIEWS, head: str | None = None) -> list:
     """Every cap signature one ledger entry holds, for one open PR or none.
 
     THE ONE DEFINITION OF "CAPPED". find_caps (this file) and ladder_owns (read
@@ -263,11 +339,9 @@ def cap_sigs(e: dict, slug: str = "", pr_number=None, reviews: Path = REVIEWS) -
             m = re.match(r"^review_escalated_[a-z]+_pr(\d+)_", key)
             if m and m.group(1) == str(pr_number):
                 out.append(f"escalated:{key}")
-        name = f".round-cap-{slug.replace('/', '_')}-pr-{pr_number}"
         # Both engines: pr-review-agent.sh writes the codex engine's marker one
         # directory down (ENGINE_DIR=$OUT_DIR/codex).
-        if (reviews / name).exists() or (reviews / "codex" / name).exists():
-            out.append(f"reviewcap:{slug}#{pr_number}")
+        out += review_sigs(slug, pr_number, reviews, head)
     return out
 
 
@@ -283,28 +357,37 @@ def find_caps(ledger: dict, prs_by_issue: dict, slug_by_pr: dict) -> dict:
     for issue in set(ledger) | set(prs_by_issue):
         pr = prs_by_issue.get(issue)
         sigs = cap_sigs(ledger.get(issue) or {}, slug_by_pr.get((issue, pr["number"]), "") if pr else "",
-                        pr["number"] if pr else None)
+                        pr["number"] if pr else None, head=pr.get("headRefOid", "") if pr else None)
         if sigs:
             caps[issue] = sigs
     return caps
 
 
-def ladder_owns(slug: str, number: int, branch: str, state_dir: str) -> str:
+def ladder_owns(slug: str, number: int, branch: str, state_dir: str, title: str = "",
+                head: str | None = None) -> str:
     """"" when cap-ladder.py does not own this PR, else a one-line reason.
 
     For pr-owner.py (ASK-3962), which loads this file by path and yields any PR
     the ladder owns. Lane branches (sana/<id>-<slug>) are never the ladder's:
-    pr-owner.py owns them. `state_dir` is the worker's KIPI_STATE_DIR, where the
-    attempts ledger and pr-reviews/ live.
+    pr-owner.py owns them. A branch with no ASK id is the ladder's when its
+    title names exactly one (issue_of_pr, ASK-5788) AND the PR holds a cap of
+    its own (review cap, escalation); a ticket capout never claims it.
+    `state_dir` is the worker's
+    KIPI_STATE_DIR, where the attempts ledger and pr-reviews/ live.
     """
-    issue = issue_of_branch(branch)
-    if not issue or branch.lower() != f"{LANE_PREFIX}{issue.lower()}":
+    issue = issue_of_pr(branch, title)
+    if not issue or (issue_of_branch(branch) and branch.lower() != f"{LANE_PREFIX}{issue.lower()}"):
         return ""
     try:
         e = (json.loads((Path(state_dir) / "linear-worker-attempts.json").read_text()) or {}).get(issue) or {}
     except (OSError, ValueError):
         e = {}
-    sigs = cap_sigs(e, slug, number, Path(state_dir) / "pr-reviews")
+    if not issue_of_branch(branch):
+        # A title-mapped PR is the ladder's only on a cap of ITS OWN (review cap,
+        # escalation): a worker capout belongs to the worker's sana/ask-N PR,
+        # never to a PR that mentions the id (PR #913 round 1, finding 3).
+        e = {k: v for k, v in e.items() if k.startswith("review_escalated_")}
+    sigs = cap_sigs(e, slug, number, Path(state_dir) / "pr-reviews", head=head)
     if e.get(HOLD_FLAG):
         sigs.append("held on a BLOCKED-ON decision")
     if not sigs:
@@ -519,7 +602,7 @@ def notify_new_asks(apply: bool = True, alert: bool = False, timeout: int = 60) 
     that send: a lock held across the call to chief, a cap that bounded the call and
     not the lock wait, an ask stamped sent with no detail saved, N pings per sweep.
     Now --founder-ask only records and returns. This function is the only caller of
-    chief for asks: the nightly run (04:40) and `--send-asks`, which the two
+    chief for asks: the scheduled run (every 2h) and `--send-asks`, which the two
     --founder-ask callers start once after their sweep.
 
     THE STATUS LOCK IS HELD TO READ AND TO STAMP, NEVER ACROSS deliver(). Senders
@@ -532,7 +615,7 @@ def notify_new_asks(apply: bool = True, alert: bool = False, timeout: int = 60) 
     send. A stamp lands only on the asks that were in the batch; an ask recorded
     during the send waits for the next one. Returns a line for the run log.
 
-    `alert` (nightly only): a failed send is filed to Sana through the fleet alert
+    `alert` (scheduled run only): a failed send is filed to Sana through the fleet alert
     path, one line per failed run, so an ask is never unsent with nobody told."""
     def read_unsent():
         return [r for r in _status_rows() if not r.get("resolved") and not r.get("notified_at") and r.get("id")]
@@ -1138,7 +1221,7 @@ def rung_name(r: int) -> str:
 
 def next_step_line(r: int) -> str:
     if r < 3:
-        return f"If this caps again, {JOB} takes rung {r + 1} ({rung_name(r + 1)}) at its next nightly run."
+        return f"If this caps again, {JOB} takes rung {r + 1} ({rung_name(r + 1)}) at its next run."
     return (f"If this caps again, {JOB} takes rung 4: one recorded decision (SPLIT, CLOSE or BLOCKED-ON "
             "an owned blocker), never a timed retry.")
 
@@ -1225,9 +1308,85 @@ def step0():
     return _STEP0_MOD
 
 
+def run_logged(argv: list, log: Path, env: dict, timeout: int = 2700) -> int:
+    """rc of a long child, its output to a file. A FILE, NEVER A PIPE: the
+    reviewer's watchdog sleep inherits stdout and held pr-owner.py's pipe open
+    for up to 40 minutes after the review ended (pr-owner.py run_logged)."""
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "w") as fh:
+            return subprocess.run(argv, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                  env=env, timeout=timeout).returncode
+    except subprocess.TimeoutExpired:
+        return 124
+    except OSError:
+        return 127
+
+
+DELTA_TRIES = 3                       # failed delta-review runs before the PR takes its rung
+
+
+def delta_review(issue: str, sigs: list, pr: dict, slug: str, row: dict, state: dict,
+                 apply: bool, tgts: list, report: list) -> str | None:
+    """The approved-then-moved rung (ASK-5788): ONE review of the delta since the
+    approval, the cap raised by exactly one round for it. None means this PR
+    already had its delta review, so climb() takes the normal rung instead.
+
+    Founder rule 11 (iteration-speed.md): after round 1 a review reads only the
+    delta, so the reviewer's own delta mode is the whole review here. Nothing
+    overrides the cap by hand any more: PR #892 needed KIPI_REVIEW_MAX_ROUNDS=4.
+    """
+    key = f"{slug}#{pr['number']}"
+    if key in (row.get("delta_reviewed") or {}):
+        return None
+    if not apply:
+        return f"[dry] {issue}: PR #{pr['number']} approved at the cap, then moved; would review the delta once"
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("CAP_LADDER_REVIEWER"):
+        return f"{issue}: REFUSED under pytest: CAP_LADDER_REVIEWER not redirected (live reviewer)"
+    path = next((t.get("path") for t in tgts if t.get("slug") == slug and t.get("path")), "")
+    if not path:
+        report.append({"issue": issue, "rung": row.get("rung", 0), "decision": "DELTA", "red": True,
+                       "note": f"no checkout path for {slug}"})
+        return f"{issue}: no checkout path for {slug}, so no delta review; the cap stays"
+    late = late_lane(issue, int(row.get("rung", 0)), report, during="the delta-review check")
+    if late:
+        return late
+    rec = review_record(REVIEWS, slug, pr["number"])
+    env = dict(os.environ, KIPI_REVIEW_MAX_ROUNDS=str(int(rec.get("usable_round") or review_cap_rounds()) + 1),
+               KIPI_FLEET_API_KEYS="0")   # reviews bill the plan (ASK-4857)
+    # Recorded BEFORE the run: a review that crashes is not asked again (one per PR).
+    row.setdefault("delta_reviewed", {})[key] = {"head": pr.get("headRefOid", ""), "at": now().isoformat()}
+    row.update(last_at=now().isoformat(), handled=sigs)
+    state[issue] = row
+    write_state(state)
+    log = STATE.parent / "reviews" / f"{slug.replace('/', '_')}-pr-{pr['number']}-delta.log"
+    rc = run_logged(REVIEWER + [str(pr["number"]), "--repo", path, "--issue", issue, "--post"], log, env)
+    row["delta_reviewed"][key]["rc"] = rc
+    fails = int((row.get("delta_failed") or {}).get(key, 0)) + (1 if rc != 0 else 0)
+    if rc != 0 and fails < DELTA_TRIES:
+        # pr-review-agent.sh exits 0 on every review it ran, approve or not, so
+        # any other rc is a review that never ran (PR #913 round 1, finding 2:
+        # rc 127 from a launchd PATH with no claude; round 2: its exit-1 paths).
+        # The shot stays unspent for DELTA_TRIES runs, spaced by the 20h handled
+        # memory; after that the PR takes the normal rung.
+        row["delta_reviewed"].pop(key)
+        row.setdefault("delta_failed", {})[key] = fails
+    if rc != 0:
+        report.append({"issue": issue, "rung": row.get("rung", 0), "decision": "DELTA", "red": True,
+                       "note": f"delta review exited {rc}; log {log}"})
+    return (f"{issue}: PR #{pr['number']} approved at the cap, then moved; one delta review ran "
+            f"(rc {rc}, log {log}); the rung count is unchanged")
+
+
 def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: dict,
           apply: bool, tgts: list, report: list) -> str:
     row = state.get(issue) or {}
+    if pr and sigs and all(s.startswith("approvedmoved:") for s in sigs):
+        out = delta_review(issue, sigs, pr, slug, row, state, apply, tgts, report)
+        if out is not None:
+            return out
+        # Its one delta review is spent: a second move after it is a cap like any other.
+        sigs = [f"reviewcap:{slug}#{pr['number']}"]
     r = int(row.get("rung", 0)) + 1
     kind = sigs[0].split(":", 1)[0]
     why = f"{kind} cap ({', '.join(s.split(':', 1)[0] for s in sigs)})"
@@ -1294,12 +1453,16 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
         run(SYNC + ["label", issue, "needs-scope"])
     # Continue: an OPEN PR on sana/<id> whenever that branch holds commits. A PR
     # that cannot be opened stops the rung before the clears, so the cap record
-    # survives and the next run retries it.
-    branch = f"{LANE_PREFIX}{issue.lower()}"
+    # survives and the next run retries it. A title-mapped PR (issue_of_pr)
+    # continues on its own branch: sana/<id> does not exist for it.
+    # The PR's own spelling (PR #913 round 2, finding 1): git branch names are
+    # case-sensitive, so sana/ASK-N must not be reopened as sana/ask-n.
+    lane = f"{LANE_PREFIX}{issue.lower()}"
+    branch = pr["headRefName"] if pr and (title_mapped(pr) or pr["headRefName"].lower() == lane) else lane
     body = (f"{issue}, cap ladder rung {r} ({rung_name(r)}). RCA: {rca_path or 'none produced'}. "
             f"Read the RCA comment on {issue} first: its STOP section names the approach that looped.")
     new_pr = ""
-    if pr and pr["headRefName"].lower() == branch:
+    if pr and pr["headRefName"] == branch:
         if not close_pr(slug, pr, f"Closed by {JOB}, rung {r} ({rung_name(r)}). Branch {branch} is kept; "
                                   f"the work continues on a new PR from it. Reopen this PR to undo."):
             return f"{issue}: rung {r} could not close PR #{pr['number']}; the cap stays, the next run retries"
@@ -1385,7 +1548,7 @@ def main(argv=None) -> int:
     if args.founder_ask:
         i, k, a = args.founder_ask
         # A CLOSED TICKET ASKS NOTHING (PR #687 round 4, major). The ask was listed,
-        # and the next nightly sweep resolved it as moot, often before the founder
+        # and the next scheduled sweep resolved it as moot, often before the founder
         # saw it. An unreadable ticket is not refused: the sweep reads it again.
         t = ticket(i)
         if t and t.get("state_type") in DEAD_TYPES:
@@ -1404,17 +1567,27 @@ def main(argv=None) -> int:
     tgts = targets()
     project_slug = {t["project"]: t["slug"] for t in tgts if t.get("project")}
     prs_by_issue, slug_by_pr = {}, {}
-    for tg in tgts:
-        for pr in open_prs(tg["slug"]):
-            issue = issue_of_branch(pr.get("headRefName", ""))
+    listed = [(tg["slug"], pr) for tg in tgts for pr in open_prs(tg["slug"])]
+    # BRANCH FIRST, TITLE SECOND (PR #913 round 1, finding 3): a newer PR whose
+    # title mentions ASK-1 must never shadow ASK-1's own sana/ask-1 PR.
+    for by_title in (False, True):
+        for slug, pr in listed:
+            if title_mapped(pr) != by_title:
+                continue
+            issue = issue_of_pr(pr.get("headRefName", ""), pr.get("title", ""))
             if issue and issue not in prs_by_issue:
                 prs_by_issue[issue] = pr
-                slug_by_pr[(issue, pr["number"])] = tg["slug"]
+                slug_by_pr[(issue, pr["number"])] = slug
 
     caps = find_caps(read_ledger(), prs_by_issue, slug_by_pr)
+    for issue, pr in list(prs_by_issue.items()):
+        # A title-mapped PR moves only on a cap of its own; a ticket-only cap
+        # climbs with no PR, as it did before title mapping.
+        if title_mapped(pr) and not any(s.startswith(PR_CAP_KINDS) for s in caps.get(issue, [])):
+            prs_by_issue.pop(issue)
     # --issue: NO CLOCK, SAME GUARDS (founder 2026-11-27: "identify any unneeded
     # holds, waits for a time of day you dont need ... and remove them"), so one
-    # capped ticket need not wait for 04:40. It is a filter on this loop, not a second loop: PR #893's --rung0
+    # capped ticket need not wait for the next 2-hourly run. It is a filter on this loop, not a second loop: PR #893's --rung0
     # was one, and it skipped lane_hold and live() (round 3, finding 1).
     if args.issue:
         caps = {k: v for k, v in caps.items() if k == args.issue}
@@ -1470,8 +1643,8 @@ def main(argv=None) -> int:
             # no slot and is not counted as climbed (PR #893 round 3, minor 5).
             done += 0 if NO_RUNG in out else 1
         if args.issue:
-            # One ticket only: the held sweep, the founder asks and the nightly
-            # report belong to the nightly run, and a one-issue report would
+            # One ticket only: the held sweep, the founder asks and the scheduled
+            # report belong to the scheduled run, and a one-issue report would
             # overwrite its rows.
             if args.apply:
                 write_state(state)

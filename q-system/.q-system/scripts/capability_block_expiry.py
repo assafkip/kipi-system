@@ -420,9 +420,9 @@ def _start_sender() -> None:
     """Start cap-ladder's ONE sender, detached, after the sweep filed its asks.
 
     --founder-ask only records (PR #778 RCA rca-founder-ask-send-three-rounds-2026-11-12.md);
-    this makes a new ask reach his phone now and not at 04:40, and makes the sweep's
+    this makes a new ask reach his phone now and not at the next 2-hourly ladder run, and makes the sweep's
     N asks one message. Detached and self-bounded: a hung chief cannot fail or delay
-    this sweep. A failed start is the nightly cap-ladder run's to retry."""
+    this sweep. A failed start is the next scheduled cap-ladder run's to retry."""
     try:
         subprocess.Popen([sys.executable, LADDER_SCRIPT, "--send-asks"], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -574,7 +574,7 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
     # A CAPOUT NEEDS ITS CONSUMER ON THIS TREE (PR #668 round 1, major 1). Written
     # with no cap-ladder.py to read it, the capout was a record nothing acts on and
     # the unblock sent the ticket back into the pool with no RCA. The ladder runs
-    # at 04:40, after this job's 04:20, and takes rung 1 on the capout.
+    # every 2h, so within 2h of this job (04:20) it takes rung 1 on the capout.
     if not os.path.isfile(LADDER_SCRIPT):
         return ("unprobeable, kind unknown; cap-ladder.py is not on this tree, so nothing would consume "
                 "a capout: it stays parked and this job routes it once the ladder is here")

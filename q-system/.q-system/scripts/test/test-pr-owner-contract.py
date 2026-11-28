@@ -1041,7 +1041,7 @@ holds("P23", "the sink exits 0 and names no ticket (its capture hatch): not ok, 
 
 stand_in = TMP / "ladder-stand-in" / "cap-ladder.py"
 stand_in.parent.mkdir()
-stand_in.write_text("def ladder_owns(slug, number, branch, state_dir):\n    return ''\n")
+stand_in.write_text("def ladder_owns(slug, number, branch, state_dir, title='', head=None):\n    return ''\n")
 po.CAP_LADDER = stand_in
 lpr = {"slug": "o/fx", "number": 10, "branch": "sana/ask-777"}
 holds("P27", "with a cap-ladder.py in the tree, its answer stands, even where the fallback would yield",
