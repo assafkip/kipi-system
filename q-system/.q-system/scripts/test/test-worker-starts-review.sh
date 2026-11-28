@@ -42,13 +42,19 @@ echo "\$*" >> "$CALLS"
 printf '{"verdict": "APPROVE", "head_sha": "abc"}' > "\$(cd "$SCRIPTS" && . ./repo-slug-lib.sh && . ./pr-verdict-lib.sh && verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "\$1")"
 EOF
 REVIEWER_CMD="bash $WORK/reviewer.sh"
+# The real attempts ledger, on a temp file: the brake is its locked claim-flag.
+LEDGER="$SCRIPTS/attempts-ledger.py"
+export KIPI_NOTIFY=/usr/bin/true   # the ledger can reach slack-notify.sh; never from a test
+ATTEMPTS="$WORK/attempts.json"; echo '{}' > "$ATTEMPTS"
+echo aaaaaaaaaaaa1111 > "$WORK/head"
+pr_head_sha() { cat "$WORK/head"; }
 
-# 1. No record: one call, with --post and the issue.
+# 1. No record: one call, with exactly the reviewer's scheduled argv.
 echo write > "$WORK/mode"
 review_unreviewed_pr 77 ASK-77 >/dev/null
-[ "$(grep -c . "$CALLS")" = "1" ] && grep -q '^77 --issue ASK-77 --post' "$CALLS" \
-  && ok "a PR with no verdict calls the reviewer once, with --issue and --post" \
-  || bad "expected one reviewer call for PR 77" "$(cat "$CALLS")"
+[ "$(grep -c . "$CALLS")" = "1" ] && grep -qx '77 --issue ASK-77 --post --engine claude' "$CALLS" \
+  && ok "a PR with no verdict calls the reviewer once: N --issue ASK-n --post --engine claude" \
+  || bad "expected one reviewer call for PR 77 with the full argv" "$(cat "$CALLS")"
 grep -q "review recorded 'APPROVE'" "$LOG" && ok "the recorded verdict is said" || bad "no verdict line" "$(cat "$LOG")"
 
 # 2. A verdict already recorded: no call.
@@ -64,6 +70,27 @@ review_unreviewed_pr 78 ASK-78 >/dev/null; rc=$?
   && ok "a refused reviewer is called once and its rc=5 comes back" \
   || bad "refused reviewer: calls=$(grep -c . "$CALLS") rc=$rc"
 grep -q 'wrote no verdict (rc=5)' "$LOG" && ok "a run that wrote no verdict says so" || bad "no-verdict line missing" "$(cat "$LOG")"
+
+# 3b. THE BRAKE: the same head is not reviewed again on the next tick.
+: > "$CALLS"
+review_unreviewed_pr 78 ASK-78 >/dev/null
+[ ! -s "$CALLS" ] && ok "the next tick on the same head starts no second paid review" \
+  || bad "a second review ran on the same head" "$(cat "$CALLS")"
+# A push is new code and earns its own start.
+echo bbbbbbbbbbbb2222 > "$WORK/head"
+review_unreviewed_pr 78 ASK-78 >/dev/null
+[ "$(grep -c . "$CALLS")" = "1" ] && ok "a new head earns one new review" \
+  || bad "a new head: $(grep -c . "$CALLS") calls"
+
+# 3c. rc=9 is the machine's code: env_halt is claimed, the way step 5 does it.
+: > "$CALLS"; echo cccccccccccc3333 > "$WORK/head"
+cat > "$WORK/reviewer.sh" <<EOF
+echo "\$*" >> "$CALLS"; exit 9
+EOF
+review_unreviewed_pr 79 ASK-79 >/dev/null; rc=$?
+[ "$rc" = "9" ] && [ "$(python3 "$LEDGER" "$ATTEMPTS" get ASK-79 env_halt "")" = "True" ] \
+  && ok "a reviewer rc=9 claims env_halt (no 'no verdict' page for an exhausted account)" \
+  || bad "rc=9: rc=$rc env_halt=$(python3 "$LEDGER" "$ATTEMPTS" get ASK-79 env_halt "")"
 
 # 4. The gate-20 branch runs it; the print-the-command line is gone.
 G20="$(awk '/if \[ "\$GATE" = "20" \]; then/ {on=1} on {print} on && /^    fi$/ {exit}' "$WORKER")"

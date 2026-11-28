@@ -2488,9 +2488,30 @@ review_unreviewed_pr() {
     say "$issue: PR #$pr has a verdict now; no review started"
     return 0
   fi
+  # ONE START PER PR HEAD, CLAIMED IN THE LEDGER (PR #917 review round 1). The
+  # reviewer's round cap counts only USABLE rounds, so a run that comes back
+  # unusable or refused does not move it, and without a brake every tick would
+  # pay for another run and post another PR and Linear comment. The claim is the
+  # attempts ledger's locked claim-flag, so two overlapping ticks cannot both
+  # start one. A push is new code and earns its own start. 1 = already started
+  # for this head; 2 or 3 = the ledger could not answer, and no claim means no run.
+  local head flag crc=0
+  head="$(pr_head_sha "$pr")"
+  flag="gate20_review_pr${pr}_$(printf '%s' "${head:-nohead}" | cut -c1-12)"
+  python3 "$LEDGER" "$ATTEMPTS" claim-flag "$issue" "$flag" >/dev/null 2>&1 || crc=$?
+  case "$crc" in
+    0) ;;
+    1) say "$issue: PR #$pr has no recorded review verdict; a review was already started for head ${head:0:8}, so none is started again (a push earns the next one)"; return 0 ;;
+    *) say "$issue: PR #$pr has no recorded review verdict; the attempts ledger could not record the start (claim-flag rc=$crc), so no review is started this run"; return 0 ;;
+  esac
   say "$issue: PR #$pr has no recorded review verdict; the worker starts the review now (the reviewer holds its own round cap)"
   KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$pr" --issue "$issue" --post --engine claude >>"$LOG" 2>&1 || rc=$?
-  if [ -n "$(verdict_from_record "$rec")" ]; then
+  if [ "$rc" = "9" ]; then
+    # The reviewer's machine-condition code, handled the way step 5 handles it:
+    # env_halt makes converge exit 9 with no charge and no "no verdict" page.
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$issue" env_halt >/dev/null 2>&1 || true
+    say "$issue: PR #$pr: the reviewer's runner is unavailable (rc=9), a condition of the machine; the PR stands unreviewed until it answers"
+  elif [ -n "$(verdict_from_record "$rec")" ]; then
     say "$issue: PR #$pr review recorded '$(verdict_from_record "$rec")'; the next run acts on it"
   else
     say "$issue: PR #$pr review wrote no verdict (rc=$rc); the next run starts it again, within the reviewer's round cap"
@@ -4378,7 +4399,8 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # reviewer-floor turns an absent verdict into a red required context, and the PR
     # holds. A codex fallback would be worse than none -- codex is out of credits and
     # fails at EXIT 0, so it would fill the required gate with nothing.
-    # LABEL THE INVOKER HERE, at the one place the scheduled path runs the reviewer
+    # LABEL THE INVOKER HERE, at one of the two places the scheduled path runs the
+    # reviewer (the other is review_unreviewed_pr at gate 20, ASK-5846, same label)
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.

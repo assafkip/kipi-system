@@ -1202,7 +1202,7 @@
         "exit": "wait",
         "backstop": true,
         "what": "No recorded review verdict.",
-        "consumer": "review-redrive.py runs the reviewer; the backstop past the age bar."
+        "consumer": "linear-worker.sh review_unreviewed_pr starts the reviewer at gate 20, once per PR head (ASK-5846); review-redrive.py runs it for the PRs the worker does not reach; the backstop past the age bar."
       },
       "codex": {
         "exit": "wait",
