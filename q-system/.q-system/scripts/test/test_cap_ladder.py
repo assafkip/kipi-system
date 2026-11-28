@@ -1449,6 +1449,27 @@ def case_step0(script: Path = LADDER) -> None:
         check("step0: a broken check stops nothing: rung 1 runs, and the log says NOT CHECKED",
               any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")) and "NOT CHECKED" in out
               and label not in log(env, "sync"), out[-400:])
+    with tempfile.TemporaryDirectory() as td:
+        # PR #903 round 5, major 1: the label's consumer. The nightly sweep drops
+        # it from a ticket step 0 no longer stops, keeps it (and re-records the
+        # flag) on one it still stops, and a dry run writes nothing. No cap needed.
+        env = make_world(Path(td))
+        fx = Path(env["CAP_LADDER_LINEAR_FIXTURE"])
+        d = json.loads(fx.read_text())
+        d["ASK-60"] = {"state_type": "backlog", "labels": ["owner:sana", "step0:already-built"],
+                       "project": "kipi-system", "title": "Add a self-review pass to review-tier.py",
+                       "description": "d"}
+        d["ASK-61"] = {"state_type": "backlog", "labels": ["owner:sana", "step0:already-built"],
+                       "project": "kipi-system", "title": built, "description": "d"}
+        fx.write_text(json.dumps(d))
+        out = ladder(env, script=script)
+        check("step0 sweep: a dry run names the label it would remove and writes nothing",
+              "would remove step0:already-built" in out and not log(env, "sync"), out[-400:])
+        out = ladder(env, "--apply", script=script)
+        unblocks = [c for c in log(env, "sync") if c[0] == "unblock"]
+        check("step0 sweep: a ticket step 0 no longer stops loses the label; one it still stops keeps it",
+              unblocks == [["unblock", "ASK-60", "step0:already-built"]]
+              and ledger_row(env, "ASK-61").get("step0_labelled"), (out[-400:], log(env, "sync")))
 
 
 def main() -> int:

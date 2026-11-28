@@ -659,6 +659,32 @@ def ticket(issue: str) -> dict | None:
         return None
 
 
+def step0_labelled() -> list | None:
+    """Open tickets carrying step0:already-built, as {id, text}; None when
+    Linear cannot be read (the sweep then says so and changes nothing)."""
+    fixture = os.environ.get("CAP_LADDER_LINEAR_FIXTURE")
+    try:
+        if fixture:
+            rows = (json.loads(Path(fixture).read_text()) or {}).items()
+            return [{"id": k, "text": f"{v.get('title') or ''}\n\n{v.get('description') or ''}"}
+                    for k, v in rows if STEP0_LABEL in (v.get("labels") or [])
+                    and v.get("state_type") in OPEN_TYPES]
+        out, cur = [], None
+        while True:
+            d = _sync().graphql(
+                "query($l:String!,$c:String){issues(first:100,after:$c,filter:{labels:{name:{eq:$l}},"
+                "state:{type:{nin:[\"completed\",\"canceled\"]}}}){nodes{identifier title description}"
+                " pageInfo{hasNextPage endCursor}}}", {"l": STEP0_LABEL, "c": cur})["issues"]
+            out += [{"id": n["identifier"], "text": f"{n.get('title') or ''}\n\n{n.get('description') or ''}"}
+                    for n in d["nodes"]]
+            if not d["pageInfo"]["hasNextPage"]:
+                return out
+            cur = d["pageInfo"]["endCursor"]
+    except Exception as exc:  # noqa: BLE001 - the sweep must not stop the ladder
+        say(f"WARN step 0 sweep could not read the {STEP0_LABEL} tickets ({str(exc)[:120]}); next run retries")
+        return None
+
+
 def owned_open(t: dict | None) -> bool:
     return bool(t) and t.get("state_type") in OPEN_TYPES and any(
         l.startswith("owner:") for l in t.get("labels") or [])
@@ -1453,6 +1479,16 @@ def main(argv=None) -> int:
             # A RED ROW IS EXIT 1 (PR #899 round 1, finding 5): there is no report
             # file here, so the caller's `|| WARN` is the only place it shows.
             return 1 if any(r.get("red") for r in report) else 0
+        # THE step0:already-built CONSUMER (hold-label-consumers.json, PR #903
+        # round 5, major 1): ready() refuses the label forever, so something
+        # must re-check it. A ticket step 0 no longer stops loses the label.
+        # Silent when none is labelled: a quiet night prints nothing new
+        # (held_stays_quiet in test_cap_ladder.py pins that).
+        labelled = step0_labelled()
+        if labelled:
+            for line in step0().sweep(labelled, LEDGER + [str(ATTEMPTS)], SYNC, args.apply):
+                say(line)
+            say(f"step 0 sweep: {len(labelled)} ticket(s) labelled {STEP0_LABEL}")
         # THE HELD TICKETS: no event, no run, one line naming what it waits on.
         for issue, row in sorted(state.items()):
             # A release keeps its ask open on purpose: the question is still real

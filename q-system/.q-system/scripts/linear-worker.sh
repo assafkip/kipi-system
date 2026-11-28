@@ -1151,6 +1151,10 @@ founder_routed = held_with("owner:assaf", founder_scope)
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
 # number that says the loop is starving for a capability nobody has granted.
 blocked_cap = held_with("blocked:capability")
+# The step-0 hold, counted like the others (PR #903 round 5, minor 1): after
+# the labelling tick ready() never sees the ticket again, so this line is
+# the only place the held count is restated.
+step0_held = held_with("step0:already-built")
 # Expired parks are counted too (ASK-3995), after the pool is built, below: they
 # sort last rather than wait for E2 (ASK-4031, PR #663 round 1).
 
@@ -1575,6 +1579,8 @@ print(json.dumps({
     "founder_routed_ids": [i["identifier"] for i in founder_routed],
     "blocked_capability": len(blocked_cap),
     "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
+    "step0_already_built": len(step0_held),
+    "step0_already_built_ids": [i["identifier"] for i in step0_held],
     "expired_parks": len(expired_parks),
     "expired_park_ids": [i["identifier"] for i in expired_parks][:10],
     # Does the derived repo identity name a project that EXISTS on the board?
@@ -1713,6 +1719,8 @@ print("; ".join(h["id"] + " (" + h["why"] + ")" for h in json.load(sys.stdin).ge
 # Fail loud rather than classify on a guess (see registry_ok in the picker).
 [ "$REG_OK" = "False" ] && say "worker: WARNING instance-registry.json could not be read, so reachability is UNKNOWN this run and every out-of-repo issue is reported as a routine skip"
 [ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
+STEP0_HELD="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("step0_already_built",0), " ".join(d.get("step0_already_built_ids",[])))' 2>/dev/null)"
+[ "${STEP0_HELD%% *}" != "0" ] && [ -n "$STEP0_HELD" ] && say "worker: ${STEP0_HELD%% *} issue(s) held at step0:already-built (the file exists; cap-ladder.py's nightly sweep drops the label once step 0 no longer stops it:${STEP0_HELD#* })"
 
 # THE FOUNDER QUEUE IS AN ERROR PATH (ASK-353). Directive 2026-08-03: "nothing
 # should be on me". The archived PRD called owner:assaf the designed destination

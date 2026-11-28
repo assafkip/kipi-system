@@ -21,14 +21,21 @@ matcher tried (phrase key, build verb, verb minus "to", the literal file name)
 canceled some real ticket, because a text matcher has false positives at any
 setting and a cancel made each one cost live work
 (rca-ask5802-five-rounds-step0-cancel-2026-11-27.md). A label makes a false
-stop cost one click, so precision stops being the lever.
+stop cheap, and the comment says "remove the label and the next pick takes
+the ticket". cap-ladder.py's nightly sweep (step0_sweep) re-checks every
+labelled ticket and drops the label once step 0 no longer stops it.
 
 WHAT STOPS: improve_ground.py says already-built on a named-file basis, the
-cited file exists in this checkout, and the matched key is in the TITLE as a
-whole word, case-insensitive. Anything else is an advisory line and passes: a
-lesson-only match, or a key found only in the description. ("add risk-scored
-auto-merge for low-risk PRs" stops on review-tier.py; "fix the reviewer" with
-"add a deadman" in the body passes.)
+cited file exists in this checkout, and the title PROPOSES BUILDING THAT FILE:
+it opens with build, create, write, add or make, then at most an article or
+"new", then the cited file's name or stem ("Build review-tier.py for ...",
+"add a review-tier script"). A title about changing the file ("fix X.py",
+"add Y to X.py", "X.py crashes on Z") passes, as does any match only in the
+description or a lesson. Advisory lines only, never a stop.
+Measured 2026-11-27 over all 3,123 open owner:sana tickets, dry: "the
+matched key in the title" would have labelled 24, and all 24 were real work
+(bug reports on morning-brief-deadman.py, "Port ... onto the capability
+manifest", "Handoff gate: ..."). This rule labels 0 of them.
 
 FAILS OPEN, LOUDLY. If improve_ground.py crashes, hangs past the timeout or
 prints something that is not its JSON, the ticket proceeds and the line says
@@ -113,20 +120,27 @@ def stop_comment(issue: str, cites: list, reason: str, matched: str) -> str:
     """The one comment a stop posts, before the label."""
     named = ", ".join(f"`{c}`" for c in cites)
     return (f"**Step 0: {issue} looks already built.** improve_ground.py names {named} ({reason}); "
-            f"the title matches `{matched}`. Labelled `{LABEL}`, so the worker skips it. "
+            f"(matched `{matched}`), and the title proposes building that file. Labelled `{LABEL}`, so the worker skips it. "
             "Nothing is canceled. Remove the label and the next pick takes the ticket as written. "
             "(ticket_step0.py, ASK-5802)")
 
 
-def title_has_key(title: str, matched: str) -> bool:
-    """The matched KNOWN_BUILT key in the title as a whole word. A key only in
-    the description is advice, not a stop."""
-    return bool(matched) and re.search(rf"(?<![\w-]){re.escape(matched)}(?![\w-])",
-                                       title, re.IGNORECASE) is not None
+BUILD_OPENING = r"^\s*(?:build|create|write|add|make)\s+(?:(?:a|an|the|new)\s+)*"
 
 
-def cited_file_exists(cites: list) -> bool:
-    return any((REPO / Path(c)).is_file() for c in cites)
+def title_proposes_file(title: str, cites: list) -> bool:
+    """The title opens by proposing to build a cited file that exists here:
+    the file is the verb's direct object, nothing between them but an article.
+    "add Y to X.py" puts Y there, so it passes (PR #903 round 5: the key-in-
+    title rule would have labelled 24 real tickets, measured on the board)."""
+    for cite in cites:
+        path = Path(cite)
+        if not (REPO / path).is_file():
+            continue
+        for name in {path.name, path.stem}:
+            if name and re.search(BUILD_OPENING + rf"{re.escape(name)}(?![\w-])", title, re.IGNORECASE):
+                return True
+    return False
 
 
 def check(issue: str, text: str) -> dict:
@@ -144,14 +158,14 @@ def check(issue: str, text: str) -> dict:
     title = (text or "").split("\n", 1)[0]
     matched = str(verdict.get("matched") or "")
     if (verdict["verdict"] == "already-built" and basis == "named-file"
-            and cited_file_exists(cites) and title_has_key(title, matched)):
+            and title_proposes_file(title, cites)):
         return {"decision": "stop", "checked": True, "basis": basis, "cites": cites,
                 "comment": stop_comment(issue, cites, verdict.get("reason") or "", matched),
                 "line": f"step 0 {issue}: STOP, already built: {', '.join(cites)}"}
     if verdict["verdict"] == "already-built":
         return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
                 "line": f"step 0 {issue}: pass (advisory: already-built on a {basis or 'lesson'} match "
-                        f"outside the title: {', '.join(Path(c).name for c in cites)})"}
+                        f"and the title does not propose building it: {', '.join(Path(c).name for c in cites)})"}
     return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
             "line": f"step 0 {issue}: pass ({verdict['verdict']})"}
 
@@ -206,8 +220,43 @@ def label_stop(issue: str, res: dict, ledger: list, sync: list | None = None) ->
     lrc, lout = _run(sync + ["label", issue, LABEL])
     if lrc != 0:
         return False, f"comment posted, but the {LABEL} label did not land ({lout[-120:]})"
-    _run(ledger + ["claim-flag", issue, LABELLED_FLAG])
+    # PR #903 round 5, minor 2: an unrecorded flag means a later label removal
+    # is re-labelled with no comment. RED here; step0_sweep() re-records it.
+    frc, fout = _run(ledger + ["claim-flag", issue, LABELLED_FLAG])
+    if frc not in (0, 1):
+        return False, f"labelled {LABEL}, but step0_labelled did not record ({fout[-120:]})"
     return True, f"labelled {LABEL}, comment names {', '.join(res['cites'])}"
+
+
+def sweep(tickets: list, ledger: list, sync: list | None = None, apply: bool = False) -> list:
+    """The label's consumer (hold-label-consumers.json), run nightly by
+    cap-ladder.py. `tickets`: open tickets carrying LABEL, as {id, text}.
+    A ticket step 0 no longer stops (its title was rewritten, or the rule
+    narrowed) loses the label and its flags, so ready() offers it again. One
+    that still stops keeps the label and gets its step0_labelled flag
+    re-recorded, so a later removal stands down. NOT CHECKED changes nothing."""
+    sync = sync or _sync_cmd()
+    lines = []
+    for t in tickets:
+        issue = t["id"]
+        res = check(issue, t.get("text") or "")
+        if not res["checked"]:
+            lines.append(f"{res['line']}; its {LABEL} label stays")
+        elif res["decision"] == "stop":
+            if apply:
+                _run(ledger + ["claim-flag", issue, LABELLED_FLAG])
+            lines.append(f"step 0 sweep {issue}: still already built, {LABEL} stays")
+        elif not apply:
+            lines.append(f"[dry] step 0 sweep {issue}: no longer stops; would remove {LABEL}")
+        else:
+            rc, out = _run(sync + ["unblock", issue, LABEL])
+            if rc != 0:
+                lines.append(f"step 0 sweep {issue}: RED, could not remove {LABEL} ({out[-120:]}); retried next run")
+                continue
+            _run(ledger + ["clear-flag", issue, LABELLED_FLAG])
+            _run(ledger + ["clear-flag", issue, COMMENT_FLAG])
+            lines.append(f"step 0 sweep {issue}: no longer stops; {LABEL} removed, the worker takes it")
+    return lines
 
 
 def main(argv=None) -> int:

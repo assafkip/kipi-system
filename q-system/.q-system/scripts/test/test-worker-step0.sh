@@ -187,6 +187,9 @@ OUTL="$(run_worker 5)"
 [ -z "$(picks "$OUTL")" ] && ! printf '%s\n' "$OUTL" | grep -q 'step 0 ASK-961' && [ ! -s "$WORK/sync.log" ] \
   && ok "a labelled ticket is not offered: no pick, no step 0, no second comment" \
   || bad "the label holds the ticket" "picks [$(picks "$OUTL")] sync [$(cat "$WORK/sync.log")]"
+printf '%s\n' "$OUTL" | grep -q 'worker: 1 issue(s) held at step0:already-built .*ASK-961' \
+  && ok "the run line counts the step-0 hold, like every other hold bucket" \
+  || bad "the run line counts the step-0 hold" "$(printf '%s\n' "$OUTL" | grep -E 'held at' | head -3)"
 
 # The label removed: step 0 stands down (step0_labelled) and the ticket is picked.
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null

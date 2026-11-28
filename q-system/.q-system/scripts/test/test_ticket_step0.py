@@ -10,6 +10,7 @@ Run: python3 q-system/.q-system/scripts/test/test_ticket_step0.py
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -67,13 +68,14 @@ def main() -> int:
         empty.mkdir()
         full = corpus(root, LESSONS)
 
-        # WHAT STOPS: the matched key in the TITLE (a stop is now a label, never
-        # a cancel, so the old precision carve-outs are gone on purpose:
-        # rca-ask5802-five-rounds-step0-cancel-2026-11-27.md).
+        # WHAT STOPS: a title that proposes building the cited file itself. The
+        # stop is a label, never a cancel (rca-ask5802-five-rounds-step0-cancel-
+        # 2026-11-27.md); the key-in-title rule labelled 24 real tickets on the
+        # board, so the object of the build verb must be the file.
         for title, why in (
-                ("Build review-tier.py for risk-scored auto-merge\n\nbuild it", "key and file in the title"),
-                ("add risk-scored auto-merge for low-risk PRs", "the known-answer case: key in the title"),
-                ("Add a RISK-SCORED AUTO-MERGE pass", "key in the title, any case")):
+                ("Build review-tier.py for risk-scored auto-merge\n\nbuild it", "build + the file"),
+                ("add a review-tier script for risk-scored auto-merge", "add + article + the stem"),
+                ("Create the new REVIEW-TIER.PY risk-scored auto-merge gate", "any case, two articles")):
             rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
             check(f"a stop (exit 3) names the file: {why}",
                   rc == 3 and out.get("decision") == "stop" and out.get("checked") is True
@@ -82,11 +84,33 @@ def main() -> int:
                   and "step0:already-built" in out.get("comment", "")
                   and "Nothing is canceled" in out.get("comment", ""), (rc, out))
         for title, why in (
+                # The titles PR #903 round 5 named: all were labelled by the key rule.
+                ("launchd job is dark: com.kipi.browser-session-deadman", "a broken-thing report (ASK-1199)"),
+                ("handoff-provenance-lint: widen the scan root to session handoffs and auto-memory", "ASK-1953"),
+                ("session handoff for the fleet-wide Linear rollout", "key in the title, no build of the file"),
+                ("Add a deadman to the cap-ladder nightly run", "adds a part TO another thing"),
+                ("Make the morning brief read the ledger instead of the log", "make = change"),
+                ("Add a friction note capture to the lane runner", "adds a part TO another thing"),
+                ("Add a self-review pass to pr-owner.py", "adds a part TO another thing"),
+                ("Make a handoff's \"every branch is pushed\" claim come from the disk, not a static list "
+                 "of branches.", "verbatim RCA action item"),
+                ("Add friction counts on the morning brief", "key in the title, file not built"),
+                ("Add a deadman for the pr-review-agent queue", "key in the title, file not built"),
+                ("Build a morning brief section for consulting", "build verb + key, the object is a section"),
+                ("Add a friction note capture on the lane runner", "'on' for 'to'"),
+                ("Create a handoff index page", "the object is a page"),
+                ("add risk-scored auto-merge for low-risk PRs", "the old known-answer case: no file named"),
+                # Round 4's titles, keyed to the cited file.
+                ("friction-note.sh drops the note when the repo is mid-rebase", "a bug in the cited file"),
+                ("review-tier.py: widen the self-review tier to lane PRs", "a change to the cited file"),
+                ("Add a self-review pass to review-tier.py", "add Y TO the cited file"),
+                ("Fix review-tier.py mislabelling a 2000-line PR", "fix the cited file"),
+                # Real board titles from the 2026-11-27 census (24 labelled by the key rule).
+                ("Handoff gate: \"every branch is pushed\" must come from git worktree list on disk", "ASK-4135"),
+                ("The morning brief reads the state card 30 minutes before it is written", "ASK-1405"),
+                ("Declare the four CRM Run Control rows in control.JOBS so the deadman can see them", "ASK-1187"),
                 ("fix the reviewer\n\nadd a deadman to the morning brief", "the key only in the description"),
-                ("add a reviewer fallback\n\nthe deadman keeps paging", "build verb, key only in the description"),
-                ("Add risk-scored auto-merges-plus to the queue\n\nrisk-scored auto-merge", "a longer word is not the key"),
-                ("morning-brief.py crashes on an empty ledger", "a bug report with no key (round 4)"),
-                ("Add a dry-run flag to review-tier.py", "the cited file named, no key (round 4)")):
+                ("morning-brief.py crashes on an empty ledger", "a bug report with no key (round 4)")):
             rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
             check(f"no stop: {why}",
                   rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))
@@ -121,7 +145,7 @@ def main() -> int:
                                   capture_output=True, text=True).stdout.strip()
 
         led.write_text("{}")
-        built = "add risk-scored auto-merge for low-risk PRs"
+        built = "Build review-tier.py for risk-scored auto-merge"
         rc, out, calls = apply(built)
         check("--apply on a match: one comment naming the file, then the label, and nothing else",
               rc == 3 and [c[0] for c in calls] == ["progress", "label"]
@@ -139,6 +163,20 @@ def main() -> int:
         rc, out, calls = apply(built)
         check("after a checked pass cleared the flags, a later match labels again",
               rc == 3 and [c[0] for c in calls] == ["progress", "label"], (rc, calls))
+        badled = root / "badledger.py"
+        badled.write_text("import subprocess, sys\n"
+                          "if sys.argv[2:4] == ['claim-flag', 'ASK-1'] and sys.argv[4] == 'step0_labelled':\n"
+                          "    sys.exit(9)\n"
+                          f"sys.exit(subprocess.run([sys.executable, {str(ledger_py)!r}] + sys.argv[1:]).returncode)\n")
+        spec = importlib.util.spec_from_file_location("t0_under_test", str(STEP0))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        led.write_text("{}")
+        synclog.unlink(missing_ok=True)
+        ok, note = mod.label_stop("ASK-1", {"comment": "c", "cites": ["x.py"]},
+                                  [sys.executable, str(badled), str(led)], [sys.executable, str(stub)])
+        check("a step0_labelled flag that does not record is RED, not a silent success",
+              ok is False and "did not record" in note, note)
         led.write_text("{}")
         synclog.unlink(missing_ok=True)
         p = subprocess.run([sys.executable, str(STEP0), "--issue", "ASK-1", "--attempts", str(led)],

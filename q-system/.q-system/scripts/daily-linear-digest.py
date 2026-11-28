@@ -129,6 +129,7 @@ def fetch(since_iso: str):
 BLOCKED_PATTERNS = (
     re.compile(r"\d+ issue\(s\) held at needs-scope[^\n]*"),
     re.compile(r"\d+ issue\(s\) held at blocked:[^\n]*"),
+    re.compile(r"\d+ issue\(s\) held at step0:already-built[^\n]*"),
     re.compile(r"\d+ ready-shaped issue\(s\) skipped as out-of-repo[^\n]*"),
     # ASK-729. These two are the "whether or not it is fully fixed" half: while
     # cross-repo dispatch stays held, the digest still has to say how much work is
