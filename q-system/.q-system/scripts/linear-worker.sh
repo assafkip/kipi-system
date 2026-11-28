@@ -4037,7 +4037,10 @@ what she could not?
 
 NEVER route around a refused permission by another route (writing through a shell
 to dodge a guard, disabling a gate). A gate that is inconvenient is a gate doing
-its job -- if the guard is the blocker, that is exactly what step 5 is for.$(codex_runner_note "$ISSUE")"
+its job -- if the guard is the blocker, that is exactly what step 5 is for."
+      # Appended on its own line, so the builder above stays a plain string that
+      # test-worker-rework-prompt.sh can render without the worker's functions.
+      CODEX_PROMPT="$CODEX_PROMPT$(codex_runner_note "$ISSUE")"
       # run_bounded, not a bare call: an unbounded second runner at 3am is the
       # failure mode loop-exits.md exit 7 exists for. ONE invocation, no retry --
       # a dead Codex must cost one timeout, not a spend loop. With the Opus
