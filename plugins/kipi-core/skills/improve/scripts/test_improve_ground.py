@@ -185,13 +185,21 @@ def test_the_existing_billing_and_cap_switches_are_named(ig, tmp_path, idea, cit
     assert hit and hit[0].startswith("~/"), out["cites"]
 
 
-@pytest.mark.parametrize("idea,key", [
-    # PR #916 round 1: the repo spells these with a hyphen, and in the plural.
-    ("teach the usage-pacer a second account", "usage pacer"),
-    ("move plan-billing to a config file", "plan billing"),
-    ("two custom connectors for the CRM", "custom connector"),
+@pytest.mark.parametrize("idea", [
+    # A hyphen form names a file in prose; it is a mention, not a proposal.
+    "founder_asks.py renders the unresolved entries for morning-brief.py",
+    "rows for the capability-manifest gate",
 ])
-def test_a_hyphen_or_plural_still_matches(ig, tmp_path, idea, key):
+def test_a_hyphenated_file_name_is_not_a_key_hit(ig, tmp_path, idea):
+    assert ig.ground(idea, "script", env=_empty(tmp_path))["verdict"] != "already-built"
+
+
+@pytest.mark.parametrize("idea,key", [
+    # PR #916 round 1: plurals still match.
+    ("two custom connectors for the CRM", "custom connector"),
+    ("two weekly caps, one per account", "weekly cap"),
+])
+def test_a_plural_still_matches(ig, tmp_path, idea, key):
     out = ig.ground(idea, "script", env=_empty(tmp_path))
     assert out["verdict"] == "already-built" and key in out["matches"], out
 

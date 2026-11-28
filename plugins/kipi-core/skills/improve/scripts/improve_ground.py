@@ -54,8 +54,10 @@ MATCH_FLOOR = 0.18
 # gone: it cited q-system/memory/last-handoff.md, a session note, not a built
 # capability, and it matched any docstring that mentions a handoff (cap-ladder.py,
 # pr-owner.py and wait-has-consumer.py were all false already-built).
-# A space in a key also matches a hyphen ("usage pacer" hits usage-pacer.py),
-# and a trailing "s" is allowed ("custom connectors"), PR #916 round 1.
+# A trailing "s" is allowed ("custom connectors", PR #916 round 1). A space
+# never matches a hyphen: the hyphen form is how prose NAMES a file
+# ("morning-brief.py", "auto-merge"), and matching it made 5 of 68 new-script
+# docstrings false named-file blocks (measured on PR #916 round 1's fix).
 # A value is one cite or a tuple of cites. A cite outside the repo stays a ~
 # path, never this machine's /Users path: it lands in Linear comments and in an
 # agent's instruction (PR #916 round 1, minor 2). improve-ground-gate.py expands it.
@@ -78,7 +80,6 @@ KNOWN_BUILT = {
     "bills the claude plan": ("~/.config/kipi/fleet-plan-billing-until", "kipi-dispatch.sh"),
     "weekly cap": ("~/.config/kipi/usage-pacer.py", "~/.config/kipi/usage-pacer.json"),
     "usage cap": ("~/.config/kipi/usage-pacer.py", "~/.config/kipi/usage-pacer.json"),
-    "usage pacer": ("~/.config/kipi/usage-pacer.py", "~/.config/kipi/usage-pacer.json"),
 }
 
 
@@ -98,8 +99,7 @@ def known_built_hits(text: str) -> list:
     low = (text or "").lower()
     hits = []
     for key in KNOWN_BUILT:
-        body = r"[\s-]+".join(re.escape(w) for w in key.split())
-        m = re.search(rf"(?<![\w-]){body}s?(?![\w-])", low)
+        m = re.search(rf"(?<![\w-]){re.escape(key)}s?(?![\w-])", low)
         if m:
             hits.append((m.start(), key))
     return sorted(hits)
