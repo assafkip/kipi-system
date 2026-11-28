@@ -52,5 +52,6 @@ that is a conversation, not this skill.
 
 ## Changelog
 
+- 2026-11-28: KNOWN_BUILT keys match as whole words (a trailing "s" is allowed; a hyphen form is a file name, never a hit); the "handoff" key is gone; every hit comes back in text order as `matches`, `matched` is the first; new keys name the plan-billing date file and usage-pacer, cited as `~/` paths (ASK-5805).
 - 2026-11-27: already-built verdicts carry `basis` ("named-file" or "lesson") and, for a named file, `matched` (the key); CLI and exit codes unchanged. ticket_step0.py reads both (ASK-5802).
 - 2026-09-01: created (prd-morning-brief-learns, issue mbl-improve-skill). Verdicts cite a lessons path or a named file; corpora contract via KIPI_LESSONS_CORPORA; roadmap ideas skip by classifier, never by judgment; one line per entry because test_skill_changelog.py reads each line.

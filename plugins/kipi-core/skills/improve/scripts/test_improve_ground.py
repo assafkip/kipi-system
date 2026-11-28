@@ -142,6 +142,68 @@ def test_skill_file_registered_with_changelog_and_cli_exit_codes(tmp_path):
     assert r.returncode == 2 and json.loads(r.stdout)["verdict"] == "skip"
 
 
+def _empty(tmp_path):
+    return {"KIPI_LESSONS_CORPORA": str(_corpus(tmp_path, "c", {}))}
+
+
+@pytest.mark.parametrize("idea", [
+    # ASK-5805: three real new-script docstrings that cited last-handoff.md.
+    "cap-ladder.py: the one consumer of every cap; the marker is the handoff it reads",
+    "a session handoff for the fleet-wide Linear rollout",
+    # Substring, not a word: "frictionless" is not friction-note.sh.
+    "frictionless deploys for the site preview",
+])
+def test_handoff_and_substrings_are_not_already_built(ig, tmp_path, idea):
+    assert ig.ground(idea, "script", env=_empty(tmp_path))["verdict"] != "already-built"
+
+
+def test_a_whole_word_key_still_matches(ig, tmp_path):
+    out = ig.ground("a deadman for the nightly job", "script", env=_empty(tmp_path))
+    assert out["verdict"] == "already-built" and out["matched"] == "deadman"
+
+
+def test_a_description_key_does_not_hide_the_title_key(ig, tmp_path):
+    """ASK-5805: "deadman" sorts first in KNOWN_BUILT, so a body word took the
+    match from the title. Every hit is returned, in text order."""
+    out = ig.ground("Build the morning brief section\n\nIt also needs a deadman.", "script", env=_empty(tmp_path))
+    assert out["matched"] == "morning brief" and out["matches"] == ["morning brief", "deadman"]
+    assert out["cites"][0].endswith("morning-brief.py")
+    assert any(c.endswith("morning-brief-deadman.py") for c in out["cites"])
+
+
+@pytest.mark.parametrize("idea,cite", [
+    # The scar ticket's own title (ASK-5782); it got `adopt` before.
+    ("Fleet bills the Claude plan, stops at 60% weekly", "fleet-plan-billing-until"),
+    ("a weekly cap so the fleet stops at 60% of the plan", "usage-pacer.py"),
+])
+def test_the_existing_billing_and_cap_switches_are_named(ig, tmp_path, idea, cite):
+    out = ig.ground(idea, "script", env=_empty(tmp_path))
+    assert out["verdict"] == "already-built" and out["basis"] == "named-file"
+    hit = [c for c in out["cites"] if c.endswith(cite)]
+    # A ~ path, never this machine's /Users path (PR #916 round 1, minor 2). That
+    # the gate finds the file under HOME is test_improve_ground_gate.py's to pin.
+    assert hit and hit[0].startswith("~/"), out["cites"]
+
+
+@pytest.mark.parametrize("idea", [
+    # A hyphen form names a file in prose; it is a mention, not a proposal.
+    "founder_asks.py renders the unresolved entries for morning-brief.py",
+    "rows for the capability-manifest gate",
+])
+def test_a_hyphenated_file_name_is_not_a_key_hit(ig, tmp_path, idea):
+    assert ig.ground(idea, "script", env=_empty(tmp_path))["verdict"] != "already-built"
+
+
+@pytest.mark.parametrize("idea,key", [
+    # PR #916 round 1: plurals still match.
+    ("two custom connectors for the CRM", "custom connector"),
+    ("two weekly caps, one per account", "weekly cap"),
+])
+def test_a_plural_still_matches(ig, tmp_path, idea, key):
+    out = ig.ground(idea, "script", env=_empty(tmp_path))
+    assert out["verdict"] == "already-built" and key in out["matches"], out
+
+
 def test_this_file_runs_its_own_tests_under_python3():
     if os.environ.get("KIPI_SELFTEST_INNER"):
         pytest.skip("inner run")

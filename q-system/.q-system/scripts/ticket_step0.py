@@ -145,7 +145,9 @@ def title_proposes_file(title: str, cites: list) -> bool:
     "add Y to X.py" puts Y there, so it passes (PR #903 round 5: the key-in-
     title rule would have labelled 24 real tickets, measured on the board)."""
     for cite in cites:
-        path = Path(cite)
+        # A ~ cite names a file outside the repo (improve_ground KNOWN_BUILT,
+        # ASK-5805); REPO / an absolute path is that path.
+        path = Path(os.path.expanduser(cite))
         if not (REPO / path).is_file():
             continue
         for name in {path.name, path.stem}:
