@@ -230,7 +230,8 @@ def open_prs(slug: str) -> list:
 
 
 def issue_of_branch(branch: str) -> str:
-    m = re.match(r"^sana/(ask-\d+)(?:-.*)?$", branch or "")
+    # Any case (PR #913 round 1, finding 4): 16 branches here are sana/ASK-N-...
+    m = re.match(r"^sana/(ask-\d+)(?:-.*)?$", branch or "", re.I)
     return m.group(1).upper() if m else ""
 
 
@@ -244,8 +245,10 @@ def issue_of_pr(branch: str, title: str = "") -> str:
     issue = issue_of_branch(branch)
     if issue:
         return issue
-    m = re.search(r"\bASK-(\d+)\b", title or "", re.I)
-    return f"ASK-{m.group(1)}" if m else ""
+    # ONE id only (PR #913 round 1, finding 3): "revert the ASK-456 fix for
+    # ASK-123" names two tickets, and guessing one closes the wrong PR.
+    ids = {n for n in re.findall(r"\bASK-(\d+)\b", title or "", re.I)}
+    return f"ASK-{ids.pop()}" if len(ids) == 1 else ""
 
 
 def title_mapped(pr: dict | None) -> bool:
@@ -263,6 +266,7 @@ def read_ledger() -> dict:
         return {}
 
 
+PR_CAP_KINDS = ("reviewcap:", "approvedmoved:", "escalated:")
 REVIEW_MAX_ROUNDS = 3                 # pr-review-agent.sh MAX_ROUNDS default
 APPROVES = ("APPROVE", "APPROVE WITH NITS")
 
@@ -299,7 +303,8 @@ def review_sigs(slug: str, pr_number, reviews: Path, head: str | None) -> list:
     rec = review_record(reviews, slug, pr_number)
     marked = any((d / f".round-cap-{slug.replace('/', '_')}-pr-{pr_number}").exists()
                  for d in (reviews, reviews / "codex"))
-    last_round = isinstance(rec.get("round"), int) and rec["round"] >= review_cap_rounds()
+    # usable_round, never round: round counts blips too (PR #913 round 1, finding 1).
+    last_round = isinstance(rec.get("usable_round"), int) and rec["usable_round"] >= review_cap_rounds()
     approved = rec.get("verdict") in APPROVES
     if head is not None and approved and (marked or last_round):
         if rec.get("head_sha") == head:
@@ -372,6 +377,11 @@ def ladder_owns(slug: str, number: int, branch: str, state_dir: str, title: str 
         e = (json.loads((Path(state_dir) / "linear-worker-attempts.json").read_text()) or {}).get(issue) or {}
     except (OSError, ValueError):
         e = {}
+    if not issue_of_branch(branch):
+        # A title-mapped PR is the ladder's only on a cap of ITS OWN (review cap,
+        # escalation): a worker capout belongs to the worker's sana/ask-N PR,
+        # never to a PR that mentions the id (PR #913 round 1, finding 3).
+        e = {k: v for k, v in e.items() if k.startswith("review_escalated_")}
     sigs = cap_sigs(e, slug, number, Path(state_dir) / "pr-reviews", head=head)
     if e.get(HOLD_FLAG):
         sigs.append("held on a BLOCKED-ON decision")
@@ -1308,6 +1318,9 @@ def run_logged(argv: list, log: Path, env: dict, timeout: int = 2700) -> int:
         return 127
 
 
+ENV_RCS = (9, 124, 126, 127)          # pr-review-agent.sh 9 = no review ran; timeout; not runnable
+
+
 def delta_review(issue: str, sigs: list, pr: dict, slug: str, row: dict, state: dict,
                  apply: bool, tgts: list, report: list) -> str | None:
     """The approved-then-moved rung (ASK-5788): ONE review of the delta since the
@@ -1334,7 +1347,7 @@ def delta_review(issue: str, sigs: list, pr: dict, slug: str, row: dict, state: 
     if late:
         return late
     rec = review_record(REVIEWS, slug, pr["number"])
-    env = dict(os.environ, KIPI_REVIEW_MAX_ROUNDS=str(int(rec.get("round") or review_cap_rounds()) + 1),
+    env = dict(os.environ, KIPI_REVIEW_MAX_ROUNDS=str(int(rec.get("usable_round") or review_cap_rounds()) + 1),
                KIPI_FLEET_API_KEYS="0")   # reviews bill the plan (ASK-4857)
     # Recorded BEFORE the run: a review that crashes is not asked again (one per PR).
     row.setdefault("delta_reviewed", {})[key] = {"head": pr.get("headRefOid", ""), "at": now().isoformat()}
@@ -1344,6 +1357,12 @@ def delta_review(issue: str, sigs: list, pr: dict, slug: str, row: dict, state: 
     log = STATE.parent / "reviews" / f"{slug.replace('/', '_')}-pr-{pr['number']}-delta.log"
     rc = run_logged(REVIEWER + [str(pr["number"]), "--repo", path, "--issue", issue, "--post"], log, env)
     row["delta_reviewed"][key]["rc"] = rc
+    if rc in ENV_RCS:
+        # NEVER REACHED THE MODEL (PR #913 round 1, finding 2: rc 127 from a
+        # launchd PATH with no claude spent the one shot, and the next push
+        # closed the approved PR at rung 1). The shot stays unspent; the 20h
+        # handled memory spaces the retries.
+        row["delta_reviewed"].pop(key)
     if rc != 0:
         report.append({"issue": issue, "rung": row.get("rung", 0), "decision": "DELTA", "red": True,
                        "note": f"delta review exited {rc}; log {log}"})
@@ -1537,14 +1556,24 @@ def main(argv=None) -> int:
     tgts = targets()
     project_slug = {t["project"]: t["slug"] for t in tgts if t.get("project")}
     prs_by_issue, slug_by_pr = {}, {}
-    for tg in tgts:
-        for pr in open_prs(tg["slug"]):
+    listed = [(tg["slug"], pr) for tg in tgts for pr in open_prs(tg["slug"])]
+    # BRANCH FIRST, TITLE SECOND (PR #913 round 1, finding 3): a newer PR whose
+    # title mentions ASK-1 must never shadow ASK-1's own sana/ask-1 PR.
+    for by_title in (False, True):
+        for slug, pr in listed:
+            if title_mapped(pr) != by_title:
+                continue
             issue = issue_of_pr(pr.get("headRefName", ""), pr.get("title", ""))
             if issue and issue not in prs_by_issue:
                 prs_by_issue[issue] = pr
-                slug_by_pr[(issue, pr["number"])] = tg["slug"]
+                slug_by_pr[(issue, pr["number"])] = slug
 
     caps = find_caps(read_ledger(), prs_by_issue, slug_by_pr)
+    for issue, pr in list(prs_by_issue.items()):
+        # A title-mapped PR moves only on a cap of its own; a ticket-only cap
+        # climbs with no PR, as it did before title mapping.
+        if title_mapped(pr) and not any(s.startswith(PR_CAP_KINDS) for s in caps.get(issue, [])):
+            prs_by_issue.pop(issue)
     # --issue: NO CLOCK, SAME GUARDS (founder 2026-11-27: "identify any unneeded
     # holds, waits for a time of day you dont need ... and remove them"), so one
     # capped ticket need not wait for the next 2-hourly run. It is a filter on this loop, not a second loop: PR #893's --rung0

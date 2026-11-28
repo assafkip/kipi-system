@@ -133,6 +133,10 @@ for n in 1 2 3; do
     || fail "round $n made $((after - before)) model calls, expected 1 (the stub is not the dispatched engine, so every count below is vacuous):
 $(tail -20 "$WORK/r$n.out")"
   if [ "$n" -lt 3 ] && [ "$(kicks)" != "0" ]; then fail "round $n kicked cap-ladder before the last round"; fi
+  # usable_round counts real reviews only; `round` counted the two blips (PR #913 round 1, finding 1).
+  _rec="$(find "$WORK" -name '*pr-1.verdict.json' -not -path '*/codex/*' | head -1)"
+  _ur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("usable_round"))' "$_rec" 2>/dev/null)"
+  [ "$_ur" = "$n" ] || fail "round $n wrote usable_round=$_ur in ${_rec:-no record}, expected $n"
 done
 [ "$(kicks)" = "1" ] || fail "round 3 ended REQUEST CHANGES and kicked cap-ladder $(kicks) time(s), expected 1:
 $(tail -20 "$WORK/r3.out")"
@@ -156,7 +160,7 @@ ok "round 4 exited 0"
 
 grep -q 'pr comment' "$GH_LOG" || fail "round 4 posted no PR comment:
 $(cat "$GH_LOG")"
-grep -q 'review cap reached (3); cap-ladder.py takes this PR now (kickstarted), every 2h as backstop' "$WORK/r4.out" \
+grep -q 'review cap reached (3); cap-ladder.py takes this PR (woken when the cap is first hit, else its 2h run)' "$WORK/r4.out" \
   || fail "round 4 output does not carry the cap message:
 $(tail -20 "$WORK/r4.out")"
 ok "round 4 posted the cap comment"

@@ -495,10 +495,14 @@ kick_cap_ladder() {
   acct_home="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null)"
   if [ -n "${KIPI_CAP_LADDER_KICK:-}" ]; then
     $KIPI_CAP_LADDER_KICK >/dev/null 2>&1 || true
+  elif ! command -v launchctl >/dev/null 2>&1; then  # portability-lint-skip: the guard itself
+    echo "  no launchd on this machine; the scheduled cap-ladder run takes PR #$PR"
   elif [ -n "$acct_home" ] && [ "$HOME" = "$acct_home" ]; then
-    launchctl kickstart "gui/$(id -u)/com.kipi.cap-ladder" >/dev/null 2>&1 \
-      && echo "  cap-ladder kickstarted for PR #$PR" \
-      || echo "  WARN: could not kickstart com.kipi.cap-ladder; its 2h run takes PR #$PR" >&2
+    if launchctl kickstart "gui/$(id -u)/com.kipi.cap-ladder" >/dev/null 2>&1; then  # portability-lint-skip: guarded above
+      echo "  cap-ladder kickstarted for PR #$PR"
+    else
+      echo "  WARN: could not kickstart com.kipi.cap-ladder; its 2h run takes PR #$PR" >&2
+    fi
   fi
 }
 
@@ -627,7 +631,7 @@ if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
   done
 fi
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
-  CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR now (kickstarted), every 2h as backstop"
+  CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR (woken when the cap is first hit, else its 2h run)"
   CAP_NOTE="$CAP_MSG"
   [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped #$REOPEN_OF; use cap-ladder.py. Override: delete $(basename "$_m")"
   CAP_MSG=${CAP_MSG:0:140}  # GitHub refuses a status description over 140 chars; CAP_MSG is what the pending status posts (P35)
@@ -2191,8 +2195,8 @@ REVIEWED_BY="$CODEX_MODEL"
 # The record path comes from the ONE resolver (repo-slug-lib.sh), passed in as
 # argv 16 rather than rebuilt in python -- a second place that knows the naming
 # rule is a second writer, which is the defect class this repo keeps finding.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" "${REVIEW_BASE:-}" <<'PY'
-import json, sys
+KIPI_USABLE_ROUND="$((PRIOR_ROUNDS + 1))" python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" "${REVIEW_BASE:-}" <<'PY'
+import json, os, sys
 (pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
  engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
 out = sys.argv[16]
@@ -2222,6 +2226,12 @@ record = {"pr": int(pr), "issue": issue, "verdict": verdict,
 # covered, next to the status description that says the same out loud.
 if review_base:
     record["review_base"] = review_base
+# THE ROUND THE CAP COUNTS (ASK-5788, PR #913 round 1, finding 1). `round` is
+# review_round(), every .md on disk + 1, blips included; the cap counts usable
+# rounds only (PRIOR_ROUNDS). cap-ladder.py reads this one, so two blips never
+# make a first real review "round 3".
+if usable == "1" and os.environ.get("KIPI_USABLE_ROUND", "").isdigit():
+    record["usable_round"] = int(os.environ["KIPI_USABLE_ROUND"])
 json.dump(record, open(out, "w"), indent=2)
 PY
 

@@ -48,9 +48,11 @@ def world(td: str) -> dict:
     return env
 
 
-def record(env: dict, pr: int, round_: int, verdict: str, head: str) -> None:
+def record(env: dict, pr: int, round_: int, verdict: str, head: str, blips: int = 0) -> None:
+    """The record pr-review-agent.sh writes: `round` counts blips, `usable_round` does not."""
     (Path(env["CAP_LADDER_REVIEWS"]) / f"o_r__pr-{pr}.verdict.json").write_text(json.dumps(
-        {"pr": pr, "verdict": verdict, "usable": True, "round": round_, "head_sha": head}))
+        {"pr": pr, "verdict": verdict, "usable": True, "round": round_ + blips, "usable_round": round_,
+         "head_sha": head}))
 
 
 def closed(env: dict, pr: int) -> bool:
@@ -82,6 +84,40 @@ def case_last_round() -> None:
         out = T.ladder(env, "--apply")
         T.check("last round: round 3 ended REQUEST CHANGES with no marker is a cap (rung 1)",
                 "ASK-1: rung 1" in out and closed(env, 10), out)
+    with tempfile.TemporaryDirectory() as td:
+        env = world(td)
+        record(env, 10, 1, "REQUEST CHANGES", "a" * 40, blips=2)   # PR #913 round 1, finding 1
+        T.ladder(env, "--apply")
+        T.check("last round: two blips and one real review is not round 3", not closed(env, 10), T.log(env, "gh"))
+
+
+def pr_row(n, branch, title, head="a" * 40):
+    return {"number": n, "headRefName": branch, "headRefOid": head, "title": title,
+            "baseRefName": "main", "url": f"u/{n}", "state": "OPEN"}
+
+
+def case_title_precedence() -> None:
+    """PR #913 round 1, finding 3: a PR that mentions a capped id never shadows its own PR."""
+    with tempfile.TemporaryDirectory() as td:
+        env = world(td)
+        T.world(env, **{"o/r": [pr_row(20, "docs/notes", "docs: note the ASK-1 cap"),
+                                pr_row(10, "sana/ask-1", "fix (ASK-1)")]})
+        T.led(env, "record-capout", "ASK-1", "capped")
+        T.ladder(env, "--apply")
+        T.check("title: the ticket's own sana/ask-1 PR is closed, never the PR that mentions it",
+                closed(env, 10) and not closed(env, 20), T.log(env, "gh"))
+    with tempfile.TemporaryDirectory() as td:
+        env = world(td)
+        T.world(env, **{"o/r": [pr_row(20, "docs/notes", "docs: note the ASK-2 cap")]})
+        T.led(env, "record-capout", "ASK-2", "capped")
+        T.ladder(env, "--apply")
+        T.check("title: a ticket-only cap never closes a title-mapped PR", not closed(env, 20), T.log(env, "gh"))
+    with tempfile.TemporaryDirectory() as td:
+        env = world(td)
+        T.world(env, **{"o/r": [pr_row(20, "fix/x", "revert the ASK-456 fix for ASK-2")]})
+        (Path(env["CAP_LADDER_REVIEWS"]) / ".round-cap-o_r-pr-20").write_text("")
+        T.ladder(env, "--apply")
+        T.check("title: two ASK ids map to no ticket", not closed(env, 20), T.log(env, "gh"))
 
 
 def case_approved_head() -> None:
@@ -114,6 +150,16 @@ def case_delta_rung() -> None:
         out = T.ladder(env, "--apply")
         T.check("delta: one per PR; a later moved head after it takes rung 1",
                 not T.log(env, "reviewer") and "ASK-1: rung 1" in out and closed(env, 10), out)
+    with tempfile.TemporaryDirectory() as td:
+        env = world(td)
+        rv = Path(td) / "bin/reviewer"
+        rv.write_text(FAKE_REVIEWER + "sys.exit(127)\n")     # PR #913 round 1, finding 2
+        record(env, 10, 3, "APPROVE", "c" * 40)
+        T.ladder(env, "--apply")
+        T.at(env, 1)
+        T.ladder(env, "--apply")
+        T.check("delta: a review that never ran (rc 127) does not spend the one shot",
+                len(T.log(env, "reviewer")) == 2 and not closed(env, 10), T.log(env, "gh"))
 
 
 def case_owns_title() -> None:
@@ -127,14 +173,25 @@ def case_owns_title() -> None:
             "title on a human branch": m.ladder_owns("o/r", 3, "fix/thing", td, title="x (ASK-1)"),
             "no id anywhere": m.ladder_owns("o/r", 3, "fix/thing", td, title="x"),
             "lane branch, title id": m.ladder_owns("o/r", 3, "sana/ask-1-slug", td, title="x (ASK-1)"),
+            "upper-case lane branch": m.ladder_owns("o/r", 3, "sana/ASK-1-slug", td, title="x (ASK-1)"),
         }
-    T.check("ladder_owns: a title ASK id makes a capped PR the ladder's; a lane branch stays pr-owner's",
-            {k for k, v in got.items() if v} == {"title on a human branch"}, got)
+    T.check("ladder_owns: a ticket capout never makes a title-mapped PR the ladder's; lanes stay pr-owner's",
+            not any(got.values()), got)
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "pr-reviews").mkdir()
+        (Path(td) / "linear-worker-attempts.json").write_text("{}")
+        (Path(td) / "pr-reviews" / ".round-cap-o_r-pr-3").write_text("")
+        own = m.ladder_owns("o/r", 3, "fix/thing", td, title="x (ASK-1)")
+        lane = m.ladder_owns("o/r", 3, "sana/ASK-1-rows", td, title="x (ASK-1)")
+    T.check("ladder_owns: a title-mapped PR with its own review cap is the ladder's", bool(own), own)
+    T.check("ladder_owns: an upper-case lane branch is a lane, never title-mapped (round 1, finding 4)",
+            lane == "", lane)
 
 
 def main() -> int:
     print("test_cap_ladder_review_caps.py")
-    for case in (case_title_mapping, case_last_round, case_approved_head, case_delta_rung, case_owns_title):
+    for case in (case_title_mapping, case_last_round, case_title_precedence, case_approved_head,
+                 case_delta_rung, case_owns_title):
         case()
     print(f"\n{'FAIL' if T.FAILS else 'PASS'}: {len(T.FAILS)} failed")
     return 1 if T.FAILS else 0
