@@ -411,6 +411,58 @@ def reviewer_slot_posted(pr_obj):
     return False
 
 
+#: The start of pr-review-agent.sh's CAP_MSG, the description of the PENDING
+#: status it posts when a PR reaches its round cap.
+CAP_STATUS_PREFIX = "review cap reached"
+_LADDER = {}
+
+
+def _this_pr_capped(slug, pr, records_dir):
+    """Does THIS PR carry a review-cap marker? cap-ladder.py's cap_sigs answers.
+
+    ASKED, NOT COPIED (ASK-5844): cap_sigs is the one definition of capped, and
+    it keys the review cap on this PR's own .round-cap marker file.
+    """
+    if "mod" not in _LADDER:
+        spec = importlib.util.spec_from_file_location(
+            "cap_ladder", os.path.join(HERE, "cap-ladder.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _LADDER["mod"] = mod
+    from pathlib import Path
+    return any(s.startswith("reviewcap:") for s in
+               _LADDER["mod"].cap_sigs({}, slug, pr, Path(records_dir)))
+
+
+def inherited_cap_status(pr_obj, slug, records_dir):
+    """True when the gating slot is a cap status this PR never earned.
+
+    GitHub statuses belong to the COMMIT, not the PR. Measured 2026-11-27: PR
+    #903 was opened on #899's head commit 9a0b8c6a, so #899's PENDING "review cap
+    reached (3)" showed on #903 too. reviewer_slot_posted() read that as a spoken
+    gate, so #903 never got its first review; only pr-899 and pr-893 had markers.
+    A cap status counts only when THIS PR's marker says it is capped.
+
+    The rollup carries no description (measured on PR #912: __typename, context,
+    startedAt, state, targetUrl), so a PENDING gating slot costs one statuses
+    call to read its text, the same one floor_ran makes. Only PENDING pays it.
+    """
+    pending = any(
+        isinstance(c, dict) and c.get("__typename") == "StatusContext"
+        and (c.get("context") or "") == GATING_SLOT
+        and (c.get("state") or "").upper() == "PENDING"
+        for c in pr_obj.get("statusCheckRollup") or [])
+    if not pending:
+        return False
+    for st in _statuses(slug, pr_obj.get("headRefOid") or ""):
+        if isinstance(st, dict) and (st.get("context") or "") == GATING_SLOT:
+            # The API lists newest first; the first gating row is the live one.
+            if not (st.get("description") or "").startswith(CAP_STATUS_PREFIX):
+                return False
+            return not _this_pr_capped(slug, pr_obj.get("number"), records_dir)
+    return False
+
+
 def floor_ran(pr_obj, slug=""):
     """Did the reviewer floor mark this head, so an absent verdict reads red?
 
@@ -536,8 +588,11 @@ def candidates(repo_dir, records_dir):
         pr = pr_obj.get("number")
         record = read_record(records_dir, pr, slug)
         if not slots:
-            if reviewer_slot_posted(pr_obj):
+            if reviewer_slot_posted(pr_obj) and \
+                    not inherited_cap_status(pr_obj, slug, records_dir):
                 # A gating verdict exists and is not failing. Nothing to redrive.
+                # An inherited cap status (another PR's, on a shared commit) is
+                # not this PR's verdict and falls through (ASK-5844).
                 continue
             if record is CORRUPT_RECORD:
                 # Say what is true: the record is there and unreadable. Naming it

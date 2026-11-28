@@ -2477,6 +2477,37 @@ wip_set_aside() {  # wip_set_aside <issue>: is it on the dispatcher set-aside li
   return 1
 }
 
+# ladder_owner_why <issue> <pr>: cap-ladder.py's own answer to "do you own this
+# PR", or "" (ASK-5844). ASKED, NOT COPIED: ladder_owns() answers from cap_sigs(),
+# the one definition of capped, keyed on THIS PR's .round-cap marker. A copy here
+# would be the second writer pr-owner.py already refuses to be. A ladder that
+# cannot answer reads "" so the old reason stands rather than a guess.
+ladder_owner_why() {
+  python3 - "$SCRIPT_DIR/cap-ladder.py" "$TARGET_SLUG" "$2" "sana/$(echo "$1" | tr 'A-Z' 'a-z')" "$STATE_DIR" 2>>"$LOG" <<'PY' || true
+import importlib.util, sys
+path, slug, pr, branch, state = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("cap_ladder", path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.ladder_owns(slug, int(pr), branch, state) or "")
+PY
+}
+
+# unreviewed_reason <issue> <pr>: the gate-20 "<kind>|<why>". A capped PR also
+# reads gate 20 (no verdict past the cap), and was named "the reviewer redrive
+# owns it" while cap-ladder.py owned it (ASK-5844). The KIND stays unreviewed
+# (exit: wait): only the owner named was wrong, and kind cap would close-requeue
+# a PR the ladder is about to act on.
+unreviewed_reason() {
+  local owner
+  owner="$(ladder_owner_why "$1" "$2")"
+  if [ -n "$owner" ]; then
+    printf 'unreviewed|no recorded review verdict; %s (cap-ladder.py)' "$owner"
+  else
+    printf 'unreviewed|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)'
+  fi
+}
+
 wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, else "<kind>|<why>"
   local issue="$1" pr="$2" n rounds=0 f rec verdict latest merge reviewed current gate
   n="$(attempts_for "$issue")"
@@ -2511,7 +2542,7 @@ wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, 
   rework_gate "$verdict" "$merge" "$reviewed" "$current" >/dev/null; gate=$?
   case "$gate" in
     10) printf 'approved|approved at its head (%s), nothing to rework' "$verdict" ;;
-    20) printf 'unreviewed|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)' ;;
+    20) unreviewed_reason "$issue" "$pr" ;;
     30) [ "$(conflict_rounds_for "$issue")" -ge "$MAX_CONFLICT_ROUNDS" ] \
           && printf 'conflict|still %s after %s rebase rounds' "${merge:-unmergeable}" "$MAX_CONFLICT_ROUNDS" ;;
     40) [ "$(drift_rounds_for "$issue")" -ge "$MAX_DRIFT_ROUNDS" ] \

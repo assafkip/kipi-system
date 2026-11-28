@@ -337,10 +337,45 @@ _job_id, _job_body = _m.group(1), _m.group(2)
 _name = re.search(r"^    name:\s*(\S.*)$", _job_body, re.M)
 check("WIRING: FLOOR_CHECK is the check-run name the workflow publishes",
       rr.FLOOR_CHECK, (_name.group(1).strip().strip("'\"") if _name else _job_id))
+# =============================================================================
+# ASK-5844. A cap status inherited from another PR on the same commit.
+# =============================================================================
+# Measured 2026-11-27: #903 reused #899's head commit, so #899's PENDING "review
+# cap reached (3)" showed on #903, and #903 never got a first review. The rollup
+# shape is the one gh returns (no description); the text comes from statuses.
+PENDING_ROLLUP = [
+    {"__typename": "StatusContext", "context": "kipi/reviewer-approved",
+     "state": "PENDING"},
+]
+CAP_TEXT = "review cap reached (3); cap-ladder.py takes this PR at its next nightly run"
+
+
+def offered_with(pr_objs, desc, marker_pr=None):
+    rr.CI.list_prs = lambda repo_dir: pr_objs
+    rr._statuses = lambda slug, sha: [
+        {"context": "kipi/reviewer-approved", "state": "pending", "description": desc}]
+    with tempfile.TemporaryDirectory() as records:
+        if marker_pr is not None:
+            slug = rr.slug_for_repo("/nonexistent-repo")
+            (Path(records) / (".round-cap-%s-pr-%s" % (slug.replace("/", "_"), marker_pr))).touch()
+        return rr.candidates("/nonexistent-repo", Path(records))
+
+
+got = offered_with([pr(903, PENDING_ROLLUP)], CAP_TEXT)
+check("INHERITED CAP: a PR with another PR's cap status and no marker of its "
+      "own is offered for its first review", [c["action"] for c in got], ["re-review"])
+got = offered_with([pr(899, PENDING_ROLLUP)], CAP_TEXT, marker_pr=899)
+check("OWN CAP: a PR with its own .round-cap marker is still left alone", got, [])
+got = offered_with([pr(903, PENDING_ROLLUP)], CAP_TEXT, marker_pr=899)
+check("OTHER PR'S MARKER: #899's marker does not cap #903", len(got), 1)
+got = offered_with([pr(904, PENDING_ROLLUP)], "review in progress")
+check("PENDING, NOT A CAP: a pending review status is left alone", got, [])
+
 if failures:
     for f in failures:
         print("  FAIL - " + f)
     sys.exit(1)
+print("PASS: an inherited cap status does not hide a PR's first review (ASK-5844)")
 print("PASS: a floor-marked head is a first re-review (ASK-2029)")
 print("PASS: review-redrive sees a never-posted reviewer slot")
 sys.exit(0)
