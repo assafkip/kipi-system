@@ -118,8 +118,14 @@ run_bounded 5 true
   || bad "a fast run read RUN_TIMED_OUT='${RUN_TIMED_OUT:-}'"
 
 # 6. The Codex prompt carries the issue and says not to call Linear or commit.
-SYNC="$WORK/sync.py"
-printf 'import sys\nprint("DOR_MARKER for", sys.argv[2])\n' > "$SYNC"
+SYNC="$WORK/stub-sync/sync.py"
+mkdir -p "$WORK/stub-sync"
+cat > "$SYNC" <<'PY'
+import sys
+print("DOR_MARKER for", sys.argv[2])
+PY
+SYNC_WRITE_RC=$?
+[ -f "$SYNC" ] || bad "fixture: the stub $SYNC was not written (rc=$SYNC_WRITE_RC); WORK holds: $(ls -la "$WORK" 2>&1 | tr '\n' ' ')"
 NOTE="$(codex_runner_note ASK-9)"
 printf '%s' "$NOTE" | grep -q 'Do NOT call Linear' && ok "the Codex note says not to call Linear" || bad "no Linear line in the note"
 printf '%s' "$NOTE" | grep -q 'Do NOT run git add or git commit' && ok "the Codex note says not to commit" || bad "no commit line in the note"
