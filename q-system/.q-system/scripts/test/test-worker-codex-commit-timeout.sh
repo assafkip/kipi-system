@@ -31,6 +31,7 @@ LIB="$WORK/lib.sh"
 {
   echo 'TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }'
   echo 'say() { echo "$(TS) $*" | tee -a "$LOG"; }'
+  grep '^RUNNER_SENTINEL_EXCLUDES=' "$WORKER"
   for f in manual_issue_run_bills_plan run_bounded reap_group commit_runner_edits edits_in_last_10m codex_runner_note; do
     body="$(lift "$f")"
     [ -n "$body" ] || { echo "FATAL: could not lift $f() from $WORKER" >&2; exit 1; }
@@ -84,6 +85,11 @@ commit_runner_edits "$TREE" ASK-9 "nothing" && bad "a clean tree produced a comm
   || ok "a clean tree makes no commit"
 [ "$(git -C "$TREE" rev-parse HEAD)" = "$BASE_SHA" ] || bad "HEAD moved on a clean tree"
 
+# 3b. Sentinels and their .probe files alone are not edits to commit.
+( cd "$TREE" && echo "bin:x" > .codex-blocked-capability.probe && echo why > .sana-blocked-capability.probe )
+commit_runner_edits "$TREE" ASK-9 "sentinels only" && bad "sentinel files alone produced a commit" \
+  || ok "a tree holding only runner sentinels makes no commit"
+
 # 4. Codex-style run: edits only, no commit. The worker commits it.
 ( cd "$TREE" && echo "codex edit" > b.txt )
 commit_runner_edits "$TREE" ASK-9 "Codex edits, committed by the worker" \
@@ -93,6 +99,9 @@ git -C "$TREE" log -1 --pretty=%s | grep -q '(ASK-9)$' \
   && ok "the commit message carries the issue id (the commit-msg gate needs it)" \
   || bad "commit subject: $(git -C "$TREE" log -1 --pretty=%s)"
 git -C "$TREE" show --name-only --pretty= HEAD | grep -qx b.txt || bad "b.txt not in the commit"
+git -C "$TREE" show --name-only --pretty= HEAD | grep -q 'probe' \
+  && bad "a .probe sentinel rode along in the runner commit (PR #912 round 1)" \
+  || ok "the .probe sentinels stay out of the runner commit"
 
 # 5. A run that hits the wall clock: RUN_TIMED_OUT=1, and the partial tree is
 #    saved as a WIP commit the next attempt starts from.
@@ -122,6 +131,12 @@ grep -c 'commit_runner_edits "\$TREE" "\$ISSUE" "Codex' "$WORKER" | grep -qx 2 \
   && ok "both Codex launches (rung 2 and second runner) commit through the worker" \
   || bad "expected 2 Codex commit sites, found $(grep -c 'commit_runner_edits "\$TREE" "\$ISSUE" "Codex' "$WORKER")"
 grep -q 'say "run-duration \$ISSUE secs=' "$WORKER" && ok "every run logs a run-duration line" || bad "no run-duration line"
+grep -B1 'commit_runner_edits "\$TREE" "\$ISSUE" "Codex (cap-ladder rung 2)' "$WORKER" | grep -q 'RUN_TIMED_OUT:-0}" = "1" \]' \
+  && ok "a timed-out rung-2 Codex run leaves its tree to the WIP commit (no PR on half a build)" \
+  || bad "the rung-2 Codex commit is not skipped on a timeout"
+grep -A1 'saved before the Codex handoff' "$WORKER" | grep -q 'CODEX_HEAD_BEFORE=' \
+  && ok "Sana's leftovers are committed before CODEX_HEAD_BEFORE is read" \
+  || bad "Sana's leftovers can be credited to Codex"
 
 echo "PASS: $PASS  FAIL: $FAIL"
 [ "$FAIL" = 0 ]

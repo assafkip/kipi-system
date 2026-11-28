@@ -373,14 +373,15 @@ TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # round counter reads these files back with review_md_name_glob, and the last
 # time this line spelled the shape itself the two drifted for good (ASK-1957).
 REVIEW="$(review_md_path "$ENGINE_DIR" "$REVIEW_SLUG" "$PR" "$(date +%Y%m%d-%H%M%S)")"
-# A RUN THAT WRITES NO VERDICT IS NOT A ROUND (ASK-5847). review_round counts the
-# .md files beside this one, and every exit below that leaves no verdict record
+# A RUN THAT WRITES NO VERDICT IS NOT A ROUND (ASK-5847). review_round counts
+# every .md beside this one, and every exit below that leaves no verdict record
 # (exit 9 for a runner refusal, a failed engine) used to leave its partial .md
-# behind. Measured 2026-11-27 on ASK-5802: a reviewer run refused with rc=5
-# ("every known key's cycle credit is spent") still spent a review round, so a
-# credit outage walked a PR toward the 3-round cap with no review read. The file
-# is kept for the operator under a name the round glob does not match, the same
-# move the codex branch already makes with .codex-failed.
+# behind, so the NEXT real review was numbered one round too high. Measured
+# 2026-11-27 on ASK-5802: a refusal with rc=5 ("every known key's cycle credit is
+# spent") was followed by a review logged at the next round. The 3-round cap
+# itself filters with review_is_usable and never counted these (PR #912 review);
+# this keeps the round NUMBER honest too. The file is kept under a name the round
+# glob does not match, the same move the codex branch makes with .codex-failed.
 retire_unverdicted_review() {
   [ -e "$REVIEW" ] || return 0
   mv -f "$REVIEW" "$REVIEW.no-verdict" 2>/dev/null || true

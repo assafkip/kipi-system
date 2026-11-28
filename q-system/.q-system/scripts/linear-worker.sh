@@ -555,12 +555,17 @@ run_bounded() {  # run_bounded <seconds> <cmd...>
 #     The worker runs outside that sandbox, so Codex only edits and this commits.
 #   - A run killed at the wall clock threw its tree away and the retry started
 #     from scratch; a WIP commit lets the next attempt in this reused tree resume.
-# `add -A` respects .gitignore, so the sentinels never ride along. The commit
-# hooks run (no --no-verify): a gate that refuses this commit is said, not dodged.
+# THE SENTINELS NEVER RIDE ALONG, and .gitignore alone does not keep them out
+# (PR #912 review round 1): it lists the three sentinels but not their .probe
+# files. A committed probe reaches a public branch, and when the worker later
+# consumes it the deleted tracked file reads dirty, so position_tree_on_pr_head
+# refuses every later round. Every runner-to-worker file is excluded by pathspec.
+# The commit hooks run (no --no-verify): a gate that refuses it is said, not dodged.
+RUNNER_SENTINEL_EXCLUDES=(':(exclude).sana-needs-scope*' ':(exclude).sana-blocked-capability*' ':(exclude).codex-blocked-capability*' ':(exclude).linear-claims.json*')
 commit_runner_edits() {
   local tree="$1" issue="$2" subject="$3"
-  [ -n "$(git -C "$tree" status --porcelain 2>/dev/null)" ] || return 1
-  git -C "$tree" add -A >>"$LOG" 2>&1 || { say "WARN: $issue: git add failed in $tree; edits left uncommitted"; return 1; }
+  [ -n "$(git -C "$tree" status --porcelain -- . "${RUNNER_SENTINEL_EXCLUDES[@]}" 2>/dev/null)" ] || return 1
+  git -C "$tree" add -A -- . "${RUNNER_SENTINEL_EXCLUDES[@]}" >>"$LOG" 2>&1 || { say "WARN: $issue: git add failed in $tree; edits left uncommitted"; return 1; }
   if git -C "$tree" commit -q -m "$subject ($issue)" >>"$LOG" 2>&1; then
     say "$issue: the worker committed the runner's edits: $subject"
     return 0
@@ -3737,7 +3742,10 @@ Anything real you find and are not fixing: capture it, never just mention it:
       say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
       run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT$(codex_runner_note "$ISSUE")"
       local crc_primary=$?
-      commit_runner_edits "$TREE" "$ISSUE" "Codex (cap-ladder rung 2) edits, committed by the worker" || true
+      # Not on a timeout: the WIP commit after primary_run owns that tree, so the
+      # run is counted as a timeout and gets no PR (PR #912 review round 1).
+      [ "${RUN_TIMED_OUT:-0}" = "1" ] \
+        || commit_runner_edits "$TREE" "$ISSUE" "Codex (cap-ladder rung 2) edits, committed by the worker" || true
       return $crc_primary
     else
       # --session-id (ASK-4649/4675): the worker has to know WHICH transcript this run
@@ -3967,6 +3975,10 @@ print(cbe.validate_recorded_probe(sys.stdin.read()))
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
       rm -f "$TREE/.codex-blocked-capability"
+      # Sana's own uncommitted leftovers are saved under her name FIRST, so the
+      # commit after the Codex run holds only what Codex did and cannot score a
+      # continuation Codex never made (PR #912 review round 1).
+      commit_runner_edits "$TREE" "$ISSUE" "Sana (primary runner) uncommitted edits, saved before the Codex handoff" || true
       CODEX_HEAD_BEFORE="$(git -C "$TREE" rev-parse HEAD 2>/dev/null || true)"
       say "$ISSUE handing to the Codex runner before parking (ONE attempt, never a loop)"
       CODEX_PROMPT="You are Codex, the SECOND runner on Linear issue $ISSUE.
