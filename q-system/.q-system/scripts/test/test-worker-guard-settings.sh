@@ -315,6 +315,8 @@ ok "G: no guard set means no agent, a stated reason, and no attempt charged"
 # `claude -p`, so it is a launch like any other.
 LAUNCHERS='claude -p|\$\{?FLEET_CLAUDE\}? -p|\$\{?SECOND_RUNNER_FALLBACK|\$\{?REVIEWER_CMD'
 KNOWN_REVIEWER='$REVIEWER_CMD "$PR_NUM"'   # pr-review-agent.sh runs its own review tree: ASK-3571
+# The gate-20 start (ASK-5846) is the same reviewer, the same review tree, the same gap.
+KNOWN_REVIEWER_G20='$REVIEWER_CMD "$pr" --issue "$issue" --post --engine claude'
 # A definition is a line that IS an assignment of a quoted string (NAME="...").
 # Anchored, so an env-prefixed launch (NAME=value $LAUNCHER ...) still counts.
 DEF_RX='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="'
@@ -325,6 +327,7 @@ while IFS= read -r ln; do
   case "$code" in *'[ -n "$SECOND_RUNNER_FALLBACK" ]'*) continue ;; esac   # a presence test
   N_LAUNCH=$((N_LAUNCH + 1))
   case "$code" in *"$KNOWN_REVIEWER"*) KNOWN_HIT=1; continue ;; esac
+  case "$code" in *"$KNOWN_REVIEWER_G20"*) continue ;; esac
   printf '%s' "$code" | grep -q -- '--settings' || LAUNCHES="$LAUNCHES
 $ln"
 done < <(grep -nE "$LAUNCHERS" "$WORKER" | grep -vE '^[0-9]+:[[:space:]]*#')
