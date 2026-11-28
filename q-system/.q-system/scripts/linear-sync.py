@@ -667,7 +667,7 @@ query($id: String!) { issue(id: $id) { id identifier title state { name type } }
 ISSUE_COMMENTS = """
 query($id: String!) {
   issue(id: $id) {
-    id identifier title
+    id identifier title description
     comments(first: 100) {
       nodes { id createdAt body user { name } botActor { name } }
     }
@@ -1452,6 +1452,14 @@ def cmd_comments(args) -> int:
     if args.last and args.last > 0:
         nodes = nodes[-args.last:]
 
+    # THE DESCRIPTION, FOR A RUNNER THAT CANNOT READ LINEAR (ASK-5847). Codex's
+    # Linear connector needed reauth on 2026-11-27, so the worker hands it the DoR
+    # and the comments (which held the measured scope) inside its prompt.
+    if getattr(args, "with_description", False):
+        print(f"{issue['identifier']}: {issue['title']}\n")
+        print((issue.get("description") or "(no description)").strip())
+        print("\n=== comments ===")
+
     if not nodes:
         print(f"{issue['identifier']}: no comments match")
         return EXIT_OK
@@ -1864,6 +1872,8 @@ def main() -> int:
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")
     p.add_argument("--agent", help="only comments whose body names this agent")
     p.add_argument("--last", type=int, default=0, help="only the N most recent")
+    p.add_argument("--with-description", action="store_true",
+                   help="print the issue description (its DoR) before the comments")
     p.set_defaults(func=cmd_comments)
 
     p = sub.add_parser("remote", help="fetch the remote snapshot plan --remote wants")

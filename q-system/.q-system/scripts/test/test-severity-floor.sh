@@ -737,10 +737,14 @@ ok "the worktree stands on the PR's branch"
 # Finding 4: a rebased diff DOES get re-reviewed (the diff changed, so the old
 # APPROVE no longer describes it). Pinned so a later "save the review budget"
 # change cannot silently ship an unreviewed force-push.
-LH="$S_HEAD/linear-worker-attempts.json"
-[ "$("$REAL_PY" -c "import json;print(json.load(open('$LH'))['ASK-AAA'].get('rounds',0))")" = "1" ] \
+# Read from the worker's "review PR #N ... (round K)" line, not the ledger's
+# `rounds`: since ASK-5847 a round is recorded only when the reviewer wrote a
+# verdict, and this fixture's reviewer stub writes none.
+grep -q 'review PR #781 for ASK-AAA (round 1)' "$W2/head.out" \
   || fail "the rebased diff was not re-reviewed; a force-push nobody looked at ships under the OLD verdict"
-ok "a rebase round's resulting diff is re-reviewed (round recorded)"
+grep -q 'the reviewer wrote no verdict for PR #781 (rc=0); review round not counted' "$W2/head.out" \
+  || fail "a review that wrote no verdict was counted as a round (ASK-5847)"
+ok "a rebase round's resulting diff is re-reviewed, and a no-verdict review is not counted"
 
 # --- I. a skipped run must not spend the conflict budget ---------------------
 # PR #25 review, finding 2 (major). The bump used to run at the gate, before the

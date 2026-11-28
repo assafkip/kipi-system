@@ -478,7 +478,8 @@ def case_worker() -> None:
     m = re.search(r"^ladder_runner_for\(\) \{.*?^\}", src, re.S | re.M)
     check("worker: ladder_runner_for exists and the primary launch branches on it",
           bool(m) and "primary_run()" in code and 'ladder_runner_for "$ISSUE")" = "codex"' in code
-          and "if primary_run; then" in code)
+          # ASK-5847: the call keeps its rc for the timeout WIP step, then branches.
+          and "primary_run; PRIMARY_RC=$?" in code and 'if [ "$PRIMARY_RC" = "0" ]; then' in code)
     if m:
         with tempfile.TemporaryDirectory() as td:
             led_path = Path(td) / "a.json"

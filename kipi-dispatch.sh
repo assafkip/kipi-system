@@ -83,6 +83,9 @@ NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
 # Founder decision 2026-08-01: the converge/worker claude -p calls inherit this;
 # unpinned they rode the interactive default (Fable) and burned quota on 2026-08-01.
 export ANTHROPIC_MODEL="${KIPI_DISPATCH_MODEL:-claude-opus-5}"
+# linear-worker.sh bills the plan on a hand `--issue` run (ASK-5847); this mark is
+# how it tells a dispatched run, whose billing the API-key gate below decides.
+export KIPI_WORKER_INVOKER=dispatcher
 
 mkdir -p "$(dirname "$LOG")"
 say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
