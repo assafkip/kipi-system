@@ -109,8 +109,11 @@ cp "$ROOT/kipi-update-preserve-scan.py" \
   "$SKELETON/kipi-update-preserve-scan.py"
 cp "$ROOT/kipi-update-deletion-guard.py" \
   "$SKELETON/kipi-update-deletion-guard.py"
-cp "$ROOT/kipi-update-deletion-guard.py" \
-  "$SKELETON/kipi-update-deletion-guard.py"
+# ASK-5855 (PR #908 review): the shipped-blob map and the batch instance-ahead
+# filter live here. Absent, every scan in this fixture takes the WARN path and
+# the per-file fallback, so the batch code would never run under this test.
+cp "$ROOT/kipi-update-shipped-blobs.py" \
+  "$SKELETON/kipi-update-shipped-blobs.py"
 cp "$ROOT/kipi-settings-merge.py" "$SKELETON/kipi-settings-merge.py"
 # A valid skeleton ships the propagation leak gate: kipi-update.sh is
 # fail-closed on it, so a fixture without it aborts before any sync.
