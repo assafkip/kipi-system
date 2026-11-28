@@ -18,6 +18,7 @@ Pinned here, in throwaway repos with the REAL gate installed as commit-msg:
   * on a branch named for an issue, the hook's commit names that issue, and the
     gate refuses a [no-issue:] bypass there.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(HERE, "..", "auto-commit.py")
 GATE = os.path.join(HERE, "..", "..", ".q-system", "scripts", "linear-issue-ref-check.py")
+MANIFEST = ".claude/skill-hook-manifest.json"
 
 
 def git(repo, *args, env=None):
@@ -56,11 +58,29 @@ class Scratch(unittest.TestCase):
             fh.write(f'#!/bin/sh\nexec "{sys.executable}" "{GATE}" "$1"\n')
         os.chmod(os.path.join(hooks, "commit-msg"), 0o755)
         git(self.repo, "config", "core.hooksPath", hooks)
+        # TEST ISOLATION (PR #896 nit): the stub was KIPI_NOTIFY, which this code
+        # never reads -- the pager env var is KIPI_AUTOCOMMIT_NOTIFY -- so every
+        # restore in this file resolved the pager itself. Held state and the Linear
+        # queue are pinned to the temp dir for the same reason: before this, the
+        # classes that set no KIPI_AUTOCOMMIT_HELD_DIR wrote restored.jsonl into the
+        # runner's real ~/.local/state/kipi (fable-discipline: a test never touches
+        # a live data path).
+        self.held_dir = os.path.join(self.tmp, "held-claude")
+        self.queue = os.path.join(self.tmp, "linear-queue.jsonl")
         self.env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_REMOTE"}
         self.env.update(CLAUDE_PROJECT_DIR=self.repo, KIPI_LINEAR_TEAM="ASK",
-                        LINEAR_BYPASS_LEDGER=self.ledger, KIPI_NOTIFY="/usr/bin/true")
+                        LINEAR_BYPASS_LEDGER=self.ledger,
+                        KIPI_AUTOCOMMIT_HELD_DIR=self.held_dir,
+                        KIPI_LINEAR_QUEUE=self.queue,
+                        KIPI_AUTOCOMMIT_NOTIFY="/usr/bin/true")
         self.write(".claude/rules/keep.md", "rule one\nrule two\nrule three\n")
         self.write(".claude/rules/other.md", "a\nb\nc\n")
+        # A TRACKED .claude/ path that matches no AREA_MAP row, so classify() calls
+        # it unclassified. The real file (PR #896 major): the restore was scoped to
+        # chore-classified paths, which left this whole shape missing from the
+        # worktree and the updater's guard dirty. RestoreCoversEveryHeldClaudePath
+        # owns it. Inert for every other test: unclassified is never committed.
+        self.write(MANIFEST, '{\n  "pairs": []\n}\n')
         self.write("q-system/memory/notes.md", "base\n")
         git(self.repo, "add", "-A")
         r = git(self.repo, "commit", "-q", "-m", "base (ASK-1)", env=self.env)
@@ -87,6 +107,46 @@ class Scratch(unittest.TestCase):
 
     def new_messages(self):
         return git(self.repo, "log", "--format=%B%x00", f"{self.base}..HEAD").stdout
+
+    def system_state(self):
+        # The updater's exact feed: `git status --porcelain -uall | cut -c4-`.
+        st = git(self.repo, "status", "--porcelain", "-uall").stdout
+        feed = "".join(ln[3:] + "\n" for ln in st.splitlines())
+        r = subprocess.run([sys.executable, HOOK, "--system-state"], cwd=self.repo,
+                           env=self.env, input=feed, capture_output=True, text=True,
+                           check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.split("\n"), r.stderr
+
+    def kept_copies(self):
+        """Every file the restore copied out, as {basename: [contents]}."""
+        out = {}
+        for root, _, files in os.walk(self.held_dir):
+            for f in files:
+                if f == "restored.jsonl":
+                    continue
+                with open(os.path.join(root, f)) as fh:
+                    out.setdefault(f, []).append(fh.read())
+        return out
+
+    def ledger_rows(self):
+        path = os.path.join(self.held_dir, "restored.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path) as fh:
+            return [json.loads(ln) for ln in fh if ln.strip()]
+
+    def head_names(self):
+        return git(self.repo, "ls-tree", "-r", "--name-only", "HEAD").stdout.split()
+
+    def assert_guard_clean(self, err):
+        # kipi-update.sh's dirty-tree guard, the same two reads it makes. In Scratch
+        # because three classes need it now, not only the --system-state one.
+        for args in (("diff", "--cached", "--quiet", "--", ".claude/"),
+                     ("diff", "--quiet", "--", ".claude/")):
+            r = git(self.repo, *args)
+            self.assertEqual(r.returncode, 0, "the updater guard still refuses: "
+                             + git(self.repo, "status", "--short").stdout + err)
 
 
 class ClaudeDeletionsAreHeld(Scratch):
@@ -162,29 +222,6 @@ class SystemStateRestoresHeldLosses(Scratch):
     """PR #738 round 1 (blocking major): a held loss dropped from --system-state
     stayed dirty inside the updater's own guard scope, so kipi update abandoned
     that instance on every run. HEAD is the truth there: put it back."""
-
-    def setUp(self):
-        super().setUp()
-        self.held_dir = os.path.join(self.tmp, "held-claude")
-        self.env["KIPI_AUTOCOMMIT_HELD_DIR"] = self.held_dir
-
-    def system_state(self):
-        # The updater's exact feed: `git status --porcelain -uall | cut -c4-`.
-        st = git(self.repo, "status", "--porcelain", "-uall").stdout
-        feed = "".join(ln[3:] + "\n" for ln in st.splitlines())
-        r = subprocess.run([sys.executable, HOOK, "--system-state"], cwd=self.repo,
-                           env=self.env, input=feed, capture_output=True, text=True,
-                           check=False)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return r.stdout.split("\n"), r.stderr
-
-    def assert_guard_clean(self, err):
-        # kipi-update.sh's dirty-tree guard, the same two reads it makes.
-        for args in (("diff", "--cached", "--quiet", "--", ".claude/"),
-                     ("diff", "--quiet", "--", ".claude/")):
-            r = git(self.repo, *args)
-            self.assertEqual(r.returncode, 0, "the updater guard still refuses: "
-                             + git(self.repo, "status", "--short").stdout + err)
 
     def test_held_deletion_is_restored_so_the_instance_still_syncs(self):
         os.remove(os.path.join(self.repo, ".claude/rules/keep.md"))
@@ -282,23 +319,17 @@ class RestoreNamesItsConsumer(Scratch):
 
     def setUp(self):
         super().setUp()
-        self.held_dir = os.path.join(self.tmp, "held-claude")
         self.alerts = os.path.join(self.tmp, "alerts.txt")
+        self.stub_notify(0)
+
+    def stub_notify(self, rc):
+        """A pager that records the message and exits `rc`. rc=3 is slack-notify.sh's
+        documented "no Linear API key configured" exit."""
         notify = os.path.join(self.tmp, "notify.sh")
         with open(notify, "w") as fh:
-            fh.write(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{self.alerts}"\n')
+            fh.write(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{self.alerts}"\nexit {rc}\n')
         os.chmod(notify, 0o755)
-        self.env["KIPI_AUTOCOMMIT_HELD_DIR"] = self.held_dir
         self.env["KIPI_AUTOCOMMIT_NOTIFY"] = notify
-
-    def system_state(self):
-        st = git(self.repo, "status", "--porcelain", "-uall").stdout
-        feed = "".join(ln[3:] + "\n" for ln in st.splitlines())
-        r = subprocess.run([sys.executable, HOOK, "--system-state"], cwd=self.repo,
-                           env=self.env, input=feed, capture_output=True, text=True,
-                           check=False)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return r.stdout.split("\n"), r.stderr
 
     def filed(self):
         if not os.path.exists(self.alerts):
