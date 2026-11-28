@@ -172,10 +172,15 @@ def test_cache_is_set_in_parent_shell_and_cleaned(tmp_path):
         + f'cp "{helper}" "$SCRIPT_DIR/" && git -C "$SCRIPT_DIR" add f.md\n'
         + 'git -C "$SCRIPT_DIR" -c user.email=t@t -c user.name=t commit -qm f\n'
         + 'fleet_authored_blob f.md "$SCRIPT_DIR/f.md" && echo RETRY_OK\n'
+        # Fail again after the recovery: the WARN must come back (PR #911 round 2).
+        + ': > "$SHIPPED_BLOB_MAP"; mv "$SCRIPT_DIR/kipi-update-shipped-blobs.py" "$SCRIPT_DIR/off.py"\n'
+        + 'fleet_authored_blob f.md "$SCRIPT_DIR/f.md" || echo SECOND_FAILED\n'
     )
     out3 = subprocess.run(["bash", "-c", script3], capture_output=True, text=True, cwd=repo)
     assert "FIRST_FAILED" in out3.stdout, out3.stdout + out3.stderr
     assert "RETRY_OK" in out3.stdout, out3.stdout + out3.stderr
+    assert "SECOND_FAILED" in out3.stdout, out3.stdout + out3.stderr
+    assert out3.stderr.count("WARN: shipped-blob map unavailable") == 2, out3.stderr
     # The EXIT cleanup is the consumer of that variable: it must remove it.
     cleanup = "\n".join(src).split("cleanup_updater_temps() {")[1].split("\n}\n")[0]
     assert 'rm -f -- "$SHIPPED_BLOB_MAP"' in cleanup

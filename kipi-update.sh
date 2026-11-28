@@ -461,6 +461,8 @@ shipped_blob_map_ensure() {
   fi
   rm -f -- "$SHIPPED_BLOB_MAP.err"
   SHIPPED_BLOB_REF="$ship_ref"
+  # A recovery re-arms the WARN, so a fail-recover-fail run says so twice (PR #911 round 2).
+  SHIPPED_BLOB_WARNED_REF=""
 }
 
 fleet_authored_blob() {
