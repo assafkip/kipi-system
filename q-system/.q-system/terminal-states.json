@@ -355,8 +355,11 @@
       "id": "step0-already-built",
       "source": "linear-worker",
       "class": "durable-queue",
-      "marker": "stopped at step 0, already built",
-      "sites": 1,
+      "marker": [
+        "stopped at step 0, already built",
+        "\"step0:already-built\" in labels"
+      ],
+      "sites": 2,
       "what": "Step 0 (ticket_step0.py, ASK-5802): the ticket's title carries a key improve_ground.py names as already built, and the cited file exists. No build session is spent. On --apply the worker posts one comment naming the file and adds the label step0:already-built; nothing is canceled and no PR closes. It skips before the dry pick.",
       "consumer": "the step0:already-built label -- linear-worker.sh ready() skips it, so the label is the only stop; removing it lets the next pick take the ticket (ticket_step0.py gate() stands down on the step0_labelled flag). cap-ladder.py rung 0 runs the same check and writer on a capped ticket and holds it while the label is on",
       "consumer_test": "q-system/.q-system/scripts/test/test-worker-step0.sh",
