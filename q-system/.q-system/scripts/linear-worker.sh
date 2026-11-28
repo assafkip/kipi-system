@@ -2493,9 +2493,11 @@ print(mod.ladder_owns(slug, int(pr), branch, state) or "")
 PY
 }
 
-# unreviewed_reason <issue> <pr>: the gate-20 "<kind>|<why>". A capped PR also
-# reads gate 20 (no verdict past the cap), and was named "the reviewer redrive
-# owns it" while cap-ladder.py owned it (ASK-5844). The KIND stays unreviewed
+# unreviewed_reason <issue> <pr>: the gate-20 "<kind>|<why>". A claude-engine
+# review cap is caught earlier in wip_move_why as kind cap; what reaches gate 20
+# with a ladder owner is a codex-engine cap, an escalation, a cap-out or a held
+# ticket, and it was named "the reviewer redrive owns it" while cap-ladder.py
+# owned it (ASK-5844). The KIND stays unreviewed
 # (exit: wait): only the owner named was wrong, and kind cap would close-requeue
 # a PR the ladder is about to act on.
 unreviewed_reason() {

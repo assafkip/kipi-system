@@ -370,6 +370,21 @@ got = offered_with([pr(903, PENDING_ROLLUP)], CAP_TEXT, marker_pr=899)
 check("OTHER PR'S MARKER: #899's marker does not cap #903", len(got), 1)
 got = offered_with([pr(904, PENDING_ROLLUP)], "review in progress")
 check("PENDING, NOT A CAP: a pending review status is left alone", got, [])
+# PR #918 round 1, major: the capped PR is still OPEN on the same head. A review
+# of #903 would post on the shared commit over #899's cap hold, so both stay put.
+got = offered_with([pr(903, PENDING_ROLLUP), pr(899, PENDING_ROLLUP)], CAP_TEXT, marker_pr=899)
+check("SHARED HEAD, CAPPED PR OPEN: neither is offered (the cap hold is not overwritten)",
+      [c["pr"] for c in got], [])
+# Round 1, minor: the codex engine's cap posts on its own slot.
+CODEX_PENDING = [{"__typename": "StatusContext", "context": "kipi/codex-approved",
+                  "state": "PENDING"}]
+rr.CI.list_prs = lambda repo_dir: [pr(905, CODEX_PENDING)]
+rr._statuses = lambda slug, sha: [
+    {"context": "kipi/codex-approved", "state": "pending", "description": CAP_TEXT}]
+with tempfile.TemporaryDirectory() as _records:
+    got = rr.candidates("/nonexistent-repo", Path(_records))
+check("CODEX SLOT: an inherited cap on the codex slot is offered too",
+      [c["action"] for c in got], ["re-review"])
 
 if failures:
     for f in failures:
