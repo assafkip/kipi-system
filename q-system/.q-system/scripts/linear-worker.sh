@@ -2472,6 +2472,32 @@ done
 REVIEW_MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
 case "$REVIEW_MAX_ROUNDS" in ''|*[!0-9]*) REVIEW_MAX_ROUNDS=3 ;; esac
 
+# review_unreviewed_pr <pr> <issue>: start the review a PR with no verdict is
+# waiting for, instead of printing the command for nobody (ASK-5846).
+#
+# Measured 2026-11-27: the gate-20 skip printed "run: kipi review N --issue
+# ASK-n --post" and no script ran it. PR #903 sat 5h, #896 and #902 sat 7 to
+# 11h, until the orchestrator ran the reviews by hand. The reviewer holds the
+# round cap itself (its .round-cap marker), so a call from here cannot pass it.
+# The record is read again first: a review that landed since the gate read it
+# means there is nothing to start. Returns the reviewer's exit code, 0 on a skip.
+review_unreviewed_pr() {
+  local pr="$1" issue="$2" rec rc=0
+  rec="$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$pr")"
+  if [ -n "$(verdict_from_record "$rec")" ]; then
+    say "$issue: PR #$pr has a verdict now; no review started"
+    return 0
+  fi
+  say "$issue: PR #$pr has no recorded review verdict; the worker starts the review now (the reviewer holds its own round cap)"
+  KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$pr" --issue "$issue" --post --engine claude >>"$LOG" 2>&1 || rc=$?
+  if [ -n "$(verdict_from_record "$rec")" ]; then
+    say "$issue: PR #$pr review recorded '$(verdict_from_record "$rec")'; the next run acts on it"
+  else
+    say "$issue: PR #$pr review wrote no verdict (rc=$rc); the next run starts it again, within the reviewer's round cap"
+  fi
+  return "$rc"
+}
+
 wip_set_aside() {  # wip_set_aside <issue>: is it on the dispatcher set-aside list (ASK-3993)
   case " ${KIPI_PICK_EXCLUDE:-} " in *" $1 "*) return 0 ;; esac
   return 1
@@ -3115,7 +3141,7 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       continue
     fi
     if [ "$GATE" = "20" ]; then
-      say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
+      review_unreviewed_pr "$EXISTING_PR" "$ISSUE" || true
       continue
     fi
     if [ "$GATE" = "40" ]; then

@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-worker-starts-review.sh",
+ "runner": "bash",
+ "timeout_s": 60
+}
