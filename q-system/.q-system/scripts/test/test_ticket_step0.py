@@ -67,50 +67,86 @@ def main() -> int:
         empty.mkdir()
         full = corpus(root, LESSONS)
 
-        rc, out = step0("Build review-tier.py for risk-scored auto-merge\n\nbuild it", KIPI_LESSONS_CORPORA=str(empty))
-        check("a title naming the cited file STOPS (exit 3) and names the file",
-              rc == 3 and out.get("decision") == "stop" and out.get("checked") is True
-              and "q-system/.q-system/scripts/review-tier.py" in out.get("cites", [])
-              and "review-tier.py" in out.get("comment", ""), (rc, out))
-        rc, out = step0("Add a REVIEW-TIER risk-scored auto-merge", KIPI_LESSONS_CORPORA=str(empty))
-        check("a title naming the cited file without its extension, any case, STOPS",
-              rc == 3 and out.get("decision") == "stop", (rc, out))
-        rc, out = step0("Add risk-scored auto-merge\n\nlike review-tier.py does", KIPI_LESSONS_CORPORA=str(empty))
-        check("the cited file named only in the description passes, advisory",
-              rc == 0 and out.get("decision") == "pass" and "advisory" in out.get("line", ""), (rc, out))
-        rc, out = step0("Add risk-scored auto-merge to review-tiers", KIPI_LESSONS_CORPORA=str(empty))
-        check("a longer word that contains the file stem is not the file (word boundary)",
-              rc == 0 and out.get("decision") == "pass", (rc, out))
+        # WHAT STOPS: the matched key in the TITLE (a stop is now a label, never
+        # a cancel, so the old precision carve-outs are gone on purpose:
+        # rca-ask5802-five-rounds-step0-cancel-2026-11-27.md).
+        for title, why in (
+                ("Build review-tier.py for risk-scored auto-merge\n\nbuild it", "key and file in the title"),
+                ("add risk-scored auto-merge for low-risk PRs", "the known-answer case: key in the title"),
+                ("Add a RISK-SCORED AUTO-MERGE pass", "key in the title, any case")):
+            rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
+            check(f"a stop (exit 3) names the file: {why}",
+                  rc == 3 and out.get("decision") == "stop" and out.get("checked") is True
+                  and "q-system/.q-system/scripts/review-tier.py" in out.get("cites", [])
+                  and "review-tier.py" in out.get("comment", "")
+                  and "step0:already-built" in out.get("comment", "")
+                  and "Nothing is canceled" in out.get("comment", ""), (rc, out))
+        for title, why in (
+                ("fix the reviewer\n\nadd a deadman to the morning brief", "the key only in the description"),
+                ("add a reviewer fallback\n\nthe deadman keeps paging", "build verb, key only in the description"),
+                ("Add risk-scored auto-merges-plus to the queue\n\nrisk-scored auto-merge", "a longer word is not the key"),
+                ("morning-brief.py crashes on an empty ledger", "a bug report with no key (round 4)"),
+                ("Add a dry-run flag to review-tier.py", "the cited file named, no key (round 4)")):
+            rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
+            check(f"no stop: {why}",
+                  rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))
         rc, out = step0("   \n\n", KIPI_LESSONS_CORPORA=str(empty))
-        check("empty ticket text is NOT CHECKED, never a checked pass (it would clear the reopen flag)",
+        check("empty ticket text is NOT CHECKED, never a checked pass (it would clear the step-0 flags)",
               rc == 0 and out.get("checked") is False and "NOT CHECKED" in out.get("line", ""), (rc, out))
 
-        # PR #893 round 1, finding 1: real false stops, by their real titles.
-        for title, why in (
-                ("launchd job is dark: com.kipi.browser-session-deadman", "a broken-thing report (ASK-1199)"),
-                ("handoff-provenance-lint: widen the scan root to session handoffs and auto-memory",
-                 "no build verb (ASK-1953)"),
-                ("fix the reviewer\n\nadd a deadman to the morning brief", "the key only in the description"),
-                # Each case below is decided by ONE part of the rule alone (round 2 mutants):
-                ("session handoff for the fleet-wide Linear rollout", "key whole-word in the title, no build verb"),
-                ("add a reviewer fallback\n\nthe deadman keeps paging", "build verb, key only in the description"),
-                # PR #899 rounds 1-2: an enhancement to an existing thing is not a duplicate build.
-                ("Add a deadman to the cap-ladder nightly run", "adds a part TO another thing"),
-                ("Make the morning brief read the ledger instead of the log", "make = change, not build"),
-                ("Add a friction note capture to the lane runner", "adds a part TO another thing"),
-                ("Add a self-review pass to pr-owner.py", "adds a part TO another thing"),
-                ("Make a handoff's \"every branch is pushed\" claim come from the disk, not a static list "
-                 "of branches.", "verbatim RCA action item; make = change"),
-                # PR #903 round 1, finding 1: any preposition, any verb, key in the title.
-                ("Add friction counts on the morning brief", "key in the title, file not named"),
-                ("Add a deadman for the pr-review-agent queue", "key in the title, file not named"),
-                ("Build a morning brief section for consulting", "build verb + key, file not named"),
-                ("Add a friction note capture on the lane runner", "same title with 'on' for 'to'"),
-                ("Create a handoff index page", "key in the title, file not named"),
-                ("add risk-scored auto-merge for low-risk PRs", "the old known-answer stop: key only")):
-            rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
-            check(f"a named-file match that is not a build proposal passes: {why}",
-                  rc == 0 and out.get("decision") == "pass" and out.get("checked") is True, (rc, out))
+        # THE WRITE PATH: --attempts + --apply, with the Linear writer stubbed.
+        # The stub logs every call; a cancel or a PR close would show as a call
+        # that is not progress or label.
+        led = root / "attempts.json"
+        synclog = root / "sync.log"
+        stub = root / "sync_stub.py"
+        stub.write_text("import json, sys\n"
+                        f"open({str(synclog)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n")
+        ledger_py = STEP0.parent / "attempts-ledger.py"
+
+        def apply(text: str) -> tuple[int, dict, list]:
+            synclog.unlink(missing_ok=True)
+            p = subprocess.run([sys.executable, str(STEP0), "--issue", "ASK-1", "--attempts", str(led), "--apply"],
+                               input=text, capture_output=True, text=True, timeout=60,
+                               env=dict(os.environ, KIPI_LESSONS_CORPORA=str(empty),
+                                        KIPI_STEP0_SYNC=f"{sys.executable} {stub}"))
+            calls = [json.loads(x) for x in synclog.read_text().splitlines()] if synclog.exists() else []
+            try:
+                return p.returncode, json.loads(p.stdout), calls
+            except ValueError:
+                return p.returncode, {"raw": p.stdout + p.stderr}, calls
+
+        def flag(name: str) -> str:
+            return subprocess.run([sys.executable, str(ledger_py), str(led), "get", "ASK-1", name, ""],
+                                  capture_output=True, text=True).stdout.strip()
+
+        led.write_text("{}")
+        built = "add risk-scored auto-merge for low-risk PRs"
+        rc, out, calls = apply(built)
+        check("--apply on a match: one comment naming the file, then the label, and nothing else",
+              rc == 3 and [c[0] for c in calls] == ["progress", "label"]
+              and calls[1] == ["label", "ASK-1", "step0:already-built"]
+              and "review-tier.py" in calls[0][2] and out.get("labelled") is True, (rc, out, calls))
+        check("--apply on a match records step0_labelled", flag("step0_labelled") == "True", led.read_text())
+        rc, out, calls = apply(built)
+        check("a removed label lets the ticket pass: step 0 stands down, writes nothing",
+              rc == 0 and out.get("decision") == "pass" and "stands down" in out.get("line", "")
+              and not calls, (rc, out, calls))
+        rc, out, calls = apply("usage-pacer.py usage_pct() crashes on TimeoutExpired instead of returning None")
+        check("--apply on no match passes, writes nothing to Linear, and clears the step-0 flags",
+              rc == 0 and not calls and flag("step0_labelled") == "" and flag("step0_comment_posted") == "",
+              (rc, out, calls, led.read_text()))
+        rc, out, calls = apply(built)
+        check("after a checked pass cleared the flags, a later match labels again",
+              rc == 3 and [c[0] for c in calls] == ["progress", "label"], (rc, calls))
+        led.write_text("{}")
+        synclog.unlink(missing_ok=True)
+        p = subprocess.run([sys.executable, str(STEP0), "--issue", "ASK-1", "--attempts", str(led)],
+                           input=built, capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, KIPI_LESSONS_CORPORA=str(empty),
+                                    KIPI_STEP0_SYNC=f"{sys.executable} {stub}"))
+        check("without --apply a match stops (exit 3) and writes nothing (the dry pick)",
+              p.returncode == 3 and not synclog.exists() and flag("step0_labelled") == "", (p.returncode, p.stdout))
 
         rc, out = step0("usage-pacer.py usage_pct() crashes on TimeoutExpired instead of returning None",
                         KIPI_LESSONS_CORPORA=str(empty))

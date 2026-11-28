@@ -52,11 +52,15 @@ BOARD = [
           "2026-08-02T10:00:00.000Z"),
 ]
 
-# FIXTURE_BOARD=built-only: the --apply case. Step 0 sits before any claim,
-# comment or model call, so an --apply run over only the built ticket spends
-# nothing and must leave exactly one capout for cap-ladder.py.
-if os.environ.get("FIXTURE_BOARD") == "built-only":
+# FIXTURE_BOARD=built-only: the --apply case. Step 0 sits before any claim
+# or model call, so an --apply run over only the built ticket spends nothing
+# and writes only the label and its one comment.
+# FIXTURE_BOARD=labelled: the same ticket carrying step0:already-built, as
+# Linear shows it after that --apply run.
+if os.environ.get("FIXTURE_BOARD") in ("built-only", "labelled"):
     BOARD = BOARD[:1]
+if os.environ.get("FIXTURE_BOARD") == "labelled":
+    BOARD[0]["labels"]["nodes"].append({"name": "step0:already-built"})
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -128,15 +132,17 @@ GOT1="$(picks "$(run_worker 1)")"
   && ok "the dispatcher's one pick (--limit 1) moves past the stopped ticket" \
   || bad "the dispatcher's one pick moves past the stopped ticket" "got [$GOT1], want [ASK-962 ]"
 
-[ ! -e "$WORK/state/linear-worker-attempts.json" ] || ! grep -q capout "$WORK/state/linear-worker-attempts.json" \
-  && ok "a dry run records no capout for the stopped ticket (dry changes nothing)" \
-  || bad "a dry run records no capout" "$(cat "$WORK/state/linear-worker-attempts.json")"
-printf '%s\n' "$OUT" | grep -q 'skip ASK-961: stopped at step 0, already built; handed to cap-ladder.py rung 0' \
-  && ok "the skip names cap-ladder.py as the next actor" \
-  || bad "the skip names its consumer" "$(printf '%s\n' "$OUT" | grep -E 'skip ASK-961' | head -2)"
+[ ! -e "$WORK/state/linear-worker-attempts.json" ] || ! grep -q 'capout\|step0_' "$WORK/state/linear-worker-attempts.json" \
+  && ok "a dry run records no capout and no step-0 flag (dry changes nothing)" \
+  || bad "a dry run records nothing" "$(cat "$WORK/state/linear-worker-attempts.json")"
+printf '%s\n' "$OUT" | grep -q 'skip ASK-961: stopped at step 0, already built; labelled step0:already-built' \
+  && ok "the skip names the label as the stop" \
+  || bad "the skip names the label" "$(printf '%s\n' "$OUT" | grep -E 'skip ASK-961' | head -2)"
 
-# --apply over only the built ticket: one capout, naming the file, and a second
-# tick leaves the same capout_at (one record, so cap-ladder sees one signature).
+# --apply over only the built ticket: one comment and the label, through the
+# stubbed Linear writer, nothing canceled, and no capout.
+printf 'import json, sys\nopen("%s/sync.log", "a").write(json.dumps(sys.argv[1:]) + "\\n")\n' "$WORK" > "$WORK/sync-stub.py"
+export KIPI_STEP0_SYNC="python3 $WORK/sync-stub.py"
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
 FIXTURE_BOARD=built-only python3 "$WORK/fixture-server.py" > "$WORK/port2" 2> "$WORK/server2.err" &
 SRV_PID=$!
@@ -144,52 +150,55 @@ for _ in $(seq 1 100); do PORT="$(cat "$WORK/port2" 2>/dev/null)"; [ -n "${PORT:
 # THE CLAUDE SEAM IS A RECORDING STUB HERE, never fleet-claude.sh. Round 2 scar:
 # a mutant worker that did not stop went on to a real bounded `claude -p` run
 # and sat in run_bounded's 1800 s watchdog. A worker that fails to stop must
-# fail this test fast and spend nothing. cap-ladder.py is stubbed the same way:
-# the real --issue run writes Linear and the ledger, and test_cap_ladder.py owns it.
+# fail this test fast and spend nothing.
 printf '#!/bin/sh\necho called >> "%s/claude-called"\nexit 1\n' "$WORK" > "$WORK/claude-stub"
 chmod +x "$WORK/claude-stub"
 # KIPI_NOTIFY stubbed on every ledger read: attempts-ledger.py can reach slack-notify.sh.
 led_get() { KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" get ASK-961 "$1" "" 2>/dev/null; }
-printf '#!/bin/sh\necho "$*" >> "%s/ladder-called"\n' "$WORK" > "$WORK/ladder-stub"
-chmod +x "$WORK/ladder-stub"
 apply_worker() { KIPI_FLEET_CLAUDE="$WORK/claude-stub" KIPI_CODEX_RUNNER="$WORK/claude-stub" \
-  KIPI_CAP_LADDER="$WORK/ladder-stub" run_worker 1 --apply; }
+  run_worker 1 --apply; }
 # To a file, not $(...): run_bounded's watchdog `sleep` outlives a killed
 # watchdog subshell and holds a captured stdout open for 1800 s (seen under the
 # rc mutant, round 2). A plain redirect returns when the worker does.
 apply_worker > "$WORK/apply.out" 2>&1
 OUTA="$(cat "$WORK/apply.out")"
-AT1="$(led_get capout_at)"
-WHY="$(led_get capout_why)"
-[ -n "$AT1" ] && printf '%s' "$WHY" | grep -q 'step 0: already built: q-system/.q-system/scripts/review-tier.py' \
-  && ok "--apply records one capout naming the file, for cap-ladder.py to consume" \
-  || bad "--apply records a capout naming the file" "at=[$AT1] why=[$WHY] $(printf '%s\n' "$OUTA" | grep -E 'step 0|WARN|ASK-961' | head -3)"
+# Each call as "verb issue [label]": the comment's text is checked below.
+CALLS="$(python3 -c 'import json,sys
+print("|".join(" ".join(c[:2] + (c[2:3] if c[0] == "label" else [])) for c in map(json.loads, open(sys.argv[1]))))' "$WORK/sync.log" 2>/dev/null)"
+[ "$CALLS" = 'progress ASK-961|label ASK-961 step0:already-built' ] \
+  && grep -q 'review-tier.py' "$WORK/sync.log" \
+  && ok "--apply on a match posts one comment naming the file, then adds step0:already-built, nothing else" \
+  || bad "--apply comments then labels, nothing else" "calls [$CALLS] $(printf '%s\n' "$OUTA" | grep -E 'step 0|WARN' | head -3)"
+[ "$(led_get step0_labelled)" = "True" ] && [ -z "$(led_get capout)" ] \
+  && ok "--apply records step0_labelled and no capout (no cancel path is fed)" \
+  || bad "--apply records the flag, no capout" "flag [$(led_get step0_labelled)] capout [$(led_get capout)]"
 [ ! -e "$WORK/claude-called" ] \
   && ok "--apply spends nothing on the stopped ticket (the claude seam was never called)" \
   || bad "--apply spends nothing on the stopped ticket" "the claude stub was called $(wc -l < "$WORK/claude-called") time(s)"
-grep -qx -- '--issue ASK-961 --apply' "$WORK/ladder-called" 2>/dev/null \
-  && ok "--apply hands the stop to cap-ladder.py's own loop (--issue) in the same tick (no wait for 04:40)" \
-  || bad "--apply calls cap-ladder.py --issue now" "$(cat "$WORK/ladder-called" 2>/dev/null || echo 'never called')"
-sleep 1; apply_worker >/dev/null
-AT2="$(led_get capout_at)"
-[ -n "$AT1" ] && [ "$AT1" = "$AT2" ] \
-  && ok "a second tick leaves the same capout (one signature, not one per tick)" \
-  || bad "a second tick leaves the same capout" "first [$AT1] second [$AT2]"
+
+# Linear now shows the label: the worker never offers the ticket, so step 0
+# never runs on it and nothing more is written.
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
+FIXTURE_BOARD=labelled python3 "$WORK/fixture-server.py" > "$WORK/port4" 2> "$WORK/server4.err" &
+SRV_PID=$!
+for _ in $(seq 1 100); do PORT="$(cat "$WORK/port4" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
+: > "$WORK/sync.log"
+OUTL="$(run_worker 5)"
+[ -z "$(picks "$OUTL")" ] && ! printf '%s\n' "$OUTL" | grep -q 'step 0 ASK-961' && [ ! -s "$WORK/sync.log" ] \
+  && ok "a labelled ticket is not offered: no pick, no step 0, no second comment" \
+  || bad "the label holds the ticket" "picks [$(picks "$OUTL")] sync [$(cat "$WORK/sync.log")]"
+
+# The label removed: step 0 stands down (step0_labelled) and the ticket is picked.
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
 python3 "$WORK/fixture-server.py" > "$WORK/port3" 2> "$WORK/server3.err" &
 SRV_PID=$!
 for _ in $(seq 1 100); do PORT="$(cat "$WORK/port3" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
-
-# Round 2, minor 5: a reopen wins. With step0_canceled on the ticket (cap-ladder
-# set it when rung 0 canceled), step 0 stands down and the ticket is picked.
-KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" claim-flag ASK-961 step0_canceled >/dev/null 2>&1
-KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" clear-capout ASK-961 >/dev/null 2>&1
 OUTR="$(run_worker 5)"
-printf '%s\n' "$OUTR" | grep -q 'step 0 ASK-961: stands down, reopened after a step-0 cancel' \
-  && [ "$(picks "$OUTR")" = "ASK-961 ASK-962 " ] \
-  && ok "a reopened ticket is not re-stopped: step 0 stands down and it is picked" \
-  || bad "a reopened ticket is not re-stopped" "got [$(picks "$OUTR")] $(printf '%s\n' "$OUTR" | grep ASK-961 | head -2)"
-KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" clear-flag ASK-961 step0_canceled >/dev/null 2>&1
+printf '%s\n' "$OUTR" | grep -q 'step 0 ASK-961: stands down, its step0:already-built label was removed' \
+  && [ "$(picks "$OUTR")" = "ASK-961 ASK-962 " ] && [ ! -s "$WORK/sync.log" ] \
+  && ok "a removed label lets the ticket through: step 0 stands down and it is picked" \
+  || bad "a removed label lets the ticket through" "got [$(picks "$OUTR")] $(printf '%s\n' "$OUTR" | grep ASK-961 | head -2)"
+KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" clear-flag ASK-961 step0_labelled >/dev/null 2>&1
 
 for kind in broken hang; do
   OUTB="$(KIPI_STEP0_GROUND="$WORK/$kind.py" KIPI_STEP0_TIMEOUT=1 run_worker 5)"
@@ -202,20 +211,20 @@ for kind in broken hang; do
     || bad "a $kind check says NOT CHECKED" "$(printf '%s\n' "$OUTB" | grep -E 'ASK-961' | head -3)"
 done
 
-# PR #893 round 3, minor 4: step0_canceled expires on a CHECKED pass and only
-# then. A NOT CHECKED fail-open keeps it, or a working check would re-cancel a
-# reopened ticket. --apply with every spend seam stubbed (claude, cap-ladder).
+# PR #893 round 3, minor 4: step0_labelled expires on a CHECKED pass and only
+# then. A NOT CHECKED fail-open keeps it, or a working check would re-label a
+# ticket whose label was removed. --apply with the claude seam stubbed.
 # LAST in the file: these --apply runs bump ASK-961's attempts, which would
 # make every later case see it as STUCK.
-KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" claim-flag ASK-961 step0_canceled >/dev/null 2>&1
+KIPI_NOTIFY=/usr/bin/true python3 "$REPO_SCRIPTS/attempts-ledger.py" "$WORK/state/linear-worker-attempts.json" claim-flag ASK-961 step0_labelled >/dev/null 2>&1
 printf 'import json\nprint(json.dumps({"verdict": "adopt"}))\n' > "$WORK/adopt.py"
 for kind in broken adopt; do
   KIPI_STEP0_GROUND="$WORK/$kind.py" apply_worker > "$WORK/expiry-$kind.out" 2>&1
-  eval "FLAG_$kind=\"\$(led_get step0_canceled)\""
+  eval "FLAG_$kind=\"\$(led_get step0_labelled)\""
 done
 [ "$FLAG_broken" = "True" ] && [ -z "$FLAG_adopt" ] \
-  && ok "step0_canceled survives a NOT CHECKED run and expires on a checked pass" \
-  || bad "step0_canceled expires on a checked pass only" "after broken [$FLAG_broken] after adopt [$FLAG_adopt]"
+  && ok "step0_labelled survives a NOT CHECKED run and expires on a checked pass" \
+  || bad "step0_labelled expires on a checked pass only" "after broken [$FLAG_broken] after adopt [$FLAG_adopt]"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

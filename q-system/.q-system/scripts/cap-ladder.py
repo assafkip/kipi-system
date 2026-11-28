@@ -737,7 +737,9 @@ def live(issue: str, pr: dict | None) -> bool:
     # ONLY WRITERS COUNT (PR #903 round 1, Codex P1): a bare "--issue ASK-n"
     # also matched a read-only `ticket_step0.py --issue ASK-n` and the
     # drafter, so a concurrent check held the same-tick cancel.
-    pats = [rf"(converge\.sh|cap-ladder\.py|linear-worker\.sh)\b[^\n]*?--issue\s+{issue}(\s|$)"]
+    # pr-owner.py starts the reviewer as `bash kipi review <n> ... --issue ASK-n`
+    # (PR #903 round 4, minor 2): a writer too, and it was missing here.
+    pats = [rf"(converge\.sh|cap-ladder\.py|linear-worker\.sh|\bkipi\s+review)\b[^\n]*?--issue\s+{issue}(\s|$)"]
     if pr:
         pats.append(rf"pr-review-agent\.sh\s+{pr['number']}(\s|$)")
     return any(re.search(p, table, re.M) for p in pats)
@@ -1032,10 +1034,9 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
         if rc not in (0, 1):
             return f"{issue}: CLOSE could not record its reason flag; nothing canceled, the next run retries"
         if rc == 0:
-            # Rung 0 (step 0) brings its own reason, naming the file already built.
-            prc, out = run(SYNC + ["progress", issue, d.get("comment") or (
-                f"**Canceled by {JOB}** after rung {r}: wrong premise or obsolete "
-                f"work. Reason: RCA {rca_ref}. Reopen to undo."), "--agent", "sana"])
+            prc, out = run(SYNC + ["progress", issue,
+                                   f"**Canceled by {JOB}** after rung {r}: wrong premise or obsolete "
+                                   f"work. Reason: RCA {rca_ref}. Reopen to undo.", "--agent", "sana"])
             if prc != 0:
                 ledger(["clear-flag", issue, CLOSE_FLAG])
                 return f"{issue}: CLOSE could not post its reason ({out[-120:]}); nothing canceled, the next run retries"
@@ -1152,32 +1153,36 @@ def release_step0(issue: str, apply: bool, why: str) -> str:
     return f"{issue}: {why}; its step-0 capout is released, {NO_RUNG}, the worker takes it"
 
 
-def rung_zero(issue: str, t: dict) -> dict | None:
+def rung_zero(issue: str, t: dict, apply: bool) -> dict | None:
     """Rung 0 (ASK-5802): before the first RCA is paid for, ask whether the
     ticket should exist. Founder 2026-11-26: "chekcing if the ticket should
     exist should be step 0"; an RCA on a ticket that asks to build an existing
     file studies the wrong question.
 
-    IT DECIDES, IT WRITES NOTHING (rca-ask5802-three-rounds-2026-11-27.md).
-    PR #893 built its own cancel here and a second entry point (--rung0) to run
-    it; three review rounds found a new gap in that copy each time, because the
-    guards live in main() and apply_decision, not in the action. So rung 0
-    returns a decision and climb() hands a CLOSE to apply_decision, the one
-    CLOSE the ladder has. None means go on to rung 1.
+    A STOP IS A LABEL, NEVER A CANCEL (founder decision on ASK-5802,
+    2026-11-27; rca-ask5802-five-rounds-step0-cancel-2026-11-27.md). Rung 0
+    used to hand a CLOSE to apply_decision; five review rounds found a real
+    ticket that the matcher canceled each time. Now it returns LABEL and
+    climb() runs ticket_step0.label_stop(), the same writer the worker uses.
+    None means go on to rung 1.
 
-    {"kind": "RELEASE"}: a capout step 0 wrote itself that step 0 no longer
-    stops (round 2, finding 1), or a ticket reopened after a step-0 cancel
-    (step0_canceled: a reopen wins, round 2, minor 5)."""
+    {"kind": "HOLD"}: the label is on, so the label holds it and no rung is
+    spent. Removing the label is the undo: ticket_step0.gate() then stands
+    down (the step0_labelled flag) and rung 1 runs as for any cap.
+    {"kind": "RELEASE"}: a capout step 0 wrote itself (before this rule) that
+    step 0 no longer stops (PR #893 round 2, finding 1)."""
+    if STEP0_LABEL in ((t or {}).get("labels") or []):
+        return {"kind": "HOLD"}
     entry = read_ledger().get(issue) or {}
-    if entry.get("step0_canceled"):
-        return {"kind": "RELEASE", "why": "reopened after a step-0 cancel, so step 0 stands down"} \
-            if step0_capout(entry) else None
-    res = step0().check(issue, (t or {}).get("text") or (t or {}).get("title") or "")
+    res = step0().gate(issue, (t or {}).get("text") or (t or {}).get("title") or "",
+                       LEDGER + [str(ATTEMPTS)], apply)
     say(res["line"])
     if res["decision"] != "stop":
         return {"kind": "RELEASE", "why": "step 0 no longer stops it"} if step0_capout(entry) else None
-    return {"kind": "CLOSE", "rca": f"none, step 0: already built: {', '.join(res['cites'])}",
-            "comment": res["comment"], "cites": res["cites"]}
+    return {"kind": "LABEL", "res": res, "cites": res["cites"]}
+
+
+STEP0_LABEL = "step0:already-built"
 
 
 _STEP0_MOD = None
@@ -1201,29 +1206,31 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
     kind = sigs[0].split(":", 1)[0]
     why = f"{kind} cap ({', '.join(s.split(':', 1)[0] for s in sigs)})"
     if r == 1 or step0_capout(read_ledger().get(issue) or {}):
-        d0 = rung_zero(issue, t)
+        d0 = rung_zero(issue, t, apply)
         if d0 and d0["kind"] == "RELEASE":
             return release_step0(issue, apply, d0["why"])
+        if d0 and d0["kind"] == "HOLD":
+            return (f"{issue}: held by its {STEP0_LABEL} label, {NO_RUNG}; removing the label "
+                    "lets rung 1 run")
         if d0:
             if not apply:
-                return f"[dry] {issue}: rung 0 would cancel it, already built: {', '.join(d0['cites'])}"
+                return f"[dry] {issue}: rung 0 would label it {STEP0_LABEL}, already built: {', '.join(d0['cites'])}; {NO_RUNG}"
             # The step-0 check takes up to KIPI_STEP0_TIMEOUT; a lane that started
             # meanwhile wins, as at every other rung (PR #899 round 1, finding 3).
             late = late_lane(issue, int(row.get("rung", 0)), report, during="the step-0 check")
             if late:
                 return late
-            out = apply_decision(issue, d0, t, pr, slug, 0, row)
-            if "retries" in out:
-                report.append({"issue": issue, "rung": 0, "decision": "CLOSE", "red": True, "note": out})
+            ok, note = step0().label_stop(issue, d0["res"], LEDGER + [str(ATTEMPTS)], SYNC)
+            if not ok:
+                out = f"{issue}: rung 0 {note}; the next run retries"
+                report.append({"issue": issue, "rung": 0, "decision": "LABEL", "red": True, "note": out})
                 return out
-            # A reopen wins: the worker and rung 0 read this flag (round 2, minor 5).
-            ledger(["claim-flag", issue, "step0_canceled"])
-            row.update(rung=0, last_at=now().isoformat(), handled=sigs,
-                       decision={k: v for k, v in d0.items() if k != "comment"})
-            state[issue] = row
-            report.append({"issue": issue, "rung": 0, "decision": "CLOSE", "cites": d0["cites"],
-                           **({"red": True, "note": out} if PR_UNCLOSED in out else {})})
-            return f"{out} at rung 0, already built: {', '.join(d0['cites'])}"
+            # The label is the stop now, so a capout step 0 wrote itself is
+            # released: two stops on one ticket would need two undos.
+            if step0_capout(read_ledger().get(issue) or {}):
+                ledger(["clear-capout", issue])
+            report.append({"issue": issue, "rung": 0, "decision": "LABEL", "cites": d0["cites"]})
+            return f"{issue}: rung 0 {note}; nothing canceled, {NO_RUNG}, the label holds it"
     if not apply:
         return f"[dry] {issue}: would take rung {r} ({rung_name(r)}) on its {why}"
 
@@ -1327,7 +1334,7 @@ def main(argv=None) -> int:
     ap.add_argument("--send-asks", action="store_true",
                     help="send every unsent ask to chief's phone gate as one message, then exit (the one sender)")
     ap.add_argument("--issue", metavar="ISSUE",
-                    help="run this same loop, with every guard, for one capped issue now (the worker's step-0 stop)")
+                    help="run this same loop, with every guard, for one capped issue now")
     args = ap.parse_args(argv)
     # FIRST, before any verb that writes (round 2, minor: --resolve and
     # --founder-ask ran above this and wrote the real status file under pytest).
@@ -1380,9 +1387,8 @@ def main(argv=None) -> int:
 
     caps = find_caps(read_ledger(), prs_by_issue, slug_by_pr)
     # --issue: NO CLOCK, SAME GUARDS (founder 2026-11-27: "identify any unneeded
-    # holds, waits for a time of day you dont need ... and remove them"). The
-    # worker calls this the tick step 0 stops, so the cancel need not wait for
-    # 04:40. It is a filter on this loop, not a second loop: PR #893's --rung0
+    # holds, waits for a time of day you dont need ... and remove them"), so one
+    # capped ticket need not wait for 04:40. It is a filter on this loop, not a second loop: PR #893's --rung0
     # was one, and it skipped lane_hold and live() (round 3, finding 1).
     if args.issue:
         caps = {k: v for k, v in caps.items() if k == args.issue}

@@ -981,6 +981,9 @@ def ready(i):
     # runner lacks something it cannot grant itself (a harness permission, a
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
+    # step0:already-built is the step-0 stop (ticket_step0.py, ASK-5802): a
+    # label, never a cancel, so removing it is the whole undo.
+    if "step0:already-built" in labels: return False
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
@@ -1002,6 +1005,7 @@ def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
+            and "step0:already-built" not in labels
             and not is_fleet_alert(i)
             and "Definition of Ready" in (i.get("description") or "")
             and (i["state"]["type"] in QUEUE_STATES
@@ -1412,7 +1416,7 @@ def refusal(i):
     # leaves out every PR whose ticket has live evidence before any kind is asked,
     # so no ticket that reaches this function has any.
     labels = {l["name"] for l in i["labels"]["nodes"]}
-    for held in ("owner:assaf", "needs-scope", "blocked:capability"):
+    for held in ("owner:assaf", "needs-scope", "blocked:capability", "step0:already-built"):
         if held in labels:
             return hold("refused-label", "ticket labelled " + held)
     if "owner:sana" not in labels:
@@ -2958,51 +2962,24 @@ while IFS= read -r ISSUE; do
   # STEP 0: SHOULD THIS TICKET EXIST (ASK-5802). Founder, 2026-11-26: "chekcing
   # if the ticket should exist should be step 0". Runs before the dry pick, so
   # a dry run shows the stop and the dispatcher moves to the next ticket, and
-  # before any claim, comment or model call. ticket_step0.py is the one
-  # decision (cap-ladder.py rung 0 runs the same one); it is offline and fails
-  # open with a NOT CHECKED line, so a broken check never holds the fleet.
+  # before any claim or model call. ticket_step0.py is the one decision and
+  # the one writer (cap-ladder.py rung 0 runs the same two); it is offline and
+  # fails open with a NOT CHECKED line, so a broken check never holds the fleet.
+  # A STOP IS A LABEL, NEVER A CANCEL (founder decision on ASK-5802,
+  # 2026-11-27; rca-ask5802-five-rounds-step0-cancel-2026-11-27.md). With
+  # --apply it posts one comment naming the file and adds step0:already-built,
+  # which ready() skips. Removing the label lets the ticket through: the
+  # step0_labelled flag in this ledger makes step 0 stand down for it.
   STEP0_RC=0
+  STEP0_ARGS=(--issue "$ISSUE" --attempts "$ATTEMPTS")
+  [ "$APPLY" = "1" ] && STEP0_ARGS+=(--apply)
   STEP0_OUT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
 print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]), ""))' "$ISSUE" 2>/dev/null \
-    | python3 "$SCRIPT_DIR/ticket_step0.py" --issue "$ISSUE" 2>>"$LOG")" || STEP0_RC=$?
+    | python3 "$SCRIPT_DIR/ticket_step0.py" "${STEP0_ARGS[@]}" 2>>"$LOG")" || STEP0_RC=$?
   STEP0_LINE="$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["line"])' 2>/dev/null)"
   say "${STEP0_LINE:-step 0 $ISSUE: NOT CHECKED (ticket_step0.py exited $STEP0_RC with no line); the ticket proceeds unchecked}"
-  # A REOPEN WINS (PR #893 round 2, minor 5). cap-ladder.py sets step0_canceled
-  # when rung 0 cancels; a ticket open again after that was reopened on purpose,
-  # so step 0 stands down for it instead of re-canceling every tick.
-  if [ "$STEP0_RC" = "3" ] && [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" step0_canceled "" 2>/dev/null)" = "True" ]; then
-    say "step 0 $ISSUE: stands down, reopened after a step-0 cancel; the ticket proceeds"
-    STEP0_RC=0
-  elif [ "$STEP0_RC" = "0" ] && [ "$APPLY" = "1" ] \
-       && printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;sys.exit(0 if json.load(sys.stdin).get("checked") else 1)' 2>/dev/null; then
-    # THE FLAG EXPIRES ON A CHECKED PASS (PR #893 round 3, minor 4: set once,
-    # never cleared, so step 0 was off for that id forever). Once the reopened
-    # text passes, the reopen has done its job; a later build request is checked
-    # again. A NOT CHECKED fail-open is no pass: it would re-arm a re-cancel.
-    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" step0_canceled >/dev/null 2>&1 || true
-  fi
   if [ "$STEP0_RC" = "3" ]; then
-    # THE STOP HANDS OFF TO cap-ladder.py, IT DOES NOT END HERE (PR #893 round 1,
-    # findings 3 and 5). A skip with only a comment was a dead end with no
-    # actor. A capout is what cap-ladder.py already consumes: its rung 0 runs
-    # this same check and cancels the ticket with the named file as the reason.
-    # Recorded once (an existing capout is left alone, so its signature stays
-    # stable), and only on --apply: a dry run changes nothing.
-    if [ "$APPLY" = "1" ] && [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" capout "" 2>/dev/null)" != "True" ]; then
-      python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "step 0: already built: $(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin)["cites"]))' 2>/dev/null)" >/dev/null 2>&1 \
-        || say "WARN: the step 0 capout for $ISSUE did not record; the next tick retries it"
-    fi
-    # NOW, NOT AT 04:40 (founder 2026-11-27, no waits for a time of day). The
-    # cancel spends no RCA, so the ladder's nightly clock has no reason to hold
-    # it. --issue runs the ladder's own loop for this one ticket, with its lane,
-    # live-run and lock guards (PR #893 round 3: a separate --rung0 skipped them).
-    # Same attempts ledger as this run. A refusal or failure leaves the capout
-    # for the next tick or the nightly run.
-    if [ "$APPLY" = "1" ]; then
-      CAP_LADDER_ATTEMPTS="$ATTEMPTS" ${KIPI_CAP_LADDER:-python3 "$SCRIPT_DIR/cap-ladder.py"} --issue "$ISSUE" --apply >>"$LOG" 2>&1 \
-        || say "WARN: cap-ladder.py --issue $ISSUE reported RED (its line above says which): a cancel that did not land keeps the capout and the next tick retries; a PR left open goes to pr-owner.py"
-    fi
-    say "skip $ISSUE: stopped at step 0, already built; handed to cap-ladder.py rung 0, which cancels it with the file named (its line above, or a WARN, says whether it did)"
+    say "skip $ISSUE: stopped at step 0, already built; labelled step0:already-built with the file named (its line above says whether the label landed), nothing canceled"
     continue
   fi
 

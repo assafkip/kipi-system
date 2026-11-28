@@ -8,32 +8,27 @@ esame thing". So the verdict comes from improve_ground.py, unchanged, and
 this file is the one place that turns it into stop or pass. Both callers
 use it:
 linear-worker.sh (before the build prompt, through the CLI) and cap-ladder.py
-(rung 0, before the rung 1 RCA, through check()).
+(rung 0, before the rung 1 RCA, through gate() and label_stop()).
 
-A STOP NEEDS THE TITLE TO NAME THE CITED FILE, because a stop ends in
-cap-ladder.py canceling the ticket. (1) basis "named-file", (2) the ticket
-TITLE contains the basename of a cited file, with or without its extension, as
-a whole word, case-insensitive ("capability-gate.py" or "capability-gate"),
-(3) that file exists in this checkout. Every other already-built match (a key
-in the title, anything in the description, a lesson) is an advisory line and
-passes. Losing a stop is the safe direction: a missed duplicate costs one
-build session, a false stop cancels live work unattended.
-Why file identity and not wording: PR #899 and #903 spent four review rounds
-tuning verb and preposition lists ("add Y to X" passed, "add Y on X" was
-canceled), and each round found a new synonym. A title that names the exact
-file is the one signal no synonym moves
-(rca-pr899-step0-precision-three-rounds-2026-11-27.md).
-Measured 2026-11-27 on every open owner:sana ticket, before that:
-- a lesson match is advice for the build, not the build: 6 of 35 sampled
-  tickets matched a lesson and none was built (ASK-5779 "Reinstate X" matched
-  a lesson about porting gates);
-- the named-file table is substring keys written for pasted outside ideas.
-  Over title + description it stopped 45+ real tickets, all false: "handoff"
-  hit any ticket mentioning a handoff, "deadman" hit every launchd deadman
-  bug (ASK-1199 "launchd job is dark: ...-deadman"). A ticket reporting that
-  something is broken is about code that exists, so it is never a duplicate
-  build, and only a title that proposes building is a build proposal.
-  (PR #893 round 1, finding 1; the producer's own precision is ASK-5805.)
+A STOP IS A LABEL, NEVER A CANCEL (founder decision on ASK-5802, 2026-11-27).
+On a stop the caller runs label_stop(): one comment naming the cited file, then
+the label `step0:already-built`. linear-worker.sh ready() skips that label, so
+the label is the only stop: removing it lets the ticket through on the next
+pick (the ledger flag step0_labelled makes step 0 stand down for it). Step 0
+never cancels a ticket and never closes a PR.
+Why: PR #893, #899 and #903 ran five review rounds on one finding class. Every
+matcher tried (phrase key, build verb, verb minus "to", the literal file name)
+canceled some real ticket, because a text matcher has false positives at any
+setting and a cancel made each one cost live work
+(rca-ask5802-five-rounds-step0-cancel-2026-11-27.md). A label makes a false
+stop cost one click, so precision stops being the lever.
+
+WHAT STOPS: improve_ground.py says already-built on a named-file basis, the
+cited file exists in this checkout, and the matched key is in the TITLE as a
+whole word, case-insensitive. Anything else is an advisory line and passes: a
+lesson-only match, or a key found only in the description. ("add risk-scored
+auto-merge for low-risk PRs" stops on review-tier.py; "fix the reviewer" with
+"add a deadman" in the body passes.)
 
 FAILS OPEN, LOUDLY. If improve_ground.py crashes, hangs past the timeout or
 prints something that is not its JSON, the ticket proceeds and the line says
@@ -42,10 +37,14 @@ and its silence must never read as "checked, nothing found".
 
 No model call, no network: improve_ground.py is offline by its own test.
 
-CLI:  ticket_step0.py --issue ASK-n  < ticket title + description
+CLI:  ticket_step0.py --issue ASK-n [--attempts LEDGER [--apply]]  < title + description
       stdout: one JSON object {decision, checked, basis, cites, line, comment}
       exit 3 = stop, exit 0 = pass (every failure is a pass)
-Env:  KIPI_STEP0_GROUND   another grounding script (tests point it at a broken one)
+      --attempts reads the worker ledger, so a ticket whose label was removed
+      stands down; --apply also writes: a stop is labelled and commented, a
+      checked pass clears the step-0 flags.
+Env:  KIPI_STEP0_SYNC     the Linear writer argv, default python3 linear-sync.py (tests stub it)
+      KIPI_STEP0_GROUND   another grounding script (tests point it at a broken one)
       KIPI_STEP0_TIMEOUT  seconds, default 30 (one call measured about 1.2 s)
 """
 from __future__ import annotations
@@ -54,6 +53,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -62,6 +62,13 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]  # scripts -> .q-system -> q-system -> repo
 GROUND = REPO / "plugins" / "kipi-core" / "skills" / "improve" / "scripts" / "improve_ground.py"
 STOP_EXIT = 3
+LABEL = "step0:already-built"
+# Set once the label lands. Seeing it on a ticket that no longer carries the
+# label means the label was removed on purpose, so step 0 stands down.
+LABELLED_FLAG = "step0_labelled"
+# Claimed before the comment posts: a failed label write retries next tick
+# without a second comment.
+COMMENT_FLAG = "step0_comment_posted"
 # A ticket body can be long; the verdict only needs what the ticket asks for.
 MAX_TEXT = 4000
 
@@ -102,26 +109,24 @@ def run_ground(text: str) -> tuple[dict | None, str]:
     return dict(out, verdict=verdict), ""
 
 
-def stop_comment(issue: str, cites: list, reason: str) -> str:
-    """Posted by cap-ladder.py rung 0 when it cancels the ticket."""
+def stop_comment(issue: str, cites: list, reason: str, matched: str) -> str:
+    """The one comment a stop posts, before the label."""
     named = ", ".join(f"`{c}`" for c in cites)
-    return (f"**Canceled at step 0: {issue} asks to build something that exists.** improve_ground.py "
-            f"names {named} ({reason}), and the ticket title names that file. Reopen to undo: step 0 then stands down for this ticket and the worker "
-            "takes it as written. (ticket_step0.py, ASK-5802)")
+    return (f"**Step 0: {issue} looks already built.** improve_ground.py names {named} ({reason}); "
+            f"the title matches `{matched}`. Labelled `{LABEL}`, so the worker skips it. "
+            "Nothing is canceled. Remove the label and the next pick takes the ticket as written. "
+            "(ticket_step0.py, ASK-5802)")
 
 
-def title_names_cited_file(title: str, cites: list) -> bool:
-    """True only when the title names a cited file by its basename, with or
-    without the extension, and that file is really here. Nothing else stops:
-    a cancel runs unattended, so every doubt passes the ticket."""
-    for cite in cites:
-        path = Path(cite)
-        if not (REPO / path).is_file():
-            continue
-        for name in {path.name, path.stem}:
-            if name and re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", title, re.IGNORECASE):
-                return True
-    return False
+def title_has_key(title: str, matched: str) -> bool:
+    """The matched KNOWN_BUILT key in the title as a whole word. A key only in
+    the description is advice, not a stop."""
+    return bool(matched) and re.search(rf"(?<![\w-]){re.escape(matched)}(?![\w-])",
+                                       title, re.IGNORECASE) is not None
+
+
+def cited_file_exists(cites: list) -> bool:
+    return any((REPO / Path(c)).is_file() for c in cites)
 
 
 def check(issue: str, text: str) -> dict:
@@ -129,7 +134,7 @@ def check(issue: str, text: str) -> dict:
     the description (both callers build it that way)."""
     if not (text or "").strip():
         # PR #903 round 1, minor 3: the worker's WIP rework rows carry no text,
-        # and a "checked" pass on nothing cleared the step0_canceled flag.
+        # and a "checked" pass on nothing cleared the step-0 flags.
         return _not_checked(issue, "no ticket text to check")
     verdict, err = run_ground((text or "")[:MAX_TEXT])
     if verdict is None:
@@ -137,24 +142,86 @@ def check(issue: str, text: str) -> dict:
     cites = [str(c) for c in verdict.get("cites") or []]
     basis = verdict.get("basis") or ""
     title = (text or "").split("\n", 1)[0]
+    matched = str(verdict.get("matched") or "")
     if (verdict["verdict"] == "already-built" and basis == "named-file"
-            and title_names_cited_file(title, cites)):
+            and cited_file_exists(cites) and title_has_key(title, matched)):
         return {"decision": "stop", "checked": True, "basis": basis, "cites": cites,
-                "comment": stop_comment(issue, cites, verdict.get("reason") or ""),
+                "comment": stop_comment(issue, cites, verdict.get("reason") or "", matched),
                 "line": f"step 0 {issue}: STOP, already built: {', '.join(cites)}"}
     if verdict["verdict"] == "already-built":
         return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
-                "line": f"step 0 {issue}: pass (advisory: already-built on a {basis or 'lesson'} match, "
-                        f"but the title does not name the file: {', '.join(Path(c).name for c in cites)})"}
+                "line": f"step 0 {issue}: pass (advisory: already-built on a {basis or 'lesson'} match "
+                        f"outside the title: {', '.join(Path(c).name for c in cites)})"}
     return {"decision": "pass", "checked": True, "basis": basis, "cites": cites, "comment": "",
             "line": f"step 0 {issue}: pass ({verdict['verdict']})"}
+
+
+def _run(argv: list) -> tuple[int, str]:
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        return p.returncode, (p.stdout or p.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 99, str(exc)
+
+
+def gate(issue: str, text: str, ledger: list | None, apply: bool) -> dict:
+    """check() plus the label's undo. A stop on a ticket that was labelled
+    before stands down: it reached here, so the label is gone, and removing
+    the label is how a person says "work it" (the label is the only stop).
+    A checked pass on --apply clears both flags, so a later rewrite of the
+    ticket is checked fresh. A NOT CHECKED fail-open clears nothing."""
+    res = check(issue, text)
+    if not ledger:
+        return res
+    if res["decision"] == "stop":
+        rc, val = _run(ledger + ["get", issue, LABELLED_FLAG, ""])
+        if rc == 0 and val == "True":
+            return dict(res, decision="pass", comment="",
+                        line=f"step 0 {issue}: stands down, its {LABEL} label was removed; the ticket proceeds")
+    elif apply and res["checked"]:
+        _run(ledger + ["clear-flag", issue, LABELLED_FLAG])
+        _run(ledger + ["clear-flag", issue, COMMENT_FLAG])
+    return res
+
+
+def _sync_cmd() -> list:
+    raw = os.environ.get("KIPI_STEP0_SYNC")
+    return shlex.split(raw) if raw else [sys.executable, str(HERE / "linear-sync.py")]
+
+
+def label_stop(issue: str, res: dict, ledger: list, sync: list | None = None) -> tuple[bool, str]:
+    """The one writer of a step-0 stop: comment once, then the label, then the
+    flag. Both callers use it (linear-worker.sh through --apply, cap-ladder.py
+    rung 0 directly). Any failure leaves the ticket unlabelled, so the next
+    tick stops it again and retries; the comment flag keeps it to one post."""
+    sync = sync or _sync_cmd()
+    rc, out = _run(ledger + ["claim-flag", issue, COMMENT_FLAG])
+    if rc not in (0, 1):
+        return False, f"could not claim the comment flag ({out[-120:]}); nothing written"
+    if rc == 0:
+        prc, pout = _run(sync + ["progress", issue, res["comment"], "--agent", "sana"])
+        if prc != 0:
+            _run(ledger + ["clear-flag", issue, COMMENT_FLAG])
+            return False, f"could not post the step-0 comment ({pout[-120:]}); nothing labelled"
+    lrc, lout = _run(sync + ["label", issue, LABEL])
+    if lrc != 0:
+        return False, f"comment posted, but the {LABEL} label did not land ({lout[-120:]})"
+    _run(ledger + ["claim-flag", issue, LABELLED_FLAG])
+    return True, f"labelled {LABEL}, comment names {', '.join(res['cites'])}"
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="step 0: should this ticket exist")
     ap.add_argument("--issue", required=True)
+    ap.add_argument("--attempts", help="the worker attempts ledger (step-0 flags)")
+    ap.add_argument("--apply", action="store_true", help="label a stop; clear the flags on a checked pass")
     args = ap.parse_args(argv)
-    out = check(args.issue, sys.stdin.read())
+    ledger = [sys.executable, str(HERE / "attempts-ledger.py"), args.attempts] if args.attempts else None
+    out = gate(args.issue, sys.stdin.read(), ledger, args.apply)
+    if out["decision"] == "stop" and args.apply and ledger:
+        ok, note = label_stop(args.issue, out, ledger)
+        out = dict(out, labelled=ok, line=f"{out['line']}; {note}" if ok
+                   else f"{out['line']}; WARN {note}, the next tick retries")
     print(json.dumps(out))
     return STOP_EXIT if out["decision"] == "stop" else 0
 
