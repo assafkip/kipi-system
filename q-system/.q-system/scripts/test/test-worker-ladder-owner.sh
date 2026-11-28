@@ -54,7 +54,7 @@ case "$got" in
 esac
 got="$(unreviewed_reason ASK-5803 904)"
 case "$got" in
-  "unreviewed|"*"(the reviewer redrive owns it)") ok "an uncapped PR still names the reviewer redrive" ;;
+  "unreviewed|"*"(the worker starts its review at gate 20, review-redrive.py after that)") ok "an uncapped PR names the gate-20 start and the reviewer redrive (ASK-5846)" ;;
   *) bad "uncapped PR reason: '$got'" ;;
 esac
 awk '/^wip_move_why\(\) \{/ {on=1} on {print} on && /^}/ {exit}' "$WORKER" \

@@ -2472,6 +2472,64 @@ done
 REVIEW_MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
 case "$REVIEW_MAX_ROUNDS" in ''|*[!0-9]*) REVIEW_MAX_ROUNDS=3 ;; esac
 
+# review_unreviewed_pr <pr> <issue>: start the review a PR with no verdict is
+# waiting for, instead of printing the command for nobody (ASK-5846).
+#
+# Measured 2026-11-27: the gate-20 skip printed "run: kipi review N --issue
+# ASK-n --post" and no script ran it. PR #903 sat 5h, #896 and #902 sat 7 to
+# 11h, until the orchestrator ran the reviews by hand. The reviewer holds the
+# round cap itself (its .round-cap marker), so a call from here cannot pass it.
+# The record is read again first: a review that landed since the gate read it
+# means there is nothing to start. Returns the reviewer's exit code, 0 on a skip.
+review_unreviewed_pr() {
+  local pr="$1" issue="$2" rec rc=0
+  rec="$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$pr")"
+  if [ -n "$(verdict_from_record "$rec")" ]; then
+    say "$issue: PR #$pr has a verdict now; no review started"
+    return 0
+  fi
+  # ONE START PER PR HEAD, CLAIMED IN THE LEDGER (PR #917 review round 1). The
+  # reviewer's round cap counts only USABLE rounds, so a run that comes back
+  # unusable or refused does not move it, and without a brake every tick would
+  # pay for another run and post another PR and Linear comment. The claim is the
+  # attempts ledger's locked claim-flag, so two overlapping ticks cannot both
+  # start one. A push is new code and earns its own start. 1 = already started
+  # for this head; 2 or 3 = the ledger could not answer, and no claim means no run.
+  local head flag crc=0 table
+  # A REVIEW ALREADY RUNNING FOR THIS PR (round 2, major): review-redrive.py may
+  # have started one; a second would post twice. Same read as its reviewer_live,
+  # and an unreadable process table reads as live, the side that starts nothing.
+  if ! table="$(ps -axo command 2>/dev/null)" || [ -z "$table" ] \
+     || printf '%s\n' "$table" | grep -Eq "pr-review-agent\.sh[[:space:]]+$pr([[:space:]]|\$)"; then
+    say "$issue: PR #$pr has no recorded review verdict; a review of it is already running (or the process table is unreadable), so none is started"
+    return 0
+  fi
+  head="$(pr_head_sha "$pr")"
+  flag="gate20_review_pr${pr}_$(printf '%s' "${head:-nohead}" | cut -c1-12)"
+  python3 "$LEDGER" "$ATTEMPTS" claim-flag "$issue" "$flag" >/dev/null 2>&1 || crc=$?
+  case "$crc" in
+    0) ;;
+    1) say "$issue: PR #$pr has no recorded review verdict; a review was already started for head ${head:0:8}, so none is started again (a push earns the next one)"; return 0 ;;
+    *) say "$issue: PR #$pr has no recorded review verdict; the attempts ledger could not record the start (claim-flag rc=$crc), so no review is started this run"; return 0 ;;
+  esac
+  say "$issue: PR #$pr has no recorded review verdict; the worker starts the review now (the reviewer holds its own round cap)"
+  KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$pr" --issue "$issue" --post --engine claude >>"$LOG" 2>&1 || rc=$?
+  if [ "$rc" = "9" ]; then
+    # The reviewer's machine-condition code, handled the way step 5 handles it:
+    # env_halt makes converge exit 9 with no charge and no "no verdict" page.
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$issue" env_halt >/dev/null 2>&1 || true
+    # A machine refusal did not spend this head's start: release it, or no
+    # review would ever start for this head once the runner is back (round 2).
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$issue" "$flag" >/dev/null 2>&1 || true
+    say "$issue: PR #$pr: the reviewer's runner is unavailable (rc=9), a condition of the machine; this head's start is released, so the next run after it answers starts the review"
+  elif [ -n "$(verdict_from_record "$rec")" ]; then
+    say "$issue: PR #$pr review recorded '$(verdict_from_record "$rec")'; the next run acts on it"
+  else
+    say "$issue: PR #$pr review wrote no verdict (rc=$rc); this head's one start is spent, so the next start comes with a push or from review-redrive.py"
+  fi
+  return "$rc"
+}
+
 wip_set_aside() {  # wip_set_aside <issue>: is it on the dispatcher set-aside list (ASK-3993)
   case " ${KIPI_PICK_EXCLUDE:-} " in *" $1 "*) return 0 ;; esac
   return 1
@@ -2506,7 +2564,7 @@ unreviewed_reason() {
   if [ -n "$owner" ]; then
     printf 'unreviewed|no recorded review verdict; %s (cap-ladder.py)' "$owner"
   else
-    printf 'unreviewed|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)'
+    printf 'unreviewed|no recorded review verdict, nothing to rework against (the worker starts its review at gate 20, review-redrive.py after that)'
   fi
 }
 
@@ -3148,7 +3206,7 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       continue
     fi
     if [ "$GATE" = "20" ]; then
-      say "skip $ISSUE: PR #$EXISTING_PR has no recorded review verdict -- run: kipi review $EXISTING_PR --issue $ISSUE --post"
+      review_unreviewed_pr "$EXISTING_PR" "$ISSUE" || true
       continue
     fi
     if [ "$GATE" = "40" ]; then
@@ -4385,7 +4443,8 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # reviewer-floor turns an absent verdict into a red required context, and the PR
     # holds. A codex fallback would be worse than none -- codex is out of credits and
     # fails at EXIT 0, so it would fill the required gate with nothing.
-    # LABEL THE INVOKER HERE, at the one place the scheduled path runs the reviewer
+    # LABEL THE INVOKER HERE, at one of the two places the scheduled path runs the
+    # reviewer (the other is review_unreviewed_pr at gate 20, ASK-5846, same label)
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.
