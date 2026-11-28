@@ -484,6 +484,24 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # out exits well above this, before the verdict is even computed, so no status is
 # posted at all. Once this context becomes a REQUIRED check, "absent" is what
 # holds the PR -- the safe direction. Nothing on an error path here invents one.
+# A CAP STARTS THE LADDER NOW (ASK-5788). cap-ladder.py ran once a day, then
+# every 2h, so a capped PR waited for a clock that protected nothing. The 2h
+# schedule stays as the backstop. Never from a test: a run whose HOME is not the
+# account's home is a fixture world, and kicking the live job from it would run
+# the real ladder. KIPI_CAP_LADDER_KICK overrides the command (a test points it
+# at a stub). Best effort: a failed kick leaves the 2h run to take the cap.
+kick_cap_ladder() {
+  local acct_home
+  acct_home="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null)"
+  if [ -n "${KIPI_CAP_LADDER_KICK:-}" ]; then
+    $KIPI_CAP_LADDER_KICK >/dev/null 2>&1 || true
+  elif [ -n "$acct_home" ] && [ "$HOME" = "$acct_home" ]; then
+    launchctl kickstart "gui/$(id -u)/com.kipi.cap-ladder" >/dev/null 2>&1 \
+      && echo "  cap-ladder kickstarted for PR #$PR" \
+      || echo "  WARN: could not kickstart com.kipi.cap-ladder; its 2h run takes PR #$PR" >&2
+  fi
+}
+
 post_reviewer_status() {
   local sha="$1" verdict="$2" target="$3"
   # The context is the ENGINE's slot: kipi/reviewer-approved for claude,
@@ -609,11 +627,11 @@ if [ "$PRIOR_ROUNDS" -lt "$MAX_ROUNDS" ]; then
   done
 fi
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ] || [ -n "$REOPEN_OF" ]; then
-  CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
+  CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR now (kickstarted), every 2h as backstop"
   CAP_NOTE="$CAP_MSG"
   [ -z "$REOPEN_OF" ] || CAP_MSG="PR #$PR reopens capped #$REOPEN_OF; use cap-ladder.py. Override: delete $(basename "$_m")"
   CAP_MSG=${CAP_MSG:0:140}  # GitHub refuses a status description over 140 chars; CAP_MSG is what the pending status posts (P35)
-  [ -z "$REOPEN_OF" ] || CAP_NOTE="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py only sees sana/ask-N branches; for any other branch, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
+  [ -z "$REOPEN_OF" ] || CAP_NOTE="PR #$PR reopens capped PR #$REOPEN_OF (same branch or issue); a capped PR goes to cap-ladder.py (RCA), never a reopen. cap-ladder.py maps a PR by its sana/ask-N branch or the ASK id in its title; for a PR with neither, or to override, delete $(basename "$_m") from the reviewer pr-reviews dir"
   # THE CAP DOES NOT HOLD A PR IT ALREADY APPROVED (ASK-5605). Consulting #644
   # and #645 were approved at round 3 by dry runs, so kipi/reviewer-approved was
   # never posted; every later --post hit this cap and cap-ladder.py does not take
@@ -660,6 +678,7 @@ except Exception: print("0")' "$_cap_rec" 2>/dev/null || echo 0)"
     if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
       gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_NOTE" >/dev/null 2>&1 \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
+      kick_cap_ladder
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
     # already green stays green; pending goes only over a non-success state.
@@ -2395,6 +2414,11 @@ if [ "$POST" = "1" ]; then
   else
     echo "  no head sha for PR #$PR: posting NO commit status (a status on a guessed sha looks authoritative)"
   fi
+  # THE LAST ROUND ENDED WITHOUT AN APPROVAL: that is the cap (ASK-5788).
+  # cap-ladder.py reads it from the verdict record; this only wakes it now.
+  case "$VERDICT" in "APPROVE"|"APPROVE WITH NITS") ;; *)
+    [ "$REVIEW_USABLE" = "1" ] && [ $((PRIOR_ROUNDS + 1)) -ge "$MAX_ROUNDS" ] && kick_cap_ladder ;;
+  esac
   if [ -n "$ISSUE" ]; then
     # THE REVIEWER'S HALF OF THE CONVERSATION (ASK-221, founder directive
     # 2026-07-29: Sana and codex talk to each other in the issue's comments).

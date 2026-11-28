@@ -129,9 +129,9 @@ def start_sender(ladder: list) -> None:
     """Start cap-ladder's ONE sender, detached, after the sweep filed its asks.
 
     --founder-ask only records (PR #778 RCA rca-founder-ask-send-three-rounds-2026-11-12.md);
-    this is the trigger that makes a new ask reach his phone now and not at 04:40,
+    this is the trigger that makes a new ask reach his phone now and not at the next 2-hourly ladder run,
     and it makes the sweep's N asks one message. Detached and self-bounded, so a hung
-    chief can neither fail nor delay this sweep. A failed start is the nightly run's to retry."""
+    chief can neither fail nor delay this sweep. A failed start is the next scheduled ladder run's to retry."""
     try:
         subprocess.Popen(ladder + ["--send-asks"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
