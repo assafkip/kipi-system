@@ -397,17 +397,40 @@ fleet_ship_ref() {
   return 1
 }
 
+# ASK-5851: ONE history pass per run, not one `git rev-list <ref> -- <path>` per file.
+# The per-file walk ran 7.5h+ in lessons-daily on 2026-11-27 (282 lesson files, a
+# rev-list a second, per instance). The map (path<TAB>blob for every blob ever
+# committed) comes from kipi-update-shipped-blobs.py in ~0.3s and is looked up with
+# grep. The file is keyed by $$, which a subshell keeps, so a call inside $(...)
+# reuses it instead of rebuilding; cleanup_updater_temps removes it.
+SHIPPED_BLOB_MAP=""
+shipped_blob_map_path() {
+  local ship_ref="$1" tag
+  if [ -n "$SHIPPED_BLOB_MAP" ] && [ -s "$SHIPPED_BLOB_MAP" ]; then
+    printf '%s\n' "$SHIPPED_BLOB_MAP"
+    return 0
+  fi
+  tag="$(printf '%s' "$ship_ref" | tr -c 'A-Za-z0-9' '_')"
+  SHIPPED_BLOB_MAP="${TMPDIR:-/tmp}/kipi-shipped-blobs.$$.$tag"
+  if [ ! -s "$SHIPPED_BLOB_MAP" ]; then
+    python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" "$SCRIPT_DIR" "$ship_ref" \
+      > "$SHIPPED_BLOB_MAP.part" 2>/dev/null &&
+      mv -f "$SHIPPED_BLOB_MAP.part" "$SHIPPED_BLOB_MAP" || {
+        rm -f "$SHIPPED_BLOB_MAP.part"
+        return 1
+      }
+  fi
+  [ -s "$SHIPPED_BLOB_MAP" ] || return 1
+  printf '%s\n' "$SHIPPED_BLOB_MAP"
+}
+
 fleet_authored_blob() {
-  local rel="$1" file="$2" blob candidate commit ship_ref
+  local rel="$1" file="$2" blob ship_ref map
   ship_ref="$(fleet_ship_ref)" || return 1
   blob="$(git -C "$SCRIPT_DIR" hash-object -- "$file" 2>/dev/null || true)"
   [ -n "$blob" ] || return 1
-  while IFS= read -r commit; do
-    [ -n "$commit" ] || continue
-    candidate="$(git -C "$SCRIPT_DIR" rev-parse "$commit:$rel" 2>/dev/null || true)"
-    [ "$candidate" = "$blob" ] && return 0
-  done < <(git -C "$SCRIPT_DIR" rev-list "$ship_ref" -- "$rel" 2>/dev/null || true)
-  return 1
+  map="$(shipped_blob_map_path "$ship_ref")" || return 1
+  grep -Fxq -- "$rel	$blob" "$map"
 }
 
 # INSTALL THE VENDORED HOOKS INTO THE TREE THAT RUNS THEM (ASK-1144).
@@ -1333,6 +1356,10 @@ cleanup_updater_temps() {
   if [ -n "${CHECKPOINT_DIR:-}" ] && [ -d "$CHECKPOINT_DIR" ]; then
     rm -r -- "$CHECKPOINT_DIR"
     CHECKPOINT_DIR=""
+  fi
+  if [ -n "${SHIPPED_BLOB_MAP:-}" ]; then
+    rm -f -- "$SHIPPED_BLOB_MAP" "$SHIPPED_BLOB_MAP.part"
+    SHIPPED_BLOB_MAP=""
   fi
   clear_run_marker
   cleanup_dry_model
