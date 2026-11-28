@@ -112,9 +112,19 @@ def test_a_ticket_that_names_a_built_thing_blocks(tmp_path):
 
 def test_an_active_ticket_never_hides_a_duplicate_file(tmp_path):
     """PR #892 round 1: `ticket or docstring` let the ticket replace the file."""
-    _ticket(tmp_path, "Fleet bills the Claude plan, stops at 45% weekly")
+    # A ticket improve_ground calls adopt. The scar title this used ("Fleet bills
+    # the Claude plan ...") is already-built itself since ASK-5805; see below.
+    _ticket(tmp_path, "Fleet counts review spend per PR in the weekly report")
     r = _run(tmp_path, _target(tmp_path), _script(REAL_DOC))
     assert r.returncode == 2 and "morning-brief-deadman.py" in r.stderr, r.stderr
+
+
+def test_the_scar_ticket_now_blocks_on_the_switch_that_exists(tmp_path):
+    """ASK-5805 (recall gap from PR #892): ASK-5782's own title got `adopt`, so
+    the gate could not catch the parallel billing path it was built for."""
+    _ticket(tmp_path, "Fleet bills the Claude plan, stops at 60% weekly")
+    r = _run(tmp_path, _target(tmp_path), _script(REAL_DOC))
+    assert r.returncode == 2 and "kipi-dispatch.sh" in r.stderr, r.stderr
 
 
 def test_a_lesson_only_cite_is_advisory_not_a_block(tmp_path):
