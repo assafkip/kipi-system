@@ -75,7 +75,7 @@ def main() -> int:
         for title, why in (
                 ("Build review-tier.py for risk-scored auto-merge\n\nbuild it", "build + the file"),
                 ("add a review-tier script for risk-scored auto-merge", "add + article + the stem"),
-                ("Create the new REVIEW-TIER.PY risk-scored auto-merge gate", "any case, two articles")):
+                ("Create the new REVIEW-TIER.PY gate for risk-scored auto-merge", "any case, two articles")):
             rc, out = step0(title, KIPI_LESSONS_CORPORA=str(empty))
             check(f"a stop (exit 3) names the file: {why}",
                   rc == 3 and out.get("decision") == "stop" and out.get("checked") is True
@@ -100,6 +100,15 @@ def main() -> int:
                 ("Add a friction note capture on the lane runner", "'on' for 'to'"),
                 ("Create a handoff index page", "the object is a page"),
                 ("add risk-scored auto-merge for low-risk PRs", "the old known-answer case: no file named"),
+                # PR #910 round 1, major 1: a title that CHANGES the cited file.
+                ("Make review-tier.py skip draft PRs when self-review is on", "make X.py do Y"),
+                ("Add review-tier.py coverage for the auto merge path", "add X.py coverage"),
+                ("Add friction-note.sh to the lane runner so a note is captured", "add X.py to Y"),
+                ("Write morning-brief.py output to the state card as well as the morning brief log",
+                 "write X.py output to Y"),
+                ("Make friction-note.sh retry when the repo is mid-rebase (friction)", "make X.sh retry"),
+                ("Add capability_manifest.py rows for the four CRM jobs to the capability manifest",
+                 "add X.py rows"),
                 # Round 4's titles, keyed to the cited file.
                 ("friction-note.sh drops the note when the repo is mid-rebase", "a bug in the cited file"),
                 ("review-tier.py: widen the self-review tier to lane PRs", "a change to the cited file"),

@@ -2981,11 +2981,21 @@ while IFS= read -r ISSUE; do
   STEP0_RC=0
   STEP0_ARGS=(--issue "$ISSUE" --attempts "$ATTEMPTS")
   [ "$APPLY" = "1" ] && STEP0_ARGS+=(--apply)
+  # A WIP REWORK ROW HAS NO "text" KEY (the WIP feed rewrites "ready", above):
+  # its ticket was checked when first picked, so step 0 is skipped with a quiet
+  # line. The loud NOT CHECKED line stays for a checker that could not run
+  # (PR #910 round 1, minor 4).
+  STEP0_TEXT_KEY="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print(next(("text" in i for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]), False))' "$ISSUE" 2>/dev/null)"
+  if [ "$STEP0_TEXT_KEY" = "False" ]; then
+    say "step 0 $ISSUE: skipped, a rework row (its ticket was checked when it was first picked)"
+  else
   STEP0_OUT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
 print(next((i.get("text") or "" for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]), ""))' "$ISSUE" 2>/dev/null \
     | python3 "$SCRIPT_DIR/ticket_step0.py" "${STEP0_ARGS[@]}" 2>>"$LOG")" || STEP0_RC=$?
   STEP0_LINE="$(printf '%s' "$STEP0_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["line"])' 2>/dev/null)"
   say "${STEP0_LINE:-step 0 $ISSUE: NOT CHECKED (ticket_step0.py exited $STEP0_RC with no line); the ticket proceeds unchecked}"
+  fi
   if [ "$STEP0_RC" = "3" ]; then
     say "skip $ISSUE: stopped at step 0, already built; labelled step0:already-built with the file named (its line above says whether the label landed), nothing canceled"
     continue

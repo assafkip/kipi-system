@@ -26,12 +26,16 @@ the ticket". cap-ladder.py's nightly sweep (step0_sweep) re-checks every
 labelled ticket and drops the label once step 0 no longer stops it.
 
 WHAT STOPS: improve_ground.py says already-built on a named-file basis, the
-cited file exists in this checkout, and the title PROPOSES BUILDING THAT FILE:
-it opens with build, create, write, add or make, then at most an article or
-"new", then the cited file's name or stem ("Build review-tier.py for ...",
-"add a review-tier script"). A title about changing the file ("fix X.py",
-"add Y to X.py", "X.py crashes on Z") passes, as does any match only in the
-description or a lesson. Advisory lines only, never a stop.
+cited file exists in this checkout, and the title CREATES THAT FILE AS A NEW
+THING. It opens with build, create or write (then at most an article or
+"new"), or with add or make followed by "a", "new" or "a new"; then the cited
+file's name or stem, at most one kind noun (script, tool, gate, ...); then
+nothing, or a short purpose phrase (for, that, which or so, at most 8 words).
+Stops: "Build review-tier.py for risk-scored auto-merge", "add a review-tier
+script for ...". Passes, because they change the file: "fix X.py", "add Y to
+X.py", "Make X.py skip Y", "Add X.py coverage", "Write X.py output to Y",
+"X.py crashes on Z" (PR #910 round 1, major 1). A match only in the
+description or a lesson is an advisory line only, never a stop.
 Measured 2026-11-27 over all 3,123 open owner:sana tickets, dry: "the
 matched key in the title" would have labelled 24, and all 24 were real work
 (bug reports on morning-brief-deadman.py, "Port ... onto the capability
@@ -119,13 +123,20 @@ def run_ground(text: str) -> tuple[dict | None, str]:
 def stop_comment(issue: str, cites: list, reason: str, matched: str) -> str:
     """The one comment a stop posts, before the label."""
     named = ", ".join(f"`{c}`" for c in cites)
-    return (f"**Step 0: {issue} looks already built.** improve_ground.py names {named} ({reason}); "
-            f"(matched `{matched}`), and the title proposes building that file. Labelled `{LABEL}`, so the worker skips it. "
+    return (f"**Step 0: {issue} looks already built.** improve_ground.py names {named} "
+            f"(matched `{matched}`), and the title proposes creating that file. Labelled `{LABEL}`, so the worker skips it. "
             "Nothing is canceled. Remove the label and the next pick takes the ticket as written. "
             "(ticket_step0.py, ASK-5802)")
 
 
-BUILD_OPENING = r"^\s*(?:build|create|write|add|make)\s+(?:(?:a|an|the|new)\s+)*"
+# add/make need an article: "Make X.py skip Y" and "Add X.py coverage" change
+# the file (PR #910 round 1, major 1).
+BUILD_OPENING = (r"^\s*(?:(?:build|create|write)\s+(?:(?:a|an|the|new)\s+)*"
+                 r"|(?:add|make)\s+(?:a\s+new|an?|new)\s+)")
+# After the file: one kind noun at most, then the end of the title or a short
+# purpose phrase. Anything else ("output to Y", "rows for Z") is a change.
+CREATE_TAIL = (r"(?:\s+(?:script|tool|gate|job|check|hook|helper|module|lint))?"
+               r"\s*(?:[.:]?\s*$|\s(?:for|that|which|so)\b(?:\s+\S+){0,8}\s*$)")
 
 
 def title_proposes_file(title: str, cites: list) -> bool:
@@ -138,7 +149,8 @@ def title_proposes_file(title: str, cites: list) -> bool:
         if not (REPO / path).is_file():
             continue
         for name in {path.name, path.stem}:
-            if name and re.search(BUILD_OPENING + rf"{re.escape(name)}(?![\w-])", title, re.IGNORECASE):
+            if name and re.search(BUILD_OPENING + rf"{re.escape(name)}(?![\w-])" + CREATE_TAIL,
+                                  title.strip(), re.IGNORECASE):
                 return True
     return False
 

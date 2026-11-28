@@ -1481,7 +1481,9 @@ def main() -> int:
     else:
         cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
                  case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
-                 case_mutant, case_lane_marker, case_founder_asks_reach_chief, case_step0] + cases
+                 case_mutant, case_lane_marker, case_founder_asks_reach_chief] + cases
+    # case_step0 runs from test_cap_ladder_step0.py, its own manifest entry: here it
+    # was the longest case and pushed this file past its bound (PR #910 round 1).
     # list() re-raises any exception a case threw, so a crash still fails the file.
     with ThreadPoolExecutor(max_workers=len(cases)) as pool:
         list(pool.map(lambda f: f(), cases))

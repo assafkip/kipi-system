@@ -1,4 +1,5 @@
 {
  "path": "q-system/.q-system/scripts/test/test-worker-step0.sh",
- "runner": "bash"
+ "runner": "bash",
+ "timeout_s": 180
 }
