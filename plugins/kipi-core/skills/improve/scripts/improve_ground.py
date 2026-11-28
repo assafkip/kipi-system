@@ -30,6 +30,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -47,6 +48,14 @@ MATCH_FLOOR = 0.18
 # Named files that already implement ideas outsiders keep proposing. A hit
 # here is `already-built` with the file named; extend when a new "we should
 # build X" turns out to be a file that exists.
+#
+# KEYS MATCH AS WHOLE WORDS (ASK-5805). A substring match made "deadman" hit
+# every launchd deadman bug and "friction" hit "frictionless". "handoff" is
+# gone: it cited q-system/memory/last-handoff.md, a session note, not a built
+# capability, and it matched any docstring that mentions a handoff (cap-ladder.py,
+# pr-owner.py and wait-has-consumer.py were all false already-built).
+# A value is one cite or a tuple of cites. A path under ~ is expanded, so a
+# cite outside the repo names a real file.
 KNOWN_BUILT = {
     "risk-scored auto-merge": "q-system/.q-system/scripts/review-tier.py",
     "auto merge": "q-system/.q-system/scripts/review-tier.py",
@@ -57,8 +66,40 @@ KNOWN_BUILT = {
     "friction": "q-system/.q-system/scripts/friction-note.sh",
     "capability manifest": "q-system/.q-system/scripts/capability_manifest.py",
     "custom connector": "q-system/.q-system/scripts/capability_manifest.py",
-    "handoff": "q-system/memory/last-handoff.md",
+    # THE SWITCHES THAT ALREADY EXIST (founder 2026-11-26, ASK-5782, #889 reverted
+    # #887/#888): plan billing is the date file kipi-dispatch.sh reads; the weekly
+    # stop is usage-pacer's cap_pct (60 since founder 2026-11-27). Never a parallel path.
+    "plan billing": ("~/.config/kipi/fleet-plan-billing-until", "kipi-dispatch.sh"),
+    "bill the plan": ("~/.config/kipi/fleet-plan-billing-until", "kipi-dispatch.sh"),
+    "bills the plan": ("~/.config/kipi/fleet-plan-billing-until", "kipi-dispatch.sh"),
+    "bills the claude plan": ("~/.config/kipi/fleet-plan-billing-until", "kipi-dispatch.sh"),
+    "weekly cap": ("~/.config/kipi/usage-pacer.py", "~/.config/kipi/usage-pacer.json"),
+    "usage cap": ("~/.config/kipi/usage-pacer.py", "~/.config/kipi/usage-pacer.json"),
+    "usage pacer": ("~/.config/kipi/usage-pacer.py", "~/.config/kipi/usage-pacer.json"),
 }
+
+
+def _cites(value) -> list:
+    vals = value if isinstance(value, tuple) else (value,)
+    return [os.path.expanduser(v) if v.startswith("~") else v for v in vals]
+
+
+def known_built_hits(text: str) -> list:
+    """[(position, key)] for every KNOWN_BUILT key in `text` as a whole word, first first.
+
+    EVERY HIT, IN TEXT ORDER (ASK-5805). Returning the first key in dict order
+    let a description word hide the title's match: "deadman" sorts before
+    "morning brief", so a body that mentioned a deadman flipped a "Build the
+    morning brief" title from STOP to PASS. Callers read the title before the
+    body, so the first hit is the title's when it has one.
+    """
+    low = (text or "").lower()
+    hits = []
+    for key in KNOWN_BUILT:
+        m = re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", low)
+        if m:
+            hits.append((m.start(), key))
+    return sorted(hits)
 
 
 def _load(stem: str, path: Path):
@@ -123,11 +164,12 @@ def ground(idea: str, target: str = "skill", env=None) -> dict:
     if scope["verdict"] != "system":
         return {"verdict": "skip", "reason": f"roadmap scope ({scope['verdict']}): this loop never decides what to build, sell or publish",
                 "cites": ["q-system/.q-system/scripts/roadmap_scope.py"], "corpora": report}
-    low = idea.lower()
-    for key, path in KNOWN_BUILT.items():
-        if key in low:
-            return {"verdict": "already-built", "reason": f"{path} already does this", "cites": [path],
-                    "basis": "named-file", "matched": key, "corpora": report}
+    hits_kb = known_built_hits(idea)
+    if hits_kb:
+        keys = [k for _, k in hits_kb]
+        cites = list(dict.fromkeys(c for k in keys for c in _cites(KNOWN_BUILT[k])))
+        return {"verdict": "already-built", "reason": f"{', '.join(cites)} already does this", "cites": cites,
+                "basis": "named-file", "matched": keys[0], "matches": keys, "corpora": report}
     strong = [(s, p) for s, p in hits if s >= MATCH_FLOOR]
     if strong:
         # basis "lesson" is weaker than "named-file" and callers that STOP work
