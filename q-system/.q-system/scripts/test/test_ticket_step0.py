@@ -89,6 +89,13 @@ def main() -> int:
                         KIPI_LESSONS_CORPORA=str(empty))
         check("a stop (exit 3): a body key does not hide the title's",
               rc == 3 and "q-system/.q-system/scripts/morning-brief.py" in out.get("cites", []), (rc, out))
+        # PR #916 round 2: a ~ cite (usage-pacer.py under HOME) stops like a repo file.
+        home = root / "home"
+        (home / ".config/kipi").mkdir(parents=True)
+        (home / ".config/kipi/usage-pacer.py").write_text("# the cap\n")
+        rc, out = step0("Build usage-pacer.py for the weekly cap", KIPI_LESSONS_CORPORA=str(empty), HOME=str(home))
+        check("a stop (exit 3): a ~ cite under HOME names a real file",
+              rc == 3 and "~/.config/kipi/usage-pacer.py" in out.get("cites", []), (rc, out))
         for title, why in (
                 # The titles PR #903 round 5 named: all were labelled by the key rule.
                 ("launchd job is dark: com.kipi.browser-session-deadman", "a broken-thing report (ASK-1199)"),
