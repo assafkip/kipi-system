@@ -211,6 +211,7 @@ def _section(title, rows, error, fmt):
 BLOCKED_PLAIN = (
     "Need a clearer spec",
     "Waiting on something the runner cannot grant itself",
+    "Already built, held until the label comes off",
     "In another repo, skipped here",
     "In repos this Mac has no copy of",
     "Refused by the repo safety check",
