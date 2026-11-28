@@ -171,11 +171,13 @@ SYSTEM_STATE = ("chore: commit system-written state before skeleton sync "
 def test_local_only_system_state_commit_is_not_an_unlanded_sync(tmp_path):
     # Review finding 1: the newest tagged commit on HEAD is kipi-update.sh's
     # system-state commit, which a worktree off origin can never reproduce, so
-    # land says "nothing to land". check must agree and stay quiet.
+    # land says "nothing to land". check must agree: never "not landed". The
+    # separate not-synced signal (newest sync 10 days old) may still fire.
     env, _, _, extra = fixture(tmp_path, landed_days_ago=10, made_msg=SYSTEM_STATE)
     r = run(["python3", str(SCRIPT), "check", "--alert"], env, extra=extra)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert not (tmp_path / "notified.txt").exists()
+    assert not r.stdout.startswith("stale"), r.stdout
+    notified = tmp_path / "notified.txt"
+    assert "not landed" not in (notified.read_text() if notified.exists() else "")
 
 
 def test_default_branch_comes_from_the_remote_not_the_local_cache(tmp_path):
@@ -240,3 +242,51 @@ def test_lessons_daily_lands_only_after_a_real_fan_out(tmp_path):
     assert got == {"propagated to fleet": "LAND", "propagate FAILED": "SKIP",
                    "propagate FAILED (streak 3)": "SKIP",
                    "no propagation (nothing published)": "SKIP"}, got
+
+
+def test_not_synced_signal_survives_a_landing(tmp_path):
+    # Round 2 review, item 1: every sync is landed but the newest is 10 days
+    # old. The early `landed >= made` return read that as ok.
+    env, _, _, extra = fixture(tmp_path, landed_days_ago=10, made_msg="human commit")
+    r = run(["python3", str(SCRIPT), "check", "--alert"], env, extra=extra)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert r.stdout.startswith("not-reaching"), r.stdout
+    assert "has not synced" in (tmp_path / "notified.txt").read_text()
+
+
+def test_unreachable_origin_alerts_and_no_fetch_stays_offline(tmp_path):
+    # Round 2 review, item 2: an unresolved default branch was a silent skip.
+    env, _, shared, extra = fixture(tmp_path, landed_days_ago=10)
+    ok(["git", "config", "url.%s.insteadOf" % (tmp_path / "gone.git"),
+        "https://github.com/acme/inst.git"], env, shared)
+    ok(["git", "config", "--unset", f"url.{tmp_path / 'origin.git'}.insteadOf"], env, shared)
+    r = run(["python3", str(SCRIPT), "check", "--alert"], env, extra=extra)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert r.stdout.startswith("error") and "default branch" in r.stdout, r.stdout
+    assert "could not be measured" in (tmp_path / "notified.txt").read_text()
+    # --no-fetch is offline: the cached origin/HEAD, no remote call.
+    r = run(["python3", str(SCRIPT), "check", "--no-fetch"], env, extra=extra)
+    assert r.stdout.startswith("stale") and "default=origin/main" in r.stdout, r.stdout
+
+
+def test_hung_origin_is_an_error_and_the_rest_still_run(tmp_path):
+    # Round 2 review, item 3: TimeoutExpired from remote_default was uncaught
+    # and aborted every remaining instance.
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    env, _, hung, extra = fixture(tmp_path / "a", landed_days_ago=10)
+    _, _, healthy, _ = fixture(tmp_path / "b", landed_days_ago=10)
+    sleeper = tmp_path / "sleep-pack.sh"
+    sleeper.write_text("#!/bin/bash\nsleep 30\n")
+    sleeper.chmod(0o755)
+    ok(["git", "config", "remote.origin.uploadpack", str(sleeper)], env, hung)
+    reg = {"skeleton": {"path": str(tmp_path)}, "instances": [
+        {"name": "hung", "type": "subtree", "subtree_prefix": "q-system", "path": str(hung)},
+        {"name": "healthy", "type": "subtree", "subtree_prefix": "q-system", "path": str(healthy)}]}
+    (tmp_path / "registry.json").write_text(json.dumps(reg))
+    extra.update(KIPI_UPDATE_REGISTRY=str(tmp_path / "registry.json"),
+                 KIPI_SYNC_LAND_REMOTE_TIMEOUT="2")
+    r = run(["python3", str(SCRIPT), "check", "--alert"], env, extra=extra)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "error         hung:" in r.stdout and "stale         healthy:" in r.stdout, r.stdout

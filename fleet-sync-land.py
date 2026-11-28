@@ -45,6 +45,9 @@ BRANCH_PREFIX = "kipi/skeleton-sync-"
 # failed day plus one PR day is normal. a client instance went 32 days; this would have
 # alerted on day 4.
 THRESHOLD_DAYS = 3
+# Seconds for one remote call (fetch, ls-remote). Overridable so a test can
+# hang an origin without waiting a minute.
+REMOTE_TIMEOUT = int(os.environ.get("KIPI_SYNC_LAND_REMOTE_TIMEOUT") or 60)
 
 
 def git(path, *args, check=False, timeout=120):
@@ -65,11 +68,16 @@ def remote_default(path):
     Not refs/remotes/origin/HEAD: fetch creates that cache but never corrects it,
     and one instance's copy pointed at feat/prd-rollout, so a skeleton sync
     would have auto-merged into a feature branch (PR #909 review, finding 2)."""
-    out = git(path, "ls-remote", "--symref", "origin", "HEAD", timeout=60)
+    out = git(path, "ls-remote", "--symref", "origin", "HEAD", timeout=REMOTE_TIMEOUT)
     m = re.match(r"ref: refs/heads/(\S+)\tHEAD", out)
     if not m or not git(path, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{m.group(1)}"):
         return ""
     return f"origin/{m.group(1)}"
+
+
+def cached_default(path):
+    """--no-fetch is offline: the local origin/HEAD cache, no remote call."""
+    return git(path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 
 
 def registry_path():
@@ -86,23 +94,26 @@ def measure(entry, fetch=True):
         return {**row, "status": "skip", "reason": "no repo at path"}
     if fetch:
         try:
-            git(path, "fetch", "-q", "origin", timeout=60)
+            git(path, "fetch", "-q", "origin", timeout=REMOTE_TIMEOUT)
         except subprocess.TimeoutExpired:
             pass  # stale remote refs read as an OLDER landing: fails toward the alarm
-    default = remote_default(path)
+    # An unknown state alerts, never reads as ok or skip. Round 2 turned an
+    # unreachable origin into a silent skip and a hung one into a crash that
+    # stopped every later instance (PR #909 review round 2).
+    try:
+        default = remote_default(path) if fetch else cached_default(path)
+    except subprocess.TimeoutExpired:
+        return {**row, "status": "error", "reason": f"origin timed out after {REMOTE_TIMEOUT}s resolving the default branch"}
     if not default:
-        return {**row, "status": "skip", "reason": "origin default branch unresolved (nothing to land on)"}
+        return {**row, "status": "error", "reason": "origin default branch unresolved (origin unreachable or no HEAD)"}
     made, landed = last_sync_ts(path, "HEAD"), last_sync_ts(path, default)
     row.update(default=default, made=made, landed=landed)
     if made is None:
         return {**row, "status": "skip", "reason": "updater never synced this checkout"}
     now = time.time()
-    if landed and landed >= made:
-        # Every sync made here is already on origin: exactly when land finds
-        # nothing to land. check and land agree on what "landed" means.
-        row["lag_days"] = 0.0
-        return {**row, "status": "ok"}
-    lag = (made - landed) / 86400 if landed else float("inf")
+    # Every sync made here already on origin is lag 0, which is when land finds
+    # nothing to land. The not-synced signal below stays independent of it.
+    lag = 0.0 if landed and landed >= made else (made - landed) / 86400 if landed else float("inf")
     row["lag_days"] = None if lag == float("inf") else round(lag, 1)
     # Two signals, reported by name, never or-ed into one flag: syncs made but not
     # landed, and the updater not reaching the checkout at all.
@@ -136,6 +147,10 @@ def cmd_check(args):
         print(f"{r['status']:13} {r['name']}: {detail}")
     stale = [r["name"] for r in rows if r["status"] == "stale"]
     absent = [r["name"] for r in rows if r["status"] == "not-reaching"]
+    errors = [r["name"] for r in rows if r["status"] == "error"]
+    if args.alert and errors:
+        notify(f"fleet-sync-divergence: landing state could not be measured for: "
+               f"{', '.join(sorted(errors))}. Run fleet-sync-land.py check for the reason.")
     if args.alert:
         # Stable wording so alert-to-linear's fingerprint counts repeats on one ticket.
         if stale:
@@ -144,7 +159,7 @@ def cmd_check(args):
         if absent:
             notify(f"fleet-sync-divergence: updater has not synced these checkouts for >{THRESHOLD_DAYS} days: "
                    f"{', '.join(sorted(absent))}. Read q-system/output/lessons-daily.log.")
-    return 1 if stale or absent else 0
+    return 1 if stale or absent or errors else 0
 
 
 def gh(*args):
@@ -241,6 +256,10 @@ def cmd_land(args):
     failed = 0
     for entry in load_entries(args.only):
         row = measure(entry)
+        if row["status"] == "error":
+            failed += 1
+            print(f"FAIL {row['name']}: {row['reason']}")
+            continue
         if row["status"] != "stale" and not args.only:
             continue
         if "default" not in row:
