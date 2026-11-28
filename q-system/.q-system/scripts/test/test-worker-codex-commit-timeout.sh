@@ -123,7 +123,10 @@ printf 'import sys\nprint("DOR_MARKER for", sys.argv[2])\n' > "$SYNC"
 NOTE="$(codex_runner_note ASK-9)"
 printf '%s' "$NOTE" | grep -q 'Do NOT call Linear' && ok "the Codex note says not to call Linear" || bad "no Linear line in the note"
 printf '%s' "$NOTE" | grep -q 'Do NOT run git add or git commit' && ok "the Codex note says not to commit" || bad "no commit line in the note"
-printf '%s' "$NOTE" | grep -q 'DOR_MARKER for ASK-9' && ok "the note carries the issue the worker read" || bad "the issue text is not in the note: $NOTE"
+# Said on one line with the stub's own output and stderr: on CI run 46129612748
+# this went red while green locally, and the multi-line note hid why.
+printf '%s' "$NOTE" | grep -q 'DOR_MARKER for ASK-9' && ok "the note carries the issue the worker read" \
+  || bad "the issue text is not in the note; stub said: $(python3 "$SYNC" comments ASK-9 --with-description 2>&1 | tr '\n' ' ') (python3=$(command -v python3), SYNC=$SYNC)"
 
 # 7. Call sites: both Codex launches are followed by the worker's commit, and the
 #    duration line is written.
