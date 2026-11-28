@@ -420,9 +420,17 @@ shipped_blob_map_ensure() {
   [ -n "$SHIPPED_BLOB_MAP" ] && rm -f -- "$SHIPPED_BLOB_MAP"
   SHIPPED_BLOB_MAP="$(mktemp "${TMPDIR:-/tmp}/kipi-shipped-blobs.XXXXXX")" || return 1
   SHIPPED_BLOB_REF=""
-  python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" "$SCRIPT_DIR" "$ship_ref" \
-    > "$SHIPPED_BLOB_MAP" 2>/dev/null || return 1
-  [ -s "$SHIPPED_BLOB_MAP" ] || return 1
+  # NEVER SILENT (round 2 of PR #908, major). A map that cannot be built makes every
+  # file read "not shipped", i.e. "instance ahead", which fires the no-flag voiceloop
+  # abandon and blames the instance for a fault in the skeleton's own toolchain.
+  # Say what failed on stderr before returning.
+  if ! python3 "$SCRIPT_DIR/kipi-update-shipped-blobs.py" "$SCRIPT_DIR" "$ship_ref" \
+      > "$SHIPPED_BLOB_MAP" 2>"$SHIPPED_BLOB_MAP.err" || [ ! -s "$SHIPPED_BLOB_MAP" ]; then
+    echo "  WARN: shipped-blob map unavailable for $ship_ref ($(head -c 300 "$SHIPPED_BLOB_MAP.err" 2>/dev/null)); files will read as instance-ahead, which is a skeleton toolchain fault, not instance work" >&2
+    rm -f -- "$SHIPPED_BLOB_MAP.err"
+    return 1
+  fi
+  rm -f -- "$SHIPPED_BLOB_MAP.err"
   SHIPPED_BLOB_REF="$ship_ref"
 }
 

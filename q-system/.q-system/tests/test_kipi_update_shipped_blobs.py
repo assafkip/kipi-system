@@ -146,6 +146,19 @@ def test_cache_is_set_in_parent_shell_and_cleaned(tmp_path):
     assert "PARENT_LOST" not in out.stdout, out.stdout + out.stderr
     assert "FALSE_HIT" not in out.stdout, out.stdout + out.stderr
     assert len(list(tmpdir.iterdir())) == 1  # one map, named by mktemp, from the parent
+    # Round 2 of PR #908: an unrunnable helper must say so, not read as "instance ahead".
+    broken = tmp_path / "nohelper"
+    broken.mkdir()
+    git(broken, "init", "-q")
+    (broken / "f.md").write_text("x\n")
+    script2 = (
+        f'SCRIPT_DIR="{broken}"; SKELETON_BRANCH=main; PROVENANCE_OK=1; TMPDIR="{tmpdir}"\n'
+        f'. "{funcs}"\n'
+        'fleet_authored_blob f.md "$SCRIPT_DIR/f.md" || echo RC_NONZERO\n'
+    )
+    out2 = subprocess.run(["bash", "-c", script2], capture_output=True, text=True, cwd=repo)
+    assert "RC_NONZERO" in out2.stdout
+    assert "WARN: shipped-blob map unavailable" in out2.stderr, out2.stderr
     # The EXIT cleanup is the consumer of that variable: it must remove it.
     cleanup = "\n".join(src).split("cleanup_updater_temps() {")[1].split("\n}\n")[0]
     assert 'rm -f -- "$SHIPPED_BLOB_MAP"' in cleanup

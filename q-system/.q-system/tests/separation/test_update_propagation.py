@@ -51,6 +51,9 @@ UPDATER_HELPERS = (
     # report and was not added here, so the divergence test below went red on
     # every PR merged against that main: the exact trap this list documents.
     "kipi-update-instance-ahead.py",
+    # ASK-5851: the one-pass shipped-blob map fleet_authored_blob reads. Same trap as
+    # the line above: absent here, the check is dead inside every fixture that passes.
+    "kipi-update-shipped-blobs.py",
     # The reach preflight (PR #396) and the unblocker its refusal names. Same
     # trap as the line directly above, caught the same way: the derivation read
     # the new invocations out of kipi-update.sh, this list did not carry them,
