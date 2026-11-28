@@ -120,6 +120,18 @@ def case_title_precedence() -> None:
         T.check("title: two ASK ids map to no ticket", not closed(env, 20), T.log(env, "gh"))
 
 
+def case_upper_case_lane() -> None:
+    """PR #913 round 2, finding 1: sana/ASK-1 continues on sana/ASK-1, never sana/ask-1."""
+    with tempfile.TemporaryDirectory() as td:
+        env = world(td)
+        T.world(env, **{"o/r": [pr_row(10, "sana/ASK-1", "fix (ASK-1)")], "branches": {"sana/ASK-1": 2}})
+        T.led(env, "record-capout", "ASK-1", "capped")
+        out = T.ladder(env, "--apply")
+        gh = T.log(env, "gh")
+        T.check("upper case: the successor opens from the PR's own branch spelling",
+                closed(env, 10) and any(c[:2] == ["pr", "create"] and "sana/ASK-1" in c for c in gh), (out, gh))
+
+
 def case_approved_head() -> None:
     with tempfile.TemporaryDirectory() as td:
         env = world(td)
@@ -153,12 +165,12 @@ def case_delta_rung() -> None:
     with tempfile.TemporaryDirectory() as td:
         env = world(td)
         rv = Path(td) / "bin/reviewer"
-        rv.write_text(FAKE_REVIEWER + "sys.exit(127)\n")     # PR #913 round 1, finding 2
+        rv.write_text(FAKE_REVIEWER + "sys.exit(1)\n")     # PR #913 round 1 finding 2, round 2 minor 2
         record(env, 10, 3, "APPROVE", "c" * 40)
         T.ladder(env, "--apply")
         T.at(env, 1)
         T.ladder(env, "--apply")
-        T.check("delta: a review that never ran (rc 127) does not spend the one shot",
+        T.check("delta: a review that never ran (rc 1) does not spend the one shot",
                 len(T.log(env, "reviewer")) == 2 and not closed(env, 10), T.log(env, "gh"))
 
 
@@ -190,7 +202,7 @@ def case_owns_title() -> None:
 
 def main() -> int:
     print("test_cap_ladder_review_caps.py")
-    for case in (case_title_mapping, case_last_round, case_title_precedence, case_approved_head,
+    for case in (case_title_mapping, case_last_round, case_title_precedence, case_upper_case_lane, case_approved_head,
                  case_delta_rung, case_owns_title):
         case()
     print(f"\n{'FAIL' if T.FAILS else 'PASS'}: {len(T.FAILS)} failed")

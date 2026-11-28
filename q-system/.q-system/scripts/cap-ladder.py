@@ -236,7 +236,7 @@ def issue_of_branch(branch: str) -> str:
 
 
 def issue_of_pr(branch: str, title: str = "") -> str:
-    """The ticket a PR works: its sana/ask-N branch, else the first ASK id in its title.
+    """The ticket a PR works: its sana/ask-N branch, else the one ASK id in its title.
 
     THE TITLE IS THE FALLBACK (ASK-5788). PR #885 sat on sana/fleet-plan-weekly-45
     with ASK-5782 in its title; the reviewer capped it and nothing took the cap,
@@ -304,6 +304,9 @@ def review_sigs(slug: str, pr_number, reviews: Path, head: str | None) -> list:
     marked = any((d / f".round-cap-{slug.replace('/', '_')}-pr-{pr_number}").exists()
                  for d in (reviews, reviews / "codex"))
     # usable_round, never round: round counts blips too (PR #913 round 1, finding 1).
+    # A record from before usable_round existed does not count as a last round;
+    # that PR still reaches the ladder through the refusal marker and its kick
+    # (round 2, minor 3: falling back to `round` would bring finding 1 back).
     last_round = isinstance(rec.get("usable_round"), int) and rec["usable_round"] >= review_cap_rounds()
     approved = rec.get("verdict") in APPROVES
     if head is not None and approved and (marked or last_round):
@@ -367,7 +370,9 @@ def ladder_owns(slug: str, number: int, branch: str, state_dir: str, title: str 
     For pr-owner.py (ASK-3962), which loads this file by path and yields any PR
     the ladder owns. Lane branches (sana/<id>-<slug>) are never the ladder's:
     pr-owner.py owns them. A branch with no ASK id is the ladder's when its
-    title names one (issue_of_pr, ASK-5788). `state_dir` is the worker's
+    title names exactly one (issue_of_pr, ASK-5788) AND the PR holds a cap of
+    its own (review cap, escalation); a ticket capout never claims it.
+    `state_dir` is the worker's
     KIPI_STATE_DIR, where the attempts ledger and pr-reviews/ live.
     """
     issue = issue_of_pr(branch, title)
@@ -1318,7 +1323,7 @@ def run_logged(argv: list, log: Path, env: dict, timeout: int = 2700) -> int:
         return 127
 
 
-ENV_RCS = (9, 124, 126, 127)          # pr-review-agent.sh 9 = no review ran; timeout; not runnable
+DELTA_TRIES = 3                       # failed delta-review runs before the PR takes its rung
 
 
 def delta_review(issue: str, sigs: list, pr: dict, slug: str, row: dict, state: dict,
@@ -1357,12 +1362,15 @@ def delta_review(issue: str, sigs: list, pr: dict, slug: str, row: dict, state: 
     log = STATE.parent / "reviews" / f"{slug.replace('/', '_')}-pr-{pr['number']}-delta.log"
     rc = run_logged(REVIEWER + [str(pr["number"]), "--repo", path, "--issue", issue, "--post"], log, env)
     row["delta_reviewed"][key]["rc"] = rc
-    if rc in ENV_RCS:
-        # NEVER REACHED THE MODEL (PR #913 round 1, finding 2: rc 127 from a
-        # launchd PATH with no claude spent the one shot, and the next push
-        # closed the approved PR at rung 1). The shot stays unspent; the 20h
-        # handled memory spaces the retries.
+    fails = int((row.get("delta_failed") or {}).get(key, 0)) + (1 if rc != 0 else 0)
+    if rc != 0 and fails < DELTA_TRIES:
+        # pr-review-agent.sh exits 0 on every review it ran, approve or not, so
+        # any other rc is a review that never ran (PR #913 round 1, finding 2:
+        # rc 127 from a launchd PATH with no claude; round 2: its exit-1 paths).
+        # The shot stays unspent for DELTA_TRIES runs, spaced by the 20h handled
+        # memory; after that the PR takes the normal rung.
         row["delta_reviewed"].pop(key)
+        row.setdefault("delta_failed", {})[key] = fails
     if rc != 0:
         report.append({"issue": issue, "rung": row.get("rung", 0), "decision": "DELTA", "red": True,
                        "note": f"delta review exited {rc}; log {log}"})
@@ -1447,11 +1455,14 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
     # that cannot be opened stops the rung before the clears, so the cap record
     # survives and the next run retries it. A title-mapped PR (issue_of_pr)
     # continues on its own branch: sana/<id> does not exist for it.
-    branch = pr["headRefName"] if title_mapped(pr) else f"{LANE_PREFIX}{issue.lower()}"
+    # The PR's own spelling (PR #913 round 2, finding 1): git branch names are
+    # case-sensitive, so sana/ASK-N must not be reopened as sana/ask-n.
+    lane = f"{LANE_PREFIX}{issue.lower()}"
+    branch = pr["headRefName"] if pr and (title_mapped(pr) or pr["headRefName"].lower() == lane) else lane
     body = (f"{issue}, cap ladder rung {r} ({rung_name(r)}). RCA: {rca_path or 'none produced'}. "
             f"Read the RCA comment on {issue} first: its STOP section names the approach that looped.")
     new_pr = ""
-    if pr and pr["headRefName"].lower() == branch:
+    if pr and pr["headRefName"] == branch:
         if not close_pr(slug, pr, f"Closed by {JOB}, rung {r} ({rung_name(r)}). Branch {branch} is kept; "
                                   f"the work continues on a new PR from it. Reopen this PR to undo."):
             return f"{issue}: rung {r} could not close PR #{pr['number']}; the cap stays, the next run retries"
